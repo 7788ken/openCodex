@@ -1,0 +1,644 @@
+import { fileURLToPath } from 'node:url';
+
+export const CTO_PLANNER_SCHEMA_PATH = fileURLToPath(new URL('../../schemas/cto-workflow-plan.schema.json', import.meta.url));
+
+const MAX_TASKS = 4;
+const MAX_TITLE_LENGTH = 72;
+
+export function createTelegramWorkflowState({ workflowSessionId, relatedWorkflowId = '', message }) {
+  return {
+    workflow_session_id: workflowSessionId,
+    related_workflow_id: relatedWorkflowId,
+    provider: 'telegram',
+    chat_id: message.chat_id,
+    source_update_id: message.update_id,
+    source_message_id: message.message_id,
+    sender_display: message.sender_display,
+    goal_text: message.text,
+    latest_user_message: message.text,
+    created_at: message.created_at,
+    updated_at: message.created_at,
+    status: 'planning',
+    plan_mode: 'execute',
+    plan_summary_zh: '',
+    pending_question_zh: '',
+    task_counter: 0,
+    tasks: [],
+    user_messages: [
+      {
+        update_id: message.update_id,
+        message_id: message.message_id,
+        text: message.text,
+        created_at: message.created_at
+      }
+    ]
+  };
+}
+
+export function appendWorkflowUserMessage(workflowState, message) {
+  workflowState.latest_user_message = message.text;
+  workflowState.updated_at = message.created_at;
+  if (!Array.isArray(workflowState.user_messages)) {
+    workflowState.user_messages = [];
+  }
+  workflowState.user_messages.push({
+    update_id: message.update_id,
+    message_id: message.message_id,
+    text: message.text,
+    created_at: message.created_at
+  });
+}
+
+export function buildTelegramCtoAutoReplyText(message, continuation = false) {
+  const preview = truncateInline(message.text, 120);
+  if (continuation) {
+    return `收到，openCodex CTO 主线程已收到你的补充，继续调度：${preview}`;
+  }
+  return `收到，openCodex CTO 主线程已接管，正在拆任务并调度：${preview}`;
+}
+
+export function buildTelegramCtoPlannerPrompt({ message, workflowState, continuationMessage = null }) {
+  const completedTaskLines = summarizeTasksForPrompt(workflowState.tasks || []);
+  const historyLines = (workflowState.user_messages || [])
+    .slice(-4)
+    .map((item, index) => `${index + 1}. ${item.text}`);
+
+  if (continuationMessage) {
+    return [
+      'You are the openCodex CTO planner working through the Telegram control channel.',
+      'openCodex is a thin orchestration layer on top of Codex CLI, inspired by openclaw.',
+      'You must remain the orchestration main thread, split work into non-blocking local tasks, and only ask the CEO for confirmation when necessary.',
+      'Return JSON that matches the provided schema.',
+      'Use Simplified Chinese for `summary_zh` and `question_zh`.',
+      'Use English for task titles and worker prompts.',
+      'Create 1-4 concrete tasks at a time. Prefer parallel tasks when dependencies allow.',
+      'Each worker prompt must be self-contained, minimal, reversible, and instruct the worker to reply in Simplified Chinese while keeping project artifacts in English and docs bilingual under docs/en and docs/zh.',
+      'Do not recreate finished tasks. Only create the next executable tasks needed after the CEO response.',
+      '',
+      'Original Telegram goal:',
+      workflowState.goal_text,
+      '',
+      'Pending question for the CEO:',
+      workflowState.pending_question_zh || '(none)',
+      '',
+      'CEO response:',
+      continuationMessage.text,
+      '',
+      'Recent Telegram message history:',
+      historyLines.length ? historyLines.join('\n') : '(none)',
+      '',
+      'Completed or existing workflow tasks:',
+      completedTaskLines || '(none)'
+    ].join('\n');
+  }
+
+  return [
+    'You are the openCodex CTO planner working through the Telegram control channel.',
+    'The user is the CEO and this Telegram message is the active remote control path.',
+    'openCodex is a thin orchestration layer on top of Codex CLI, inspired by openclaw.',
+    'You must remain the orchestration main thread, split work into non-blocking local tasks, and only ask the CEO for confirmation when necessary.',
+    'Return JSON that matches the provided schema.',
+    'Use Simplified Chinese for `summary_zh` and `question_zh`.',
+    'Use English for task titles and worker prompts.',
+    'Create 1-4 concrete tasks at a time. Prefer parallel tasks when dependencies allow.',
+    'Each worker prompt must be self-contained, minimal, reversible, and instruct the worker to reply in Simplified Chinese while keeping project artifacts in English and docs bilingual under docs/en and docs/zh.',
+    'If information is insufficient or the next action is high-risk, set mode to "confirm" and ask one concise Chinese question.',
+    '',
+    'Telegram message:',
+    message.text
+  ].join('\n');
+}
+
+export function normalizeTelegramCtoPlan(rawPlan, fallbackMessageText, workflowState) {
+  const nextTaskCounter = Number.isInteger(workflowState?.task_counter) ? workflowState.task_counter : 0;
+  const rawTasks = Array.isArray(rawPlan?.tasks) ? rawPlan.tasks : [];
+  const seenIds = new Set((workflowState?.tasks || []).map((task) => task.id));
+  const normalizedTasks = [];
+  let counter = nextTaskCounter;
+
+  for (const rawTask of rawTasks.slice(0, MAX_TASKS)) {
+    if (!rawTask || typeof rawTask !== 'object' || Array.isArray(rawTask)) {
+      continue;
+    }
+
+    counter += 1;
+    const proposedId = sanitizeTaskId(rawTask.id, counter);
+    const taskId = ensureUniqueTaskId(proposedId, seenIds, counter);
+    seenIds.add(taskId);
+
+    const title = truncateInline(rawTask.title || `Task ${counter}`, MAX_TITLE_LENGTH) || `Task ${counter}`;
+    const workerPrompt = asTrimmedString(rawTask.worker_prompt)
+      || buildFallbackWorkerPrompt({ title, fallbackMessageText });
+    const dependsOn = Array.isArray(rawTask.depends_on)
+      ? rawTask.depends_on.map((item) => String(item || '').trim()).filter(Boolean)
+      : [];
+
+    normalizedTasks.push({
+      id: taskId,
+      title,
+      worker_prompt: workerPrompt,
+      depends_on: dependsOn,
+      status: 'queued',
+      session_id: '',
+      summary_status: '',
+      result: '',
+      next_steps: [],
+      changed_files: [],
+      updated_at: ''
+    });
+  }
+
+  if (!normalizedTasks.length) {
+    counter += 1;
+    normalizedTasks.push({
+      id: ensureUniqueTaskId(`task-${counter}`, seenIds, counter),
+      title: truncateInline(fallbackMessageText || 'Local task', MAX_TITLE_LENGTH) || `Task ${counter}`,
+      worker_prompt: buildFallbackWorkerPrompt({ fallbackMessageText }),
+      depends_on: [],
+      status: 'queued',
+      session_id: '',
+      summary_status: '',
+      result: '',
+      next_steps: [],
+      changed_files: [],
+      updated_at: ''
+    });
+  }
+
+  const validIds = new Set([...(workflowState?.tasks || []).map((task) => task.id), ...normalizedTasks.map((task) => task.id)]);
+  for (const task of normalizedTasks) {
+    task.depends_on = task.depends_on.filter((item) => validIds.has(item));
+  }
+
+  const mode = rawPlan?.mode === 'confirm' ? 'confirm' : 'execute';
+  const question = asTrimmedString(rawPlan?.question_zh);
+  const summary = asTrimmedString(rawPlan?.summary_zh)
+    || (mode === 'confirm'
+      ? '当前步骤需要你先确认下一步。'
+      : `已拆分 ${normalizedTasks.length} 个可执行任务。`);
+
+  return {
+    mode,
+    summary_zh: summary,
+    question_zh: mode === 'confirm'
+      ? (question || '请补充当前任务的关键决策信息。')
+      : '',
+    tasks: normalizedTasks,
+    task_counter: counter
+  };
+}
+
+export function appendPlanTasksToWorkflow(workflowState, plan) {
+  workflowState.plan_mode = plan.mode;
+  workflowState.plan_summary_zh = plan.summary_zh;
+  workflowState.pending_question_zh = plan.question_zh || '';
+  workflowState.task_counter = plan.task_counter;
+  workflowState.updated_at = new Date().toISOString();
+
+  if (!Array.isArray(workflowState.tasks)) {
+    workflowState.tasks = [];
+  }
+
+  if (plan.mode === 'execute') {
+    workflowState.tasks.push(...plan.tasks);
+    workflowState.status = 'running';
+    return;
+  }
+
+  workflowState.status = 'waiting_for_user';
+}
+
+export function buildTelegramCtoPlanText(workflowState) {
+  const tasks = Array.isArray(workflowState.tasks) ? workflowState.tasks : [];
+  const latestTasks = tasks.filter((task) => task.status === 'queued' || task.status === 'running').slice(-4);
+  const ready = latestTasks.filter((task) => !task.depends_on.length).map((task) => task.id);
+  const blocked = latestTasks.filter((task) => task.depends_on.length).map((task) => `${task.id} <= ${task.depends_on.join(', ')}`);
+
+  const lines = [
+    'openCodex CTO 已完成任务拆解',
+    `目标：${truncateInline(workflowState.goal_text, 160)}`,
+    `摘要：${truncateInline(workflowState.plan_summary_zh || '已进入调度阶段。', 220)}`,
+    '任务：'
+  ];
+
+  for (const task of latestTasks) {
+    lines.push(`- ${task.id} ${truncateInline(task.title, 80)}`);
+  }
+
+  if (ready.length) {
+    lines.push(`已启动：${ready.join(', ')}`);
+  }
+  if (blocked.length) {
+    lines.push('等待依赖：');
+    for (const item of blocked) {
+      lines.push(`- ${item}`);
+    }
+  }
+
+  lines.push(`Workflow: ${workflowState.workflow_session_id}`);
+  return lines.join('\n');
+}
+
+export function buildTelegramCtoQuestionText(workflowState) {
+  const lines = [
+    'openCodex CTO 需要你确认下一步',
+    `问题：${truncateInline(workflowState.pending_question_zh || '请补充执行所需信息。', 500)}`,
+    `当前目标：${truncateInline(workflowState.goal_text, 160)}`,
+    `Workflow: ${workflowState.workflow_session_id}`
+  ];
+
+  const counts = summarizeWorkflowCounts(workflowState);
+  if (counts.completed > 0 || counts.failed > 0) {
+    lines.splice(3, 0, `进度：completed ${counts.completed}, partial ${counts.partial}, failed ${counts.failed}`);
+  }
+
+  return lines.join('\n');
+}
+
+export function buildTelegramCtoStatusText(workflowState) {
+  const counts = summarizeWorkflowCounts(workflowState);
+  const latestTasks = Array.isArray(workflowState.tasks)
+    ? workflowState.tasks.slice(-6)
+    : [];
+  const summary = workflowState.plan_summary_zh || buildWorkflowResultLine(workflowState, counts);
+  const lines = [
+    'openCodex CTO 工作流汇报',
+    `目标：${truncateInline(workflowState.goal_text, 160)}`,
+    `状态：${formatTelegramWorkflowStatus(workflowState.status)}`,
+    `摘要：${truncateInline(summary, 220)}`,
+    `进度：queued ${counts.queued}, running ${counts.running}, completed ${counts.completed}, partial ${counts.partial}, failed ${counts.failed}`
+  ];
+
+  if (latestTasks.length) {
+    lines.push('任务：');
+    for (const task of latestTasks) {
+      lines.push(`- [${task.status}] ${task.id} ${truncateInline(task.title, 80)}`);
+    }
+  } else {
+    lines.push('任务：暂无');
+  }
+
+  if (workflowState.pending_question_zh) {
+    lines.push(`待确认：${truncateInline(workflowState.pending_question_zh, 220)}`);
+  }
+
+  lines.push(`Workflow: ${workflowState.workflow_session_id}`);
+  return lines.join('\n');
+}
+
+export function buildTelegramCtoFinalText(workflowState) {
+  const counts = summarizeWorkflowCounts(workflowState);
+  const statusTitle = workflowState.status === 'completed'
+    ? 'openCodex CTO 工作流已完成'
+    : workflowState.status === 'waiting_for_user'
+      ? 'openCodex CTO 工作流待确认'
+      : 'openCodex CTO 工作流已结束';
+
+  const lines = [
+    statusTitle,
+    `目标：${truncateInline(workflowState.goal_text, 160)}`,
+    `进度：completed ${counts.completed}, partial ${counts.partial}, failed ${counts.failed}, queued ${counts.queued}`
+  ];
+
+  const highlights = collectWorkflowHighlights(workflowState).slice(0, 4);
+  if (highlights.length) {
+    lines.push('要点：');
+    for (const item of highlights) {
+      lines.push(`- ${truncateInline(item, 220)}`);
+    }
+  }
+
+  const changedFiles = collectWorkflowChangedFiles(workflowState).slice(0, 4);
+  if (changedFiles.length) {
+    lines.push('改动：');
+    for (const item of changedFiles) {
+      lines.push(`- ${truncateInline(item, 220)}`);
+    }
+  }
+
+  const nextSteps = collectWorkflowNextSteps(workflowState).slice(0, 4);
+  if (nextSteps.length) {
+    lines.push('下一步：');
+    for (const item of nextSteps) {
+      lines.push(`- ${truncateInline(item, 220)}`);
+    }
+  }
+
+  lines.push(`Workflow: ${workflowState.workflow_session_id}`);
+  return lines.join('\n');
+}
+
+export function buildTelegramCtoSessionSummary(workflowState) {
+  const counts = summarizeWorkflowCounts(workflowState);
+  const status = mapWorkflowStatus(workflowState.status);
+  const highlights = [
+    `Chat: ${workflowState.chat_id}`,
+    `Tasks: ${counts.total}`,
+    `Completed: ${counts.completed}`,
+    `Partial: ${counts.partial}`,
+    `Failed: ${counts.failed}`
+  ];
+
+  const nextSteps = collectWorkflowNextSteps(workflowState).slice(0, 4);
+  if (!nextSteps.length && status === 'running') {
+    nextSteps.push('Wait for the running workflow tasks to finish.');
+  }
+  if (!nextSteps.length && status === 'partial') {
+    nextSteps.push('Wait for the CEO reply on the Telegram control channel.');
+  }
+
+  return {
+    title: status === 'completed'
+      ? 'CTO workflow completed'
+      : status === 'partial'
+        ? 'CTO workflow waiting'
+        : status === 'failed'
+          ? 'CTO workflow failed'
+          : 'CTO workflow running',
+    result: buildWorkflowResultLine(workflowState, counts),
+    status,
+    highlights,
+    next_steps: nextSteps,
+    risks: collectWorkflowRisks(workflowState).slice(0, 4),
+    validation: [],
+    changed_files: collectWorkflowChangedFiles(workflowState).slice(0, 8),
+    findings: []
+  };
+}
+
+export function findPendingWorkflowForChat(workflows, chatId) {
+  const items = Array.from(workflows || []);
+  return items
+    .filter((workflow) => workflow?.state?.chat_id === chatId && workflow.state.status === 'waiting_for_user')
+    .sort((left, right) => String(right.state.updated_at || '').localeCompare(String(left.state.updated_at || '')))[0] || null;
+}
+
+export function getReadyWorkflowTasks(workflowState) {
+  const completedTaskIds = new Set((workflowState.tasks || [])
+    .filter((task) => task.status === 'completed')
+    .map((task) => task.id));
+
+  return (workflowState.tasks || []).filter((task) => {
+    if (task.status !== 'queued') {
+      return false;
+    }
+    return (task.depends_on || []).every((dependencyId) => completedTaskIds.has(dependencyId));
+  });
+}
+
+export function markWorkflowTaskRunning(workflowState, taskId, sessionId = '') {
+  const task = findTask(workflowState, taskId);
+  if (!task) {
+    return null;
+  }
+  task.status = 'running';
+  task.session_id = sessionId || task.session_id || '';
+  task.updated_at = new Date().toISOString();
+  workflowState.status = 'running';
+  workflowState.updated_at = task.updated_at;
+  return task;
+}
+
+export function applyWorkflowTaskResult(workflowState, taskId, runResult) {
+  const task = findTask(workflowState, taskId);
+  if (!task) {
+    return null;
+  }
+
+  const summaryStatus = asTrimmedString(runResult?.summary?.status)
+    || asTrimmedString(runResult?.childStatus)
+    || (runResult?.code === 0 ? 'completed' : 'failed');
+  task.status = ['completed', 'failed', 'partial'].includes(summaryStatus)
+    ? summaryStatus
+    : (runResult?.code === 0 ? 'completed' : 'failed');
+  task.session_id = runResult?.sessionId || task.session_id || '';
+  task.summary_status = summaryStatus;
+  task.result = asTrimmedString(runResult?.summary?.result) || '';
+  task.next_steps = asStringList(runResult?.summary?.next_steps);
+  task.changed_files = asStringList(runResult?.summary?.changed_files);
+  task.updated_at = new Date().toISOString();
+  workflowState.updated_at = task.updated_at;
+
+  if (task.status === 'partial' || (task.status === 'failed' && task.next_steps.length > 0)) {
+    workflowState.status = 'waiting_for_user';
+    workflowState.pending_question_zh = task.next_steps[0] || task.result || '请确认下一步处理方式。';
+  }
+
+  return task;
+}
+
+export function finalizeWorkflowStatus(workflowState) {
+  const counts = summarizeWorkflowCounts(workflowState);
+
+  if (workflowState.status === 'waiting_for_user') {
+    return workflowState.status;
+  }
+
+  if (counts.running > 0) {
+    workflowState.status = 'running';
+    return workflowState.status;
+  }
+
+  const blockedTasks = (workflowState.tasks || []).filter((task) => task.status === 'queued');
+  if (blockedTasks.length) {
+    if (!workflowState.pending_question_zh) {
+      workflowState.pending_question_zh = '仍有任务等待依赖，请确认是否继续调整当前工作流。';
+    }
+    workflowState.status = 'waiting_for_user';
+    return workflowState.status;
+  }
+
+  if (counts.failed > 0 && counts.completed === 0) {
+    workflowState.status = 'failed';
+    return workflowState.status;
+  }
+
+  if (counts.failed > 0 || counts.partial > 0) {
+    workflowState.status = 'partial';
+    return workflowState.status;
+  }
+
+  workflowState.status = 'completed';
+  return workflowState.status;
+}
+
+export function summarizeWorkflowCounts(workflowState) {
+  const counts = {
+    total: 0,
+    queued: 0,
+    running: 0,
+    completed: 0,
+    partial: 0,
+    failed: 0
+  };
+
+  for (const task of workflowState.tasks || []) {
+    counts.total += 1;
+    if (Object.hasOwn(counts, task.status)) {
+      counts[task.status] += 1;
+    }
+  }
+
+  return counts;
+}
+
+function collectWorkflowHighlights(workflowState) {
+  return (workflowState.tasks || [])
+    .filter((task) => task.result)
+    .map((task) => `${task.id} ${task.title}: ${task.result}`);
+}
+
+function collectWorkflowChangedFiles(workflowState) {
+  const values = new Set();
+  for (const task of workflowState.tasks || []) {
+    for (const filePath of task.changed_files || []) {
+      values.add(filePath);
+    }
+  }
+  return [...values];
+}
+
+function collectWorkflowNextSteps(workflowState) {
+  const values = [];
+  if (workflowState.pending_question_zh) {
+    values.push(workflowState.pending_question_zh);
+  }
+  for (const task of workflowState.tasks || []) {
+    for (const item of task.next_steps || []) {
+      values.push(item);
+    }
+  }
+  return dedupeList(values);
+}
+
+function collectWorkflowRisks(workflowState) {
+  const values = [];
+  for (const task of workflowState.tasks || []) {
+    if (task.status === 'failed') {
+      values.push(`${task.id} failed: ${task.result || 'Task execution failed.'}`);
+    }
+    if (task.status === 'partial') {
+      values.push(`${task.id} needs confirmation: ${task.next_steps[0] || task.result || 'Pending decision.'}`);
+    }
+  }
+  return dedupeList(values);
+}
+
+function buildWorkflowResultLine(workflowState, counts) {
+  if (workflowState.status === 'waiting_for_user') {
+    return workflowState.pending_question_zh || 'Waiting for the CEO to confirm the next step.';
+  }
+
+  if (workflowState.status === 'completed') {
+    return `Completed ${counts.completed}/${counts.total} workflow task(s).`;
+  }
+
+  if (workflowState.status === 'failed') {
+    return counts.failed > 0
+      ? `Workflow failed after ${counts.failed} failed task(s).`
+      : 'Workflow failed before task execution completed.';
+  }
+
+  return `Workflow is running with ${counts.running} active task(s).`;
+}
+
+function mapWorkflowStatus(status) {
+  if (status === 'waiting_for_user' || status === 'partial') {
+    return 'partial';
+  }
+  if (status === 'completed' || status === 'failed' || status === 'running') {
+    return status;
+  }
+  return 'running';
+}
+
+function formatTelegramWorkflowStatus(status) {
+  switch (status) {
+    case 'planning':
+      return 'planning（规划中）';
+    case 'running':
+      return 'running（执行中）';
+    case 'waiting_for_user':
+      return 'waiting_for_user（等待 CEO 确认）';
+    case 'completed':
+      return 'completed（已完成）';
+    case 'failed':
+      return 'failed（失败）';
+    case 'partial':
+      return 'partial（部分完成）';
+    default:
+      return `${status || 'unknown'}（状态未知）`;
+  }
+}
+
+function summarizeTasksForPrompt(tasks) {
+  return (tasks || []).map((task) => {
+    const result = task.result ? ` — ${truncateInline(task.result, 140)}` : '';
+    return `- ${task.id} [${task.status}] ${task.title}${result}`;
+  }).join('\n');
+}
+
+function findTask(workflowState, taskId) {
+  return (workflowState.tasks || []).find((task) => task.id === taskId) || null;
+}
+
+function buildFallbackWorkerPrompt({ title = 'Local task', fallbackMessageText = '' }) {
+  return [
+    'You are an openCodex worker task delegated by the CTO orchestrator.',
+    'Reply to the maintainer in Simplified Chinese.',
+    'Keep project content in English. Keep docs bilingual under docs/en and docs/zh when docs change.',
+    'Make the smallest practical, reversible progress for this task and validate what you changed when reasonable.',
+    `Task title: ${title}`,
+    '',
+    'Primary instruction:',
+    fallbackMessageText || title
+  ].join('\n');
+}
+
+function sanitizeTaskId(value, index) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32);
+
+  return normalized || `task-${index}`;
+}
+
+function ensureUniqueTaskId(baseId, seenIds, index) {
+  if (!seenIds.has(baseId)) {
+    return baseId;
+  }
+
+  let suffix = 2;
+  while (seenIds.has(`${baseId}-${suffix}`)) {
+    suffix += 1;
+  }
+  return `${baseId}-${suffix}` || `task-${index}`;
+}
+
+function truncateInline(value, maxLength = 160) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text || text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function asTrimmedString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
+function asStringList(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+}
+
+function dedupeList(values) {
+  return [...new Set((values || []).map((item) => String(item || '').trim()).filter(Boolean))];
+}
