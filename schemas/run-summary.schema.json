@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "openCodexRunSummary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title",
+    "result",
+    "status",
+    "highlights",
+    "next_steps"
+  ],
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "result": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "failed",
+        "partial"
+      ]
+    },
+    "highlights": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "next_steps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

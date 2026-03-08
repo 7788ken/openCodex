@@ -1,0 +1,18 @@
+{
+  "name": "opencodex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A thin orchestration layer built on top of Codex CLI.",
+  "type": "module",
+  "bin": {
+    "opencodex": "./bin/opencodex.js"
+  },
+  "scripts": {
+    "start": "node ./bin/opencodex.js",
+    "doctor": "node ./bin/opencodex.js doctor",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
