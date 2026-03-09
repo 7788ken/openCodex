@@ -17,6 +17,8 @@
 - `opencodex service telegram set-profile`
 - `opencodex service telegram set-setting`
 - `opencodex service telegram send-status`
+- `opencodex service telegram workflow-history`
+- `opencodex service telegram workflow-detail`
 - `opencodex service telegram task-history`
 - `opencodex service telegram dispatch-detail`
 - `opencodex service telegram reset-cto-soul`
@@ -51,6 +53,16 @@
 - `--state-dir <dir>`
 - `--launch-agent-dir <dir>`
 - `--applications-dir <dir>`
+- `--json`
+
+### `telegram workflow-history`
+
+- `--limit <n>`
+- `--json`
+
+### `telegram workflow-detail`
+
+- `--index <n>`
 - `--json`
 
 ### `telegram task-history`
@@ -94,6 +106,7 @@
 - 直接在菜单栏中切换 `safe` / `balanced` / `full-access`
 - 启动、停止或重启 Telegram CTO 服务
 - 直接在菜单栏内浏览最近派发记录，并为单个任务弹出详情窗口
+- 从菜单栏进入完整的工作流列表，再对选中的工作流继续查看详情
 - 从菜单栏进入完整的 `Task History` 浏览列表，再对选中的任务继续查看详情
 - 直接在 UI 中修改任务栏设置，包括语言、角标模式、刷新间隔、工作流 ID 显示与路径快捷入口
 - 需要时可一键打开任务记录、原始事件日志、最后消息文件、仓库目录、服务日志、最近工作流，以及可编辑的 CTO 灵魂文档

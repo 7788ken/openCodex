@@ -80,6 +80,26 @@ const TELEGRAM_TASK_HISTORY_OPTION_SPEC = {
   json: { type: 'boolean' }
 };
 
+const TELEGRAM_WORKFLOW_HISTORY_OPTION_SPEC = {
+  label: { type: 'string' },
+  profile: { type: 'string' },
+  'launch-agent-dir': { type: 'string' },
+  'state-dir': { type: 'string' },
+  'applications-dir': { type: 'string' },
+  limit: { type: 'string' },
+  json: { type: 'boolean' }
+};
+
+const TELEGRAM_WORKFLOW_DETAIL_OPTION_SPEC = {
+  label: { type: 'string' },
+  profile: { type: 'string' },
+  'launch-agent-dir': { type: 'string' },
+  'state-dir': { type: 'string' },
+  'applications-dir': { type: 'string' },
+  index: { type: 'string' },
+  json: { type: 'boolean' }
+};
+
 export async function runServiceCommand(args) {
   const [provider, subcommand, ...rest] = args;
 
@@ -94,6 +114,8 @@ export async function runServiceCommand(args) {
       '  opencodex service telegram set-profile --profile <name> [--json]\n' +
       '  opencodex service telegram set-setting --key <name> --value <value> [--json]\n' +
       '  opencodex service telegram send-status [--json]\n' +
+      '  opencodex service telegram workflow-history [--limit <n>] [--json]\n' +
+      '  opencodex service telegram workflow-detail --index <n> [--json]\n' +
       '  opencodex service telegram task-history [--limit <n>] [--json]\n' +
       '  opencodex service telegram dispatch-detail --index <n> [--json]\n' +
       '  opencodex service telegram reset-cto-soul [--json]\n' +
@@ -143,6 +165,16 @@ export async function runServiceCommand(args) {
 
   if (subcommand === 'send-status') {
     await runTelegramServiceSendStatus(rest);
+    return;
+  }
+
+  if (subcommand === 'workflow-history') {
+    await runTelegramServiceWorkflowHistory(rest);
+    return;
+  }
+
+  if (subcommand === 'workflow-detail') {
+    await runTelegramServiceWorkflowDetail(rest);
     return;
   }
 
@@ -387,6 +419,39 @@ async function runTelegramServiceSendStatus(args) {
     sent: true,
     status_reply: buildTelegramServiceStatusReply(payload)
   }, options.json, 'Telegram CTO status reply sent');
+}
+
+async function runTelegramServiceWorkflowHistory(args) {
+  const { options, positionals } = parseOptions(args, TELEGRAM_WORKFLOW_HISTORY_OPTION_SPEC);
+  if (positionals.length) {
+    throw new Error('`opencodex service telegram workflow-history` does not accept positional arguments');
+  }
+
+  const limit = typeof options.limit === 'string' && options.limit.trim()
+    ? parsePositiveInteger(options.limit, '--limit')
+    : 30;
+  const service = await loadInstalledService(options);
+  const history = await collectWorkflowHistory(service.cwd);
+  const items = history.slice(0, limit);
+  renderWorkflowHistoryOutput({ ok: true, total_count: history.length, items }, options.json, 'Telegram CTO workflow history');
+}
+
+async function runTelegramServiceWorkflowDetail(args) {
+  const { options, positionals } = parseOptions(args, TELEGRAM_WORKFLOW_DETAIL_OPTION_SPEC);
+  if (positionals.length) {
+    throw new Error('`opencodex service telegram workflow-detail` does not accept positional arguments');
+  }
+
+  const index = parsePositiveInteger(options.index, '--index');
+  const service = await loadInstalledService(options);
+  const items = await collectWorkflowHistory(service.cwd);
+  const workflow = Array.isArray(items) ? items[index - 1] : null;
+  if (!workflow) {
+    throw new Error(`Workflow index out of range: ${index}`);
+  }
+
+  const detailPayload = await buildWorkflowDetailPayload(service.cwd, workflow, index);
+  renderWorkflowDetailOutput(detailPayload, options.json, `Telegram CTO workflow detail #${index}`);
 }
 
 async function runTelegramServiceTaskHistory(args) {
@@ -790,6 +855,19 @@ async function collectDispatchHistory(cwd, options = {}) {
   return typeof options.limit === 'number' ? history.slice(0, options.limit) : history;
 }
 
+async function collectWorkflowHistory(cwd, options = {}) {
+  let sessions = [];
+  try {
+    sessions = await listSessions(cwd);
+  } catch {
+    sessions = [];
+  }
+
+  const workflowInfos = await loadWorkflowInfos(cwd, sessions.filter((session) => session.command === 'cto'), options.workflow_limit || 100);
+  const history = buildWorkflowHistoryRecords(workflowInfos);
+  return typeof options.limit === 'number' ? history.slice(0, options.limit) : history;
+}
+
 async function collectWorkflowStats(service) {
   let sessions = [];
   try {
@@ -806,6 +884,7 @@ async function collectWorkflowStats(service) {
   const latestListener = sessions.find((session) => session.command === 'im' && session.input?.arguments?.provider === 'telegram') || null;
   const latestWorkflowInfo = latestWorkflow ? await resolveLatestWorkflowInfo(service.cwd, latestWorkflow) : null;
   const workflowInfos = await loadWorkflowInfos(service.cwd, ctoSessions, 24);
+  const workflowHistory = buildWorkflowHistoryRecords(workflowInfos);
   const trackedWorkflowStates = workflowInfos
     .filter((item) => item.session.status === 'running' || item.session.status === 'partial')
     .map((item) => item.workflowState);
@@ -830,6 +909,7 @@ async function collectWorkflowStats(service) {
     running_task_count: taskTotals.running,
     queued_task_count: taskTotals.queued,
     tracked_task_count: taskTotals.total,
+    workflow_history_count: workflowHistory.length,
     dispatch_history_count: dispatchHistory.length,
     recent_dispatch_count: recentDispatches.length,
     recent_dispatches: recentDispatches,
@@ -943,7 +1023,10 @@ function summarizeWorkflowTaskCounts(workflowState) {
   const counts = {
     total: 0,
     queued: 0,
-    running: 0
+    running: 0,
+    completed: 0,
+    partial: 0,
+    failed: 0
   };
 
   if (!Array.isArray(workflowState?.tasks)) {
@@ -958,9 +1041,74 @@ function summarizeWorkflowTaskCounts(workflowState) {
     if (task?.status === 'running') {
       counts.running += 1;
     }
+    if (task?.status === 'completed') {
+      counts.completed += 1;
+    }
+    if (task?.status === 'partial') {
+      counts.partial += 1;
+    }
+    if (task?.status === 'failed') {
+      counts.failed += 1;
+    }
   }
 
   return counts;
+}
+
+function buildWorkflowHistoryRecords(workflowInfos) {
+  return (workflowInfos || [])
+    .map((workflowInfo) => buildWorkflowHistoryRecord(workflowInfo))
+    .filter(Boolean)
+    .sort((left, right) => String(right.updated_at || '').localeCompare(String(left.updated_at || '')));
+}
+
+function buildWorkflowHistoryRecord(workflowInfo) {
+  const session = workflowInfo?.session;
+  const workflowState = workflowInfo?.workflowState;
+  if (!session?.session_id) {
+    return null;
+  }
+
+  const counts = summarizeWorkflowTaskCounts(workflowState);
+  const status = normalizeWorkflowHistoryStatus(workflowState?.status || session.status);
+  const goal = typeof workflowState?.goal_text === 'string' && workflowState.goal_text
+    ? workflowState.goal_text
+    : (typeof session?.input?.prompt === 'string' ? session.input.prompt : '');
+  const pendingQuestion = typeof workflowState?.pending_question_zh === 'string' ? workflowState.pending_question_zh : '';
+  const updatedAt = typeof workflowState?.updated_at === 'string' && workflowState.updated_at
+    ? workflowState.updated_at
+    : (typeof session.updated_at === 'string' ? session.updated_at : '');
+  const childThreadCount = normalizeChildSessionRefs(session.child_sessions).length;
+  const pathValue = workflowInfo?.workflowStatePath || workflowInfo?.sessionPath || '';
+
+  return {
+    workflow_session_id: session.session_id,
+    status,
+    goal,
+    pending_question: pendingQuestion,
+    updated_at: updatedAt,
+    path: pathValue,
+    session_path: workflowInfo?.sessionPath || '',
+    workflow_state_path: workflowInfo?.workflowStatePath || '',
+    child_thread_count: childThreadCount,
+    task_total_count: counts.total,
+    running_task_count: counts.running,
+    queued_task_count: counts.queued,
+    completed_task_count: counts.completed,
+    partial_task_count: counts.partial,
+    failed_task_count: counts.failed,
+    label: `[${status}] ${truncateInline(session.session_id, 32)} — ${truncateInline(goal || session.summary?.title || 'Untitled workflow', 72)}`
+  };
+}
+
+function normalizeWorkflowHistoryStatus(status) {
+  if (status === 'waiting_for_user' || status === 'partial') {
+    return 'waiting';
+  }
+  if (typeof status !== 'string' || !status) {
+    return 'unknown';
+  }
+  return status;
 }
 
 function collectRecentDispatchRecords(cwd, workflowInfos) {
@@ -1094,6 +1242,7 @@ function renderServiceOutput(payload, json, title) {
   lines.push(`Waiting Workflows: ${payload.waiting_workflow_count ?? 0}`);
   lines.push(`Running Tasks: ${payload.running_task_count ?? 0}`);
   lines.push(`Queued Tasks: ${payload.queued_task_count ?? 0}`);
+  lines.push(`Workflow History: ${payload.workflow_history_count ?? 0}`);
   lines.push(`Task History: ${payload.dispatch_history_count ?? 0}`);
   lines.push(`Active Main Threads: ${payload.active_main_thread_count ?? payload.running_workflow_count ?? 0}`);
   lines.push(`Tracked Main Threads: ${payload.main_thread_count ?? 0}`);
@@ -1137,6 +1286,167 @@ function renderServiceOutput(payload, json, title) {
   if (payload.action === 'send-status' && payload.sent) {
     lines.push('Status Reply: sent');
   }
+  process.stdout.write(lines.join('\n') + '\n');
+}
+
+function renderWorkflowHistoryOutput(payload, json, title) {
+  if (json) {
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+
+  const lines = [title, ''];
+  lines.push(`Total: ${payload.total_count ?? 0}`);
+  if (Array.isArray(payload.items)) {
+    payload.items.forEach((item, index) => {
+      lines.push(`Workflow ${index + 1}: ${item.label}`);
+      if (item.updated_at) {
+        lines.push(`Workflow ${index + 1} Updated: ${item.updated_at}`);
+      }
+      lines.push(`Workflow ${index + 1} Tasks: total ${item.task_total_count ?? 0} • running ${item.running_task_count ?? 0} • queued ${item.queued_task_count ?? 0} • completed ${item.completed_task_count ?? 0} • partial ${item.partial_task_count ?? 0} • failed ${item.failed_task_count ?? 0}`);
+      if (item.workflow_session_id) {
+        lines.push(`Workflow ${index + 1} Session: ${item.workflow_session_id}`);
+      }
+    });
+  }
+
+  process.stdout.write(lines.join('\n') + '\n');
+}
+
+async function buildWorkflowDetailPayload(cwd, workflow, index) {
+  const workflowSessionId = typeof workflow?.workflow_session_id === 'string' ? workflow.workflow_session_id : '';
+  const workflowSessionPath = workflowSessionId ? path.join(getSessionDir(cwd, workflowSessionId), 'session.json') : '';
+  const workflowSession = await loadJsonIfExists(workflowSessionPath);
+  const workflowInfo = workflowSession
+    ? await resolveWorkflowStateInfo(cwd, workflowSession)
+    : { sessionPath: workflowSessionPath, workflowStatePath: '', workflowState: null };
+  const workflowState = workflowInfo.workflowState && typeof workflowInfo.workflowState === 'object'
+    ? workflowInfo.workflowState
+    : null;
+  const summary = workflowSession?.summary && typeof workflowSession.summary === 'object'
+    ? workflowSession.summary
+    : {};
+  const workflowDir = workflowSessionPath ? path.dirname(workflowSessionPath) : (workflowSessionId ? getSessionDir(cwd, workflowSessionId) : '');
+  const eventsArtifactPath = Array.isArray(workflowSession?.artifacts)
+    ? workflowSession.artifacts.find((item) => item?.type === 'jsonl_events' && typeof item.path === 'string' && item.path)?.path || ''
+    : '';
+  const lastMessageArtifactPath = Array.isArray(workflowSession?.artifacts)
+    ? workflowSession.artifacts.find((item) => item?.type === 'last_message' && typeof item.path === 'string' && item.path)?.path || ''
+    : '';
+  const eventsPath = await resolveFirstExistingPath([
+    eventsArtifactPath,
+    workflowDir ? path.join(workflowDir, 'events.jsonl') : ''
+  ]);
+  const lastMessagePath = await resolveFirstExistingPath([
+    lastMessageArtifactPath,
+    workflowDir ? path.join(workflowDir, 'last-message.txt') : ''
+  ]);
+  const lastMessage = (await readTextIfExists(lastMessagePath)) || '';
+  const recentActivity = summarizeRecentEvents((await readTextIfExists(eventsPath)) || '');
+  const taskCounts = summarizeWorkflowTaskCounts(workflowState);
+  const tasks = Array.isArray(workflowState?.tasks)
+    ? workflowState.tasks.map((task) => {
+        const sessionId = typeof task?.session_id === 'string' ? task.session_id : '';
+        const childSessionPath = sessionId ? path.join(getSessionDir(cwd, sessionId), 'session.json') : '';
+        const taskId = typeof task?.id === 'string' ? task.id : '';
+        const title = typeof task?.title === 'string' && task.title ? task.title : (taskId || 'Untitled task');
+        const status = normalizeDispatchStatus(task?.status);
+        return {
+          task_id: taskId,
+          title,
+          status,
+          session_id: sessionId,
+          path: childSessionPath,
+          updated_at: typeof task?.updated_at === 'string' && task.updated_at ? task.updated_at : '',
+          label: `[${status}] ${truncateInline(taskId || title || 'task', 32)} — ${truncateInline(title || taskId || 'Untitled task', 72)}`
+        };
+      })
+    : [];
+
+  return {
+    ok: true,
+    index,
+    workflow_session_id: workflowSessionId,
+    status: normalizeWorkflowHistoryStatus(workflowState?.status || workflowSession?.status || workflow?.status || ''),
+    goal: workflowState?.goal_text || workflowSession?.input?.prompt || workflow?.goal || '',
+    pending_question: workflowState?.pending_question_zh || workflow?.pending_question || '',
+    updated_at: workflow?.updated_at || workflowState?.updated_at || workflowSession?.updated_at || '',
+    child_thread_count: typeof workflow?.child_thread_count === 'number' ? workflow.child_thread_count : normalizeChildSessionRefs(workflowSession?.child_sessions).length,
+    task_counts: taskCounts,
+    result: typeof summary.result === 'string' ? summary.result : '',
+    highlights: Array.isArray(summary.highlights) ? summary.highlights : [],
+    validation: Array.isArray(summary.validation) ? summary.validation : [],
+    changed_files: Array.isArray(summary.changed_files) ? summary.changed_files : [],
+    next_steps: Array.isArray(summary.next_steps) ? summary.next_steps : [],
+    findings: Array.isArray(summary.findings) ? summary.findings : [],
+    tasks,
+    recent_activity: recentActivity,
+    last_message: truncateMultiline(lastMessage, 360, 5),
+    record_path: workflow?.path || workflowInfo.workflowStatePath || workflowInfo.sessionPath || '',
+    session_path: workflowInfo.sessionPath || workflowSessionPath,
+    workflow_state_path: workflowInfo.workflowStatePath || '',
+    events_path: eventsPath,
+    last_message_path: lastMessagePath
+  };
+}
+
+function renderWorkflowDetailOutput(payload, json, title) {
+  if (json) {
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+
+  const lines = [title, ''];
+  lines.push(`Index: ${payload.index}`);
+  if (payload.workflow_session_id) {
+    lines.push(`Workflow: ${payload.workflow_session_id}`);
+  }
+  lines.push(`Status: ${payload.status || 'unknown'}`);
+  if (payload.goal) {
+    lines.push(`Goal: ${truncateInline(payload.goal, 160)}`);
+  }
+  if (payload.pending_question) {
+    lines.push(`Pending Question: ${truncateInline(payload.pending_question, 160)}`);
+  }
+  if (payload.updated_at) {
+    lines.push(`Updated: ${payload.updated_at}`);
+  }
+  lines.push(`Child Threads: ${payload.child_thread_count ?? 0}`);
+  const counts = payload.task_counts || {};
+  lines.push(`Tasks: total ${counts.total ?? 0} • running ${counts.running ?? 0} • queued ${counts.queued ?? 0} • completed ${counts.completed ?? 0} • partial ${counts.partial ?? 0} • failed ${counts.failed ?? 0}`);
+  if (payload.result) {
+    lines.push(`Result: ${truncateInline(payload.result, 220)}`);
+  }
+  appendDispatchDetailSection(lines, 'Highlights', payload.highlights, 3, 120);
+  appendDispatchDetailSection(lines, 'Validation', payload.validation, 3, 120);
+  appendDispatchDetailSection(lines, 'Changed Files', payload.changed_files, 5, 140);
+  appendDispatchDetailSection(lines, 'Next Steps', payload.next_steps, 4, 120);
+  appendDispatchDetailSection(lines, 'Recent Tasks', Array.isArray(payload.tasks) ? payload.tasks.map((item) => item.label) : [], 8, 140);
+  appendDispatchDetailSection(lines, 'Recent Activity', payload.recent_activity, 4, 140);
+  if (payload.last_message) {
+    lines.push('Last Message:');
+    for (const line of payload.last_message.split('\n')) {
+      if (line.trim()) {
+        lines.push(`- ${line}`);
+      }
+    }
+  }
+  if (payload.record_path) {
+    lines.push(`Record Path: ${payload.record_path}`);
+  }
+  if (payload.session_path) {
+    lines.push(`Session Path: ${payload.session_path}`);
+  }
+  if (payload.workflow_state_path) {
+    lines.push(`Workflow State Path: ${payload.workflow_state_path}`);
+  }
+  if (payload.events_path) {
+    lines.push(`Events Path: ${payload.events_path}`);
+  }
+  if (payload.last_message_path) {
+    lines.push(`Last Message Path: ${payload.last_message_path}`);
+  }
+
   process.stdout.write(lines.join('\n') + '\n');
 }
 
@@ -1576,7 +1886,7 @@ on rebuildMenu(statusText)
 	my addInfoItem(my localizedText(statusText, "Service", "服务") & ": " & my lineValue(statusText, "State: ", "unknown") & " • " & my detectMode(statusText))
 	my addInfoItem(my localizedText(statusText, "Workflows", "工作流") & ": running " & my lineValue(statusText, "Running Workflows: ", "0") & " • waiting " & my lineValue(statusText, "Waiting Workflows: ", "0"))
 	my addInfoItem(my localizedText(statusText, "Tasks", "任务") & ": running " & my lineValue(statusText, "Running Tasks: ", "0") & " • queued " & my lineValue(statusText, "Queued Tasks: ", "0"))
-	my addInfoItem(my localizedText(statusText, "History", "历史") & ": total " & my lineValue(statusText, "Task History: ", "0"))
+	my addInfoItem(my localizedText(statusText, "History", "历史") & ": " & my localizedText(statusText, "workflow", "工作流") & " " & my lineValue(statusText, "Workflow History: ", "0") & " • " & my localizedText(statusText, "task", "任务") & " " & my lineValue(statusText, "Task History: ", "0"))
 	my addInfoItem(my localizedText(statusText, "Threads", "线程") & ": " & my localizedText(statusText, "main active", "主活跃") & " " & my lineValue(statusText, "Active Main Threads: ", "0") & " • " & my localizedText(statusText, "child active", "子活跃") & " " & my lineValue(statusText, "Active Child Threads: ", "0") & " • " & my localizedText(statusText, "child total", "子累计") & " " & my lineValue(statusText, "Child Sessions: ", "0"))
 	set latestWorkflowId to my lineValue(statusText, "Latest Workflow: ", "")
 	set showWorkflowIds to my settingEnabled(statusText, "Show Workflow IDs: ", true)
@@ -1601,7 +1911,8 @@ on rebuildMenu(statusText)
 			end if
 		end repeat
 	end if
-	my addMenuItem(my localizedText(statusText, "Browse Task History…", "浏览任务历史…") & " (" & my lineValue(statusText, "Task History: ", "0") & ")", "browseTaskHistory:")
+	my addMenuItem(my localizedText(statusText, "Browse Workflows…", "浏览工作流…") & " (" & my lineValue(statusText, "Workflow History: ", "0") & ")", "browseWorkflowHistory:")
+	my addMenuItem(my localizedText(statusText, "Browse Tasks…", "浏览任务列表…") & " (" & my lineValue(statusText, "Task History: ", "0") & ")", "browseTaskHistory:")
 	my addMenuItem(my localizedText(statusText, "Settings…", "设置…"), "openSettings:")
 	my addSeparator()
 	my addMenuItem(my localizedText(statusText, "Show Status", "查看状态"), "showStatus:")
@@ -1902,6 +2213,16 @@ on runDispatchDetailCommand(dispatchIndex)
 	return do shell script commandText
 end runDispatchDetailCommand
 
+on runWorkflowHistoryCommand()
+	set commandText to quoted form of nodePath & space & quoted form of cliPath & " service telegram workflow-history --state-dir " & quoted form of stateDir
+	return do shell script commandText
+end runWorkflowHistoryCommand
+
+on runWorkflowDetailCommand(workflowIndex)
+	set commandText to quoted form of nodePath & space & quoted form of cliPath & " service telegram workflow-detail --index " & (workflowIndex as string) & " --state-dir " & quoted form of stateDir
+	return do shell script commandText
+end runWorkflowDetailCommand
+
 on runTaskHistoryCommand()
 	set commandText to quoted form of nodePath & space & quoted form of cliPath & " service telegram task-history --state-dir " & quoted form of stateDir
 	return do shell script commandText
@@ -1964,6 +2285,34 @@ on openDispatch5_(sender)
 	my openDispatchRecord(5)
 end openDispatch5_
 
+on browseWorkflowHistory_(sender)
+	try
+		set workflowText to my runWorkflowHistoryCommand()
+	on error errorMessage
+		display dialog errorMessage buttons {"OK"} default button "OK" with title appTitle
+		return
+	end try
+
+	set workflowItems to my collectPrefixedLines(workflowText, "Workflow ")
+	set workflowItems to my filterIndexedLines(workflowItems)
+	if (count of workflowItems) is 0 then
+		display notification (my localizedText(my runStatusCommand(false), "No workflow history found yet.", "还没有工作流历史。")) with title appTitle
+		return
+	end if
+
+	set statusText to my runStatusCommand(false)
+	set picked to choose from list workflowItems with title appTitle with prompt (my localizedText(statusText, "Select a workflow to inspect", "选择要查看的工作流")) OK button name (my localizedText(statusText, "Open Detail", "打开详情")) cancel button name (my localizedText(statusText, "Cancel", "取消"))
+	if picked is false then return
+
+	set selectedIndex to my indexedLineNumber(item 1 of picked)
+	if selectedIndex is 0 then
+		display notification (my localizedText(my runStatusCommand(false), "Unable to parse the selected workflow history item.", "无法解析所选工作流历史项。")) with title appTitle
+		return
+	end if
+
+	my openWorkflowRecord(selectedIndex)
+end browseWorkflowHistory_
+
 on browseTaskHistory_(sender)
 	try
 		set historyText to my runTaskHistoryCommand()
@@ -1973,6 +2322,7 @@ on browseTaskHistory_(sender)
 	end try
 
 	set historyItems to my collectPrefixedLines(historyText, "History ")
+	set historyItems to my filterIndexedLines(historyItems)
 	if (count of historyItems) is 0 then
 		display notification (my localizedText(my runStatusCommand(false), "No task history found yet.", "还没有任务历史。")) with title appTitle
 		return
@@ -1990,6 +2340,41 @@ on browseTaskHistory_(sender)
 
 	my openDispatchRecord(selectedIndex)
 end browseTaskHistory_
+
+on openWorkflowRecord(workflowIndex)
+	try
+		set detailText to my runWorkflowDetailCommand(workflowIndex)
+	on error errorMessage
+		display dialog errorMessage buttons {"OK"} default button "OK" with title appTitle
+		return
+	end try
+
+	set summaryText to my workflowSummaryText(detailText)
+	set statusText to my runStatusCommand(false)
+	set pathsVisible to my settingEnabled(statusText, "Show Paths: ", true)
+	if pathsVisible then
+		set actionButtons to {my localizedText(statusText, "Sections", "分段"), my localizedText(statusText, "Paths", "路径"), my localizedText(statusText, "Close", "关闭")}
+	else
+		set actionButtons to {my localizedText(statusText, "Sections", "分段"), my localizedText(statusText, "Close", "关闭")}
+	end if
+	repeat
+		try
+			set dialogResult to display dialog summaryText buttons actionButtons default button (item 1 of actionButtons) with title appTitle
+		on error number -128
+			return
+		end try
+
+		set selectedButton to button returned of dialogResult
+		if selectedButton is my localizedText(statusText, "Close", "关闭") then
+			return
+		else if pathsVisible and selectedButton is my localizedText(statusText, "Paths", "路径") then
+			my browseWorkflowArtifacts(detailText)
+		else if selectedButton is my localizedText(statusText, "Sections", "分段") then
+			set panelAction to my browseWorkflowSections(detailText)
+			if panelAction is "close" then return
+		end if
+	end repeat
+end openWorkflowRecord
 
 on openDispatchRecord(dispatchIndex)
 	try
@@ -2109,6 +2494,145 @@ on browseDispatchArtifacts(detailText)
 	end if
 end browseDispatchArtifacts
 
+on browseWorkflowSections(detailText)
+	repeat
+		set sectionNames to my workflowSectionNames(detailText)
+		if (count of sectionNames) is 0 then
+			display notification (my localizedText(my runStatusCommand(false), "No extra sections available for this workflow.", "这个工作流没有更多分段内容。")) with title appTitle
+			return "back"
+		end if
+
+		set statusText to my runStatusCommand(false)
+		set picked to choose from list sectionNames with title appTitle with prompt (my localizedText(statusText, "Select a workflow detail section", "选择工作流详情分段")) OK button name (my localizedText(statusText, "View", "查看")) cancel button name (my localizedText(statusText, "Back", "返回"))
+		if picked is false then return "back"
+		set sectionName to item 1 of picked
+		set sectionText to my workflowSectionText(detailText, sectionName)
+
+		repeat
+			set pathsVisible to my settingEnabled(statusText, "Show Paths: ", true)
+			if pathsVisible then
+				set sectionButtons to {my localizedText(statusText, "Back", "返回"), my localizedText(statusText, "Paths", "路径"), my localizedText(statusText, "Close", "关闭")}
+			else
+				set sectionButtons to {my localizedText(statusText, "Back", "返回"), my localizedText(statusText, "Close", "关闭")}
+			end if
+			try
+				set dialogResult to display dialog sectionText buttons sectionButtons default button (item 1 of sectionButtons) with title (appTitle & " — " & sectionName)
+			on error number -128
+				return "back"
+			end try
+
+			set selectedButton to button returned of dialogResult
+			if selectedButton is my localizedText(statusText, "Back", "返回") then
+				exit repeat
+			else if pathsVisible and selectedButton is my localizedText(statusText, "Paths", "路径") then
+				my browseWorkflowArtifacts(detailText)
+			else if selectedButton is my localizedText(statusText, "Close", "关闭") then
+				return "close"
+			end if
+		end repeat
+	end repeat
+end browseWorkflowSections
+
+on browseWorkflowArtifacts(detailText)
+	set recordPath to my lineValue(detailText, "Record Path: ", "")
+	set sessionPath to my lineValue(detailText, "Session Path: ", "")
+	set workflowStatePath to my lineValue(detailText, "Workflow State Path: ", "")
+	set eventsPath to my lineValue(detailText, "Events Path: ", "")
+	set messagePath to my lineValue(detailText, "Last Message Path: ", "")
+
+	set artifactChoices to {}
+	if recordPath is not "" then set end of artifactChoices to "Record — " & my truncateText(recordPath, 72)
+	if sessionPath is not "" then set end of artifactChoices to "Session — " & my truncateText(sessionPath, 72)
+	if workflowStatePath is not "" then set end of artifactChoices to "Workflow State — " & my truncateText(workflowStatePath, 72)
+	if eventsPath is not "" then set end of artifactChoices to "Events — " & my truncateText(eventsPath, 72)
+	if messagePath is not "" then set end of artifactChoices to "Last Message — " & my truncateText(messagePath, 72)
+
+	if (count of artifactChoices) is 0 then
+		display notification (my localizedText(my runStatusCommand(false), "No artifact paths available for this workflow.", "这个工作流没有可打开的路径。")) with title appTitle
+		return
+	end if
+
+	set statusText to my runStatusCommand(false)
+	set picked to choose from list artifactChoices with title appTitle with prompt (my localizedText(statusText, "Reveal a workflow artifact in Finder", "在 Finder 中显示工作流产物")) OK button name (my localizedText(statusText, "Open", "打开")) cancel button name (my localizedText(statusText, "Back", "返回"))
+	if picked is false then return
+	set selectedArtifact to item 1 of picked
+
+	if selectedArtifact starts with "Record — " then
+		do shell script "open -R " & quoted form of recordPath
+	else if selectedArtifact starts with "Session — " then
+		do shell script "open -R " & quoted form of sessionPath
+	else if selectedArtifact starts with "Workflow State — " then
+		do shell script "open -R " & quoted form of workflowStatePath
+	else if selectedArtifact starts with "Events — " then
+		do shell script "open -R " & quoted form of eventsPath
+	else if selectedArtifact starts with "Last Message — " then
+		do shell script "open -R " & quoted form of messagePath
+	end if
+end browseWorkflowArtifacts
+
+on workflowSectionNames(detailText)
+	set names to {"Summary"}
+	if detailText contains "Highlights:" then set end of names to "Highlights"
+	if detailText contains "Validation:" then set end of names to "Validation"
+	if detailText contains "Changed Files:" then set end of names to "Changed Files"
+	if detailText contains "Next Steps:" then set end of names to "Next Steps"
+	if detailText contains "Recent Tasks:" then set end of names to "Recent Tasks"
+	if detailText contains "Recent Activity:" then set end of names to "Recent Activity"
+	if detailText contains "Last Message:" then set end of names to "Last Message"
+	return names
+end workflowSectionNames
+
+on workflowSummaryText(detailText)
+	set summaryLines to {}
+	repeat with oneLine in paragraphs of detailText
+		set currentLine to contents of oneLine
+		if my isWorkflowSectionHeader(currentLine) or my isWorkflowPathLine(currentLine) then exit repeat
+		set end of summaryLines to currentLine
+	end repeat
+	if (count of summaryLines) is 0 then return detailText
+	return my joinLines(summaryLines)
+end workflowSummaryText
+
+on workflowSectionText(detailText, sectionName)
+	if sectionName is "Summary" then return my workflowSummaryText(detailText)
+
+	set targetHeader to sectionName & ":"
+	set sectionLines to {}
+	set captureLines to false
+	repeat with oneLine in paragraphs of detailText
+		set currentLine to contents of oneLine
+		if currentLine is targetHeader then
+			set captureLines to true
+			set end of sectionLines to currentLine
+		else if captureLines then
+			if my isWorkflowSectionHeader(currentLine) or my isWorkflowPathLine(currentLine) then exit repeat
+			set end of sectionLines to currentLine
+		end if
+	end repeat
+	if (count of sectionLines) is 0 then return sectionName & ": unavailable"
+	return my joinLines(sectionLines)
+end workflowSectionText
+
+on isWorkflowSectionHeader(lineText)
+	if lineText is "Highlights:" then return true
+	if lineText is "Validation:" then return true
+	if lineText is "Changed Files:" then return true
+	if lineText is "Next Steps:" then return true
+	if lineText is "Recent Tasks:" then return true
+	if lineText is "Recent Activity:" then return true
+	if lineText is "Last Message:" then return true
+	return false
+end isWorkflowSectionHeader
+
+on isWorkflowPathLine(lineText)
+	if lineText starts with "Record Path: " then return true
+	if lineText starts with "Session Path: " then return true
+	if lineText starts with "Workflow State Path: " then return true
+	if lineText starts with "Events Path: " then return true
+	if lineText starts with "Last Message Path: " then return true
+	return false
+end isWorkflowPathLine
+
 on dispatchSectionNames(detailText)
 	set names to {"Summary"}
 	if detailText contains "Highlights:" then set end of names to "Highlights"
@@ -2185,14 +2709,36 @@ on collectPrefixedLines(inputText, prefixText)
 	return matchedLines
 end collectPrefixedLines
 
-on historyIndexFromLine(lineText)
+on filterIndexedLines(lineItems)
+	set filteredLines to {}
+	repeat with oneLine in lineItems
+		set currentLine to contents of oneLine
+		set currentIndex to my indexedLineNumber(currentLine)
+		if currentIndex is not 0 then
+			set suffixText to text ((offset of ":" in currentLine) + 1) thru -1 of currentLine
+			if suffixText does not start with " Updated" and suffixText does not start with " Tasks" and suffixText does not start with " Workflow" and suffixText does not start with " Session" then
+				set end of filteredLines to currentLine
+			end if
+		end if
+	end repeat
+	return filteredLines
+end filterIndexedLines
+
+on indexedLineNumber(lineText)
 	set colonOffset to offset of ":" in lineText
 	if colonOffset is 0 then return 0
+	set prefixText to text 1 thru (colonOffset - 1) of lineText
+	set spaceOffset to offset of " " in prefixText
+	if spaceOffset is 0 then return 0
 	try
-		return (text 9 thru (colonOffset - 1) of lineText) as integer
+		return (text (spaceOffset + 1) thru -1 of prefixText) as integer
 	on error
 		return 0
 	end try
+end indexedLineNumber
+
+on historyIndexFromLine(lineText)
+	return my indexedLineNumber(lineText)
 end historyIndexFromLine
 
 on lineValue(statusText, prefixText, fallbackText)

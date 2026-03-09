@@ -97,6 +97,7 @@ test('service telegram status includes workflow counts and latest workflow detai
   assert.equal(payload.running_task_count, 1);
   assert.equal(payload.queued_task_count, 2);
   assert.equal(payload.tracked_task_count, 5);
+  assert.equal(payload.workflow_history_count, 3);
   assert.equal(payload.dispatch_history_count, 6);
   assert.equal(payload.recent_dispatch_count, 5);
   assert.equal(payload.recent_dispatches.length, 5);
@@ -120,6 +121,104 @@ test('service telegram status includes workflow counts and latest workflow detai
   assert.equal(payload.latest_workflow_pending_question, '请确认是否继续发布');
   assert.match(payload.latest_workflow_path, /cto-workflow\.json$/);
   assert.equal(payload.latest_listener_session_id, 'im-20260309-100100-listener');
+});
+
+test('service telegram workflow-history returns the full workflow history for UI browsing', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-workflow-history-'));
+  const cwd = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+  const launchctlState = path.join(root, 'launchctl-state.json');
+  const launchctl = await writeMockLaunchctl(path.join(root, 'mock-launchctl.js'), launchctlState);
+
+  await mkdir(cwd, { recursive: true });
+  await seedWorkflowSessions(cwd);
+
+  await runCli([
+    'service', 'telegram', 'install',
+    '--cwd', cwd,
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  const history = await runCli([
+    'service', 'telegram', 'workflow-history',
+    '--state-dir', stateDir,
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(history.code, 0);
+  const payload = JSON.parse(history.stdout);
+  assert.equal(payload.total_count, 3);
+  assert.equal(payload.items.length, 3);
+  assert.equal(payload.items[0].workflow_session_id, 'cto-20260309-100500-waiting');
+  assert.equal(payload.items[0].status, 'waiting');
+  assert.equal(payload.items[0].task_total_count, 3);
+  assert.equal(payload.items[0].queued_task_count, 2);
+  assert.equal(payload.items[0].completed_task_count, 1);
+  assert.match(payload.items[0].label, /^\[waiting\]/);
+});
+
+test('service telegram workflow-detail returns workflow execution details for UI viewing', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-workflow-detail-'));
+  const cwd = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+  const launchctlState = path.join(root, 'launchctl-state.json');
+  const launchctl = await writeMockLaunchctl(path.join(root, 'mock-launchctl.js'), launchctlState);
+
+  await mkdir(cwd, { recursive: true });
+  await seedWorkflowSessions(cwd);
+
+  await runCli([
+    'service', 'telegram', 'install',
+    '--cwd', cwd,
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  const detail = await runCli([
+    'service', 'telegram', 'workflow-detail',
+    '--state-dir', stateDir,
+    '--index', '1',
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(detail.code, 0);
+  const payload = JSON.parse(detail.stdout);
+  assert.equal(payload.workflow_session_id, 'cto-20260309-100500-waiting');
+  assert.equal(payload.status, 'waiting');
+  assert.equal(payload.goal, 'Deploy change after confirmation');
+  assert.equal(payload.pending_question, '请确认是否继续发布');
+  assert.equal(payload.task_counts.total, 3);
+  assert.equal(payload.task_counts.queued, 2);
+  assert.equal(payload.task_counts.completed, 1);
+  assert.equal(payload.tasks.length, 3);
+  assert.match(payload.tasks[0].label, /^\[completed\]/);
+  assert.match(payload.workflow_state_path, /cto-workflow\.json$/);
+  assert.match(payload.session_path, /cto-20260309-100500-waiting\/session\.json$/);
 });
 
 test('service telegram dispatch-detail returns task execution details for UI viewing', async () => {
@@ -608,8 +707,13 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /Recent Dispatches/);
   assert.match(scriptSource, /openDispatch1_/);
   assert.match(scriptSource, /dispatch-detail --index/);
+  assert.match(scriptSource, /workflow-history --state-dir/);
+  assert.match(scriptSource, /workflow-detail --index/);
   assert.match(scriptSource, /task-history --state-dir/);
-  assert.match(scriptSource, /Browse Task History/);
+  assert.match(scriptSource, /Browse Workflows/);
+  assert.match(scriptSource, /Browse Tasks/);
+  assert.match(scriptSource, /browseWorkflowHistory_/);
+  assert.match(scriptSource, /openWorkflowRecord/);
   assert.match(scriptSource, /Settings…/);
   assert.match(scriptSource, /openSettings_/);
   assert.match(scriptSource, /choose from list historyItems/);
@@ -617,6 +721,7 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /Badge Mode:/);
   assert.match(scriptSource, /Refresh Interval:/);
   assert.match(scriptSource, /Show Workflow IDs:/);
+  assert.match(scriptSource, /Workflow History:/);
   assert.match(scriptSource, /Show Paths:/);
   assert.match(scriptSource, /localizedText/);
   assert.match(scriptSource, /runSettingCommand/);
@@ -624,9 +729,14 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /set actionButtons to \{/);
   assert.match(scriptSource, /browseDispatchSections/);
   assert.match(scriptSource, /browseDispatchArtifacts/);
+  assert.match(scriptSource, /browseWorkflowSections/);
+  assert.match(scriptSource, /browseWorkflowArtifacts/);
   assert.match(scriptSource, /dispatchSummaryText/);
   assert.match(scriptSource, /dispatchSectionNames/);
   assert.match(scriptSource, /dispatchSectionText/);
+  assert.match(scriptSource, /workflowSummaryText/);
+  assert.match(scriptSource, /workflowSectionNames/);
+  assert.match(scriptSource, /workflowSectionText/);
   assert.match(scriptSource, /choose from list sectionNames/);
   assert.match(scriptSource, /choose from list artifactChoices/);
   assert.match(scriptSource, /Record — /);

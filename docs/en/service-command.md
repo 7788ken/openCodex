@@ -17,6 +17,8 @@ The first version supports Telegram CTO service management only:
 - `opencodex service telegram set-profile`
 - `opencodex service telegram set-setting`
 - `opencodex service telegram send-status`
+- `opencodex service telegram workflow-history`
+- `opencodex service telegram workflow-detail`
 - `opencodex service telegram task-history`
 - `opencodex service telegram dispatch-detail`
 - `opencodex service telegram reset-cto-soul`
@@ -51,6 +53,16 @@ The first version supports Telegram CTO service management only:
 - `--state-dir <dir>`
 - `--launch-agent-dir <dir>`
 - `--applications-dir <dir>`
+- `--json`
+
+### `telegram workflow-history`
+
+- `--limit <n>`
+- `--json`
+
+### `telegram workflow-detail`
+
+- `--index <n>`
 - `--json`
 
 ### `telegram task-history`
@@ -94,6 +106,7 @@ The app can:
 - switch between `safe`, `balanced`, and `full-access` directly from the menu bar
 - start, stop, or restart the Telegram CTO service
 - browse recent dispatches directly inside the menu bar app and open a detail dialog for each task
+- browse the full workflow history from the menu bar, then inspect a selected workflow without leaving the tray workflow
 - browse the full task history from the menu bar, then inspect a selected task without leaving the tray workflow
 - change tray settings directly in the UI, including language, badge mode, refresh interval, workflow-id visibility, and path shortcuts
 - reveal the task record, raw events, latest task message, repository, service log, latest workflow session, and the editable CTO soul file when needed
