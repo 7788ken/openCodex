@@ -877,17 +877,17 @@ async function collectWorkflowStats(service) {
   }
 
   const ctoSessions = sessions.filter((session) => session.command === 'cto');
-  const runningSessions = ctoSessions.filter((session) => session.status === 'running');
-  const waitingSessions = ctoSessions.filter((session) => session.status === 'partial');
-  const trackedSessions = [...runningSessions, ...waitingSessions];
   const latestWorkflow = ctoSessions[0] || null;
   const latestListener = sessions.find((session) => session.command === 'im' && session.input?.arguments?.provider === 'telegram') || null;
   const latestWorkflowInfo = latestWorkflow ? await resolveLatestWorkflowInfo(service.cwd, latestWorkflow) : null;
   const workflowInfos = await loadWorkflowInfos(service.cwd, ctoSessions, 24);
   const workflowHistory = buildWorkflowHistoryRecords(workflowInfos);
-  const trackedWorkflowStates = workflowInfos
-    .filter((item) => item.session.status === 'running' || item.session.status === 'partial')
-    .map((item) => item.workflowState);
+  const runningWorkflowInfos = workflowInfos.filter((item) => normalizeWorkflowHistoryStatus(item.workflowState?.status || item.session?.status || '') === 'running');
+  const waitingWorkflowInfos = workflowInfos.filter((item) => normalizeWorkflowHistoryStatus(item.workflowState?.status || item.session?.status || '') === 'waiting');
+  const trackedSessions = [...runningWorkflowInfos, ...waitingWorkflowInfos].map((item) => item.session).filter(Boolean);
+  const trackedWorkflowStates = [...runningWorkflowInfos, ...waitingWorkflowInfos]
+    .map((item) => item.workflowState)
+    .filter(Boolean);
   const taskTotals = trackedWorkflowStates.reduce((sum, workflowState) => {
     const counts = summarizeWorkflowTaskCounts(workflowState);
     sum.running += counts.running;
@@ -904,8 +904,8 @@ async function collectWorkflowStats(service) {
   const recentDispatches = dispatchHistory.slice(0, 5);
 
   return {
-    running_workflow_count: runningSessions.length,
-    waiting_workflow_count: waitingSessions.length,
+    running_workflow_count: runningWorkflowInfos.length,
+    waiting_workflow_count: waitingWorkflowInfos.length,
     running_task_count: taskTotals.running,
     queued_task_count: taskTotals.queued,
     tracked_task_count: taskTotals.total,
@@ -913,7 +913,7 @@ async function collectWorkflowStats(service) {
     dispatch_history_count: dispatchHistory.length,
     recent_dispatch_count: recentDispatches.length,
     recent_dispatches: recentDispatches,
-    active_main_thread_count: runningSessions.length,
+    active_main_thread_count: runningWorkflowInfos.length,
     main_thread_count: trackedSessions.length,
     active_child_thread_count: childSessionStats.active,
     child_session_count: childSessionStats.total,
@@ -939,7 +939,7 @@ async function resolveLatestWorkflowInfo(cwd, session) {
 
   return {
     session_id: session.session_id,
-    status: workflowState?.status === 'waiting_for_user' || session.status === 'partial' ? 'waiting' : session.status,
+    status: normalizeWorkflowHistoryStatus(workflowState?.status || session.status || ''),
     goal: workflowState?.goal_text || session.input?.prompt || '',
     result: session.summary?.result || '',
     updated_at: workflowState?.updated_at || session.updated_at || '',
@@ -1102,7 +1102,7 @@ function buildWorkflowHistoryRecord(workflowInfo) {
 }
 
 function normalizeWorkflowHistoryStatus(status) {
-  if (status === 'waiting_for_user' || status === 'partial') {
+  if (status === 'waiting_for_user') {
     return 'waiting';
   }
   if (typeof status !== 'string' || !status) {
