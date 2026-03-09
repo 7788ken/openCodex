@@ -4,24 +4,28 @@ import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import * as fs from 'node:fs/promises';
-import { listCodexProfiles, resolveCodexProfile } from '../src/lib/profile.js';
+import { detectHostSandboxMode, isLikelySandboxRestriction, isSandboxModeStricter, listCodexProfiles, resolveCodexProfile } from '../src/lib/profile.js';
 import { buildRunArgs } from '../src/commands/run.js';
 
 test('resolveCodexProfile returns safe read-only args', () => {
   const profile = resolveCodexProfile('safe', 'run');
   assert.equal(profile.name, 'safe');
+  assert.equal(profile.approvalMode, 'never');
+  assert.equal(profile.sandboxMode, 'read-only');
   assert.deepEqual(profile.args, ['-a', 'never', '-s', 'read-only', '-c', 'model_reasoning_effort="medium"']);
 });
 
 test('resolveCodexProfile returns balanced run args', () => {
   const profile = resolveCodexProfile('balanced', 'run');
   assert.equal(profile.name, 'balanced');
+  assert.equal(profile.sandboxMode, 'workspace-write');
   assert.deepEqual(profile.args, ['-a', 'never', '-s', 'workspace-write', '-c', 'model_reasoning_effort="medium"']);
 });
 
 test('resolveCodexProfile returns full-access args', () => {
   const profile = resolveCodexProfile('full-access', 'run');
   assert.equal(profile.name, 'full-access');
+  assert.equal(profile.sandboxMode, 'danger-full-access');
   assert.deepEqual(profile.args, ['-a', 'never', '-s', 'danger-full-access', '-c', 'model_reasoning_effort="medium"']);
 });
 
@@ -84,3 +88,10 @@ async function createConfigDir(config) {
   await writeFile(path.join(cwd, 'opencodex.config.json'), JSON.stringify(config, null, 2));
   return cwd;
 }
+
+test('sandbox helpers detect stricter host sandbox from env and text', () => {
+  assert.equal(detectHostSandboxMode({ env: { OPENCODEX_HOST_SANDBOX_MODE: 'read-only' } }), 'read-only');
+  assert.equal(detectHostSandboxMode({ stderr: 'sandbox: workspace-write' }), 'workspace-write');
+  assert.equal(isSandboxModeStricter('read-only', 'danger-full-access'), true);
+  assert.equal(isLikelySandboxRestriction({ requestedSandboxMode: 'danger-full-access', hostSandboxMode: 'read-only' }), true);
+});

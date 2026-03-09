@@ -11,6 +11,7 @@ import {
   buildTelegramCtoSessionSummary,
   buildTelegramCtoWorkerExecutionPrompt,
   cancelTelegramWorkflowState,
+  finalizeWorkflowStatus,
   loadCtoSoulDocument,
   buildDefaultCtoSoulDocument,
   collectHistoricalStuckCtoWorkflowCandidates,
@@ -308,6 +309,20 @@ test('cto cancel helper marks active tasks cancelled and renders a cancelled fin
   assert.equal(workflowState.tasks[2].status, 'completed');
   assert.match(finalText, /工作流已取消/);
   assert.match(finalText, /cancelled 2/);
+});
+
+test('cto workflow finalization does not turn failed dependency chains into waiting', () => {
+  const workflowState = {
+    status: 'running',
+    pending_question_zh: '',
+    tasks: [
+      { id: 'write-patch', status: 'failed' },
+      { id: 'verify-patch', status: 'queued' }
+    ]
+  };
+
+  assert.equal(finalizeWorkflowStatus(workflowState), 'failed');
+  assert.equal(workflowState.pending_question_zh, '');
 });
 
 test('cto session summary describes partial workflows without calling them running', () => {

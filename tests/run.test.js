@@ -27,6 +27,27 @@ test('run stores a normalized session from mock codex output', async () => {
   assert.equal(session.summary.title, 'Mock run completed');
 });
 
+test('run fails fast with a precise host sandbox diagnostic when the host is stricter than the requested profile', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-run-host-sandbox-'));
+  const result = await runCli(['run', '--cwd', cwd, '--profile', 'full-access', 'apply', 'the', 'patch'], {
+    OPENCODEX_CODEX_BIN: fixture,
+    OPENCODEX_HOST_SANDBOX_MODE: 'read-only'
+  });
+
+  assert.equal(result.code, 1);
+  assert.match(result.stdout, /Run blocked by host sandbox/);
+  assert.match(result.stdout, /read-only/);
+
+  const sessionsRoot = path.join(cwd, '.opencodex', 'sessions');
+  const sessionIds = await readdir(sessionsRoot);
+  assert.equal(sessionIds.length, 1);
+
+  const session = JSON.parse(await readFile(path.join(sessionsRoot, sessionIds[0], 'session.json'), 'utf8'));
+  assert.equal(session.summary.status, 'failed');
+  assert.match(session.summary.result, /不能从子任务内部突破更严格的外层沙箱/);
+  assert.equal(session.input.arguments.requested_sandbox_mode, 'danger-full-access');
+  assert.equal(session.input.arguments.host_sandbox_mode, 'read-only');
+});
 test('run preserves structured event errors when codex fails before writing last-message', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-run-error-'));
   const failingFixture = await writeEventFailingFixture(path.join(cwd, 'mock-codex-event-fail.js'));

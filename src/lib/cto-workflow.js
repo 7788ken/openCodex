@@ -963,14 +963,16 @@ export function buildTelegramCtoSessionSummary(workflowState) {
     nextSteps.push('Wait for the running workflow tasks to finish.');
   }
   if (!nextSteps.length && status === 'partial') {
-    nextSteps.push('Wait for the CEO reply on the Telegram control channel.');
+    nextSteps.push(counts.failed > 0
+      ? 'Inspect failed task diagnostics; the workflow is no longer waiting for CEO input.'
+      : 'Wait for the CEO reply on the Telegram control channel.');
   }
 
   return {
     title: status === 'completed'
       ? 'CTO workflow completed'
       : status === 'partial'
-        ? 'CTO workflow waiting'
+        ? 'CTO workflow needs follow-up'
         : status === 'failed'
           ? 'CTO workflow failed'
           : status === 'cancelled'
@@ -1082,6 +1084,14 @@ export function finalizeWorkflowStatus(workflowState) {
 
   const blockedTasks = (workflowState.tasks || []).filter((task) => task.status === 'queued');
   if (blockedTasks.length) {
+    if (counts.failed > 0 && counts.completed === 0 && counts.partial === 0) {
+      workflowState.status = 'failed';
+      return workflowState.status;
+    }
+    if (counts.failed > 0 || counts.partial > 0) {
+      workflowState.status = 'partial';
+      return workflowState.status;
+    }
     if (!workflowState.pending_question_zh) {
       workflowState.pending_question_zh = '仍有任务等待依赖，请确认是否继续调整当前工作流。';
     }

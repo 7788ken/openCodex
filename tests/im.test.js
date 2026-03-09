@@ -1297,6 +1297,83 @@ test('im telegram listen --cto can infer an actionable audit from an abstract in
   assert.equal(workflowState.tasks[0].status, 'completed');
 });
 
+test('im telegram listen --cto fails closed on stricter host sandbox without leaving the workflow waiting', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-host-sandbox-'));
+  const telegram = await startTelegramMockServer({
+    updates: [
+      {
+        update_id: 451,
+        message: {
+          message_id: 851,
+          date: 1741435510,
+          text: 'please inspect the repo',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      }
+    ]
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const child = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture,
+      OPENCODEX_HOST_SANDBOX_MODE: 'read-only'
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  await waitForCondition(() => telegram.state.reactions.length >= 1, 'sandbox acknowledgement');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 851 && /已完成任务拆解/.test(message.text)), 'sandbox plan reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 851 && /工作流已结束/.test(message.text)), 'sandbox final reply');
+
+  const planReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 851 && /Workflow: cto-/.test(message.text));
+  assert.ok(planReply);
+  const workflowIdMatch = planReply.text.match(/Workflow:\s+(cto-[^\s]+)/);
+  assert.ok(workflowIdMatch);
+
+  const finalReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 851 && /工作流已结束/.test(message.text));
+  assert.ok(finalReply);
+  assert.match(finalReply.text, /read-only/);
+  assert.doesNotMatch(finalReply.text, /待确认/);
+  assert.match(stdout, /finished with status failed/);
+
+  const workflowState = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'sessions', workflowIdMatch[1], 'artifacts', 'cto-workflow.json'), 'utf8'));
+  assert.equal(workflowState.status, 'failed');
+  assert.equal(workflowState.pending_question_zh, '');
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+});
+
 test('im telegram listen --cto asks for confirmation before execution when planner requires it', async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-confirm-'));
   const telegram = await startTelegramMockServer({

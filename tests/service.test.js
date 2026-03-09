@@ -868,7 +868,7 @@ async function seedWorkflowSessions(cwd) {
       { session_id: 'run-task-3' }
     ],
     summary: {
-      title: 'CTO workflow waiting',
+      title: 'CTO workflow needs follow-up',
       result: 'Waiting for the CEO to confirm the next step.',
       status: 'partial',
       highlights: [],

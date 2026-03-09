@@ -4,7 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import { parseOptions } from '../lib/args.js';
 import { getCodexBin, runCommandCapture, runCommandToFile } from '../lib/codex.js';
 import { readTextIfExists, writeJson } from '../lib/fs.js';
-import { resolveCodexProfile } from '../lib/profile.js';
+import { detectHostSandboxMode, isLikelySandboxRestriction, isSandboxModeStricter, resolveCodexProfile } from '../lib/profile.js';
 import { createSession, saveSession } from '../lib/session-store.js';
 import { normalizeSummary, renderHumanSummary } from '../lib/summary.js';
 
@@ -28,6 +28,7 @@ export async function runRunCommand(args) {
   const cwd = path.resolve(options.cwd || process.cwd());
   const codexBin = getCodexBin();
   const profile = resolveCodexProfile(options.profile, 'run', cwd);
+  const initialHostSandboxMode = detectHostSandboxMode({ env: process.env });
   const versionResult = await runCommandCapture(codexBin, ['--version'], { cwd });
   const codexCliVersion = pickFirstLine(versionResult.stdout) || pickFirstLine(versionResult.stderr) || 'unknown';
 
@@ -39,7 +40,10 @@ export async function runRunCommand(args) {
       prompt,
       arguments: {
         ...options,
-        profile: profile.name
+        profile: profile.name,
+        approval_mode: profile.approvalMode,
+        requested_sandbox_mode: profile.sandboxMode,
+        host_sandbox_mode: initialHostSandboxMode || ''
       }
     }
   });
@@ -64,7 +68,11 @@ export async function runRunCommand(args) {
     title: 'Run running',
     result: 'Codex CLI execution has started.',
     status: 'running',
-    highlights: [profile.name === 'safe' ? 'Profile: safe (read-only).' : `Profile: ${profile.name}.`],
+    highlights: [
+      profile.name === 'safe' ? 'Profile: safe (read-only).' : `Profile: ${profile.name}.`,
+      `Requested sandbox: ${profile.sandboxMode}.`,
+      ...(initialHostSandboxMode ? [`Host sandbox: ${initialHostSandboxMode}.`] : [])
+    ],
     next_steps: ['Use `opencodex session show <id>` to inspect live artifact paths.'],
     risks: [],
     validation: [],
@@ -90,6 +98,35 @@ export async function runRunCommand(args) {
   ];
   await saveSession(cwd, session);
 
+  if (initialHostSandboxMode && isSandboxModeStricter(initialHostSandboxMode, profile.sandboxMode)) {
+    const summary = buildHostSandboxFailureSummary({
+      profileName: profile.name,
+      requestedSandboxMode: profile.sandboxMode,
+      hostSandboxMode: initialHostSandboxMode,
+      codexCliVersion,
+      detectionSource: 'env'
+    });
+    session.status = summary.status;
+    session.updated_at = new Date().toISOString();
+    session.summary = summary;
+    await saveSession(cwd, session);
+
+    if (options.output) {
+      const outputPath = path.resolve(options.output);
+      await writeJson(outputPath, { session_id: session.session_id, summary });
+      session.artifacts.push({
+        type: 'run_summary',
+        path: outputPath,
+        description: 'Exported normalized run summary.'
+      });
+      await saveSession(cwd, session);
+    }
+
+    process.stdout.write(renderHumanSummary(summary));
+    process.stdout.write(`\nSession: ${session.session_id}\n`);
+    process.exitCode = 1;
+    return;
+  }
   const codexArgs = buildRunArgs(prompt, { ...options, cwd, profile: profile.name }, { lastMessagePath, schemaPath });
   const result = await runCommandToFile(codexBin, codexArgs, { cwd, stdoutPath: eventsPath });
 
@@ -101,7 +138,24 @@ export async function runRunCommand(args) {
   const fallbackStatus = result.code === 0 ? 'completed' : 'failed';
   const eventError = pickUsefulEventError(result.stdout);
   const fallbackMessage = rawLastMessage || eventError || pickUsefulError(result.stderr);
-  const summary = buildSummaryFromMessage(fallbackMessage, fallbackStatus, codexCliVersion);
+  const detectedHostSandboxMode = detectHostSandboxMode({ env: process.env, stderr: result.stderr, stdout: result.stdout, message: rawLastMessage });
+  const summary = isLikelySandboxRestriction({
+    requestedSandboxMode: profile.sandboxMode,
+    hostSandboxMode: detectedHostSandboxMode || initialHostSandboxMode,
+    stderr: result.stderr,
+    stdout: result.stdout,
+    message: fallbackMessage
+  })
+    ? buildHostSandboxFailureSummary({
+      profileName: profile.name,
+      requestedSandboxMode: profile.sandboxMode,
+      hostSandboxMode: detectedHostSandboxMode || initialHostSandboxMode,
+      codexCliVersion,
+      detectionSource: detectedHostSandboxMode ? 'output' : 'heuristic'
+    })
+    : buildSummaryFromMessage(fallbackMessage, fallbackStatus, codexCliVersion);
+
+  session.input.arguments.effective_sandbox_mode = detectedHostSandboxMode || initialHostSandboxMode || '';
 
   session.status = summary.status || fallbackStatus;
   session.updated_at = new Date().toISOString();
@@ -187,6 +241,39 @@ export function buildSummaryFromMessage(message, fallbackStatus, codexCliVersion
   });
 }
 
+<<<<<<< HEAD
+=======
+function buildHostSandboxFailureSummary({ profileName, requestedSandboxMode, hostSandboxMode = '', codexCliVersion = '', detectionSource = '' }) {
+  const effectiveHostSandboxMode = hostSandboxMode || 'read-only';
+  return normalizeSummary({
+    title: 'Run blocked by host sandbox',
+    result: `请求的 profile \`${profileName}\` 需要 \`${requestedSandboxMode}\`，但当前宿主环境实际只给到了 \`${effectiveHostSandboxMode}\`。openCodex 不能从子任务内部突破更严格的外层沙箱，所以这次执行已快速失败并停止，不再继续把 workflow 挂成等待。`,
+    status: 'failed',
+    highlights: [
+      codexCliVersion ? `Codex CLI version: ${codexCliVersion}` : '',
+      `Requested profile: ${profileName}.`,
+      `Requested sandbox: ${requestedSandboxMode}.`,
+      `Effective host sandbox: ${effectiveHostSandboxMode}.`
+    ].filter(Boolean),
+    next_steps: [],
+    risks: ['上层宿主沙箱比请求的 profile 更严格；子任务无法自行提权。'],
+    validation: [detectionSource ? `sandbox_detection:${detectionSource}` : 'sandbox_detection:unknown'],
+    changed_files: [],
+    findings: []
+  }, {
+    title: 'Run blocked by host sandbox',
+    result: 'Host sandbox restriction detected.',
+    status: 'failed',
+    highlights: [],
+    next_steps: [],
+    risks: [],
+    validation: [],
+    changed_files: [],
+    findings: []
+  });
+}
+
+>>>>>>> 962493a (fix(cto): fail fast on stricter host sandbox)
 function resolveSchemaPath(schemaPath) {
   return schemaPath ? path.resolve(schemaPath) : DEFAULT_SCHEMA_PATH;
 }

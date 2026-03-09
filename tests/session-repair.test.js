@@ -258,7 +258,7 @@ test('session repair converts orphaned stale cto tasks into a waiting workflow',
   const repairedSession = JSON.parse(await readFile(path.join(ctoSessionDir, 'session.json'), 'utf8'));
   const repairedWorkflowState = JSON.parse(await readFile(workflowStatePath, 'utf8'));
   assert.equal(repairedSession.status, 'partial');
-  assert.equal(repairedSession.summary.title, 'CTO workflow waiting');
+  assert.equal(repairedSession.summary.title, 'CTO workflow needs follow-up');
   assert.equal(repairedWorkflowState.status, 'waiting_for_user');
   assert.equal(repairedWorkflowState.tasks[0].status, 'partial');
   assert.match(repairedWorkflowState.tasks[0].result, /worker session was created/i);
@@ -282,7 +282,7 @@ test('session repair gives failed stale cto workflows a generic follow-up questi
     working_directory: cwd,
     codex_cli_version: 'telegram-bot-api',
     input: { prompt: 'Repair failed workflow', arguments: { provider: 'telegram' } },
-    summary: { title: 'CTO workflow waiting', result: 'stale', status: 'partial', highlights: [], next_steps: [] },
+    summary: { title: 'CTO workflow needs follow-up', result: 'stale', status: 'partial', highlights: [], next_steps: [] },
     artifacts: [
       { type: 'cto_workflow', path: workflowStatePath, description: 'Telegram CTO workflow state and task graph.' }
     ]
