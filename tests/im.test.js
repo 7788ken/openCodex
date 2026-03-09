@@ -53,7 +53,7 @@ test('im telegram listen stores inbound messages and im telegram inbox reads the
 
   const sessionId = await waitForValue(() => extractSessionId(stdout), 'telegram session id');
   await waitForCondition(() => stdout.includes('Message 101 from chat 123456: hello from telegram'), 'telegram message log');
-  await waitForCondition(() => stdout.includes('Replied to chat 123456 with message 900'), 'telegram reply log');
+  await waitForCondition(() => stdout.includes('Reacted to chat 123456 message 501 with 👍'), 'telegram reaction log');
 
   child.kill('SIGTERM');
   const exitCode = await waitForExit(child);
@@ -69,11 +69,13 @@ test('im telegram listen stores inbound messages and im telegram inbox reads the
   assert.equal(payload.messages[0].chat_id, '123456');
   assert.equal(payload.messages[0].text, 'hello from telegram');
   assert.equal(payload.messages[0].sender_display, 'Li Jianqian');
-  assert.equal(telegram.state.sentMessages.length, 1);
-  assert.deepEqual(telegram.state.sentMessages[0], {
+  assert.equal(telegram.state.sentMessages.length, 0);
+  assert.equal(telegram.state.reactions.length, 1);
+  assert.deepEqual(telegram.state.reactions[0], {
     chat_id: '123456',
-    text: '收到，openCodex 已收到你的消息：hello from telegram',
-    reply_to_message_id: 501
+    message_id: 501,
+    reaction: [{ type: 'emoji', emoji: '👍' }],
+    is_big: false
   });
 
   const session = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'sessions', sessionId, 'session.json'), 'utf8'));
@@ -137,7 +139,8 @@ test('im telegram listen --cto orchestrates a workflow and returns structured pr
 
   const imSessionId = await waitForValue(() => extractSessionId(stdout), 'telegram cto session id');
   await waitForCondition(() => stdout.includes('Delegate mode: CTO via Codex CLI (full-access)'), 'telegram cto mode log');
-  await waitForCondition(() => telegram.state.sentMessages.length >= 3, 'telegram cto replies');
+  await waitForCondition(() => telegram.state.reactions.length >= 1, 'telegram cto acknowledgement');
+  await waitForCondition(() => telegram.state.sentMessages.length >= 2, 'telegram cto replies');
   await waitForCondition(() => /CTO workflow cto-/.test(stdout), 'telegram cto workflow log');
 
   child.kill('SIGTERM');
@@ -145,9 +148,14 @@ test('im telegram listen --cto orchestrates a workflow and returns structured pr
   assert.equal(exitCode, 0);
   assert.equal(stderr, '');
 
-  assert.match(telegram.state.sentMessages[0].text, /openCodex CTO 主线程已接管/);
-  assert.match(telegram.state.sentMessages[1].text, /openCodex CTO 已完成任务拆解/);
-  assert.match(telegram.state.sentMessages[1].text, /Workflow: cto-/);
+  assert.deepEqual(telegram.state.reactions[0], {
+    chat_id: '123456',
+    message_id: 601,
+    reaction: [{ type: 'emoji', emoji: '👍' }],
+    is_big: false
+  });
+  assert.match(telegram.state.sentMessages[0].text, /openCodex CTO 已完成任务拆解/);
+  assert.match(telegram.state.sentMessages[0].text, /Workflow: cto-/);
   assert.match(telegram.state.sentMessages.at(-1).text, /openCodex CTO 工作流已完成/);
   assert.match(telegram.state.sentMessages.at(-1).text, /src\/mock-inspection\.js/);
   assert.match(telegram.state.sentMessages.at(-1).text, /docs\/en\/mock-summary\.md/);
@@ -230,18 +238,33 @@ test('im telegram listen --cto keeps later messages non-blocking while a slow wo
     }
   });
 
-  await waitForCondition(() => telegram.state.sentMessages.length >= 6, 'parallel workflow replies');
+  await waitForCondition(() => telegram.state.reactions.length >= 2, 'parallel workflow reactions');
+  await waitForCondition(() => telegram.state.sentMessages.length >= 4, 'parallel workflow replies');
 
-  const ackSlowIndex = findMessageIndex(telegram.state.sentMessages, (message) => message.reply_to_message_id === 701 && /主线程已接管/.test(message.text));
-  const ackFastIndex = findMessageIndex(telegram.state.sentMessages, (message) => message.reply_to_message_id === 702 && /主线程已接管/.test(message.text));
+  const planSlowIndex = findMessageIndex(telegram.state.sentMessages, (message) => message.reply_to_message_id === 701 && /已完成任务拆解/.test(message.text));
+  const planFastIndex = findMessageIndex(telegram.state.sentMessages, (message) => message.reply_to_message_id === 702 && /已完成任务拆解/.test(message.text));
   const finalSlowIndex = findMessageIndex(telegram.state.sentMessages, (message) => message.reply_to_message_id === 701 && /工作流已完成/.test(message.text));
   const finalFastIndex = findMessageIndex(telegram.state.sentMessages, (message) => message.reply_to_message_id === 702 && /工作流已完成/.test(message.text));
 
-  assert.ok(ackSlowIndex >= 0);
-  assert.ok(ackFastIndex >= 0);
+  assert.deepEqual(telegram.state.reactions, [
+    {
+      chat_id: '123456',
+      message_id: 701,
+      reaction: [{ type: 'emoji', emoji: '👍' }],
+      is_big: false
+    },
+    {
+      chat_id: '123456',
+      message_id: 702,
+      reaction: [{ type: 'emoji', emoji: '👍' }],
+      is_big: false
+    }
+  ]);
+  assert.ok(planSlowIndex >= 0);
+  assert.ok(planFastIndex >= 0);
   assert.ok(finalSlowIndex >= 0);
   assert.ok(finalFastIndex >= 0);
-  assert.ok(ackFastIndex < finalSlowIndex);
+  assert.ok(planFastIndex < finalSlowIndex);
   assert.ok(finalFastIndex < finalSlowIndex);
 
   child.kill('SIGTERM');
@@ -309,6 +332,7 @@ test('im telegram listen --cto reports workflow status instead of dispatching a 
     stderr += chunk.toString();
   });
 
+  await waitForCondition(() => telegram.state.reactions.length >= 1, 'workflow acknowledgement');
   await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 702 && /工作流汇报/.test(message.text)), 'workflow status reply');
   await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 701 && /工作流已完成/.test(message.text)), 'slow workflow completion');
 
@@ -317,6 +341,7 @@ test('im telegram listen --cto reports workflow status instead of dispatching a 
   const workflowIdMatch = planReply.text.match(/Workflow:\s+(cto-[^\s]+)/);
   assert.ok(workflowIdMatch);
 
+  assert.equal(telegram.state.reactions.length, 1);
   const secondReplies = telegram.state.sentMessages.filter((message) => message.reply_to_message_id === 702);
   assert.equal(secondReplies.length, 1);
   assert.match(secondReplies[0].text, /openCodex CTO 工作流汇报/);
@@ -478,6 +503,7 @@ test('im telegram listen --cto can report a referenced workflow id without dispa
   });
 
   await waitForCondition(() => telegram.state.sentMessages.length >= 1, 'referenced workflow status reply');
+  await waitForCondition(() => stdout.includes('Reported CTO workflow status for update 501'), 'referenced workflow status log');
 
   assert.equal(telegram.state.sentMessages.length, 1);
   assert.match(telegram.state.sentMessages[0].text, /openCodex CTO 工作流汇报/);
@@ -537,11 +563,17 @@ test('im telegram listen --cto asks for confirmation before execution when plann
     }
   });
 
-  await waitForCondition(() => telegram.state.sentMessages.length >= 2, 'confirmation replies');
+  await waitForCondition(() => telegram.state.reactions.length >= 1, 'confirmation acknowledgement');
+  await waitForCondition(() => telegram.state.sentMessages.length >= 1, 'confirmation replies');
 
-  assert.match(telegram.state.sentMessages[0].text, /主线程已接管/);
-  assert.match(telegram.state.sentMessages[1].text, /需要你确认下一步/);
-  assert.match(telegram.state.sentMessages[1].text, /请确认是否继续修改本地仓库/);
+  assert.deepEqual(telegram.state.reactions[0], {
+    chat_id: '123456',
+    message_id: 801,
+    reaction: [{ type: 'emoji', emoji: '👍' }],
+    is_big: false
+  });
+  assert.match(telegram.state.sentMessages[0].text, /需要你确认下一步/);
+  assert.match(telegram.state.sentMessages[0].text, /请确认是否继续修改本地仓库/);
 
   child.kill('SIGTERM');
   await waitForExit(child);
@@ -641,6 +673,7 @@ async function startTelegramMockServer({ updates, webhookUrl = '' }) {
     updates: [...updates],
     webhookUrl,
     sentMessages: [],
+    reactions: [],
     deleteWebhookCalls: 0
   };
 
@@ -674,6 +707,16 @@ async function startTelegramMockServer({ updates, webhookUrl = '' }) {
       const nextUpdates = state.updates.filter((item) => item.update_id >= offset);
       state.updates = state.updates.filter((item) => item.update_id < offset);
       return writeTelegram(response, nextUpdates);
+    }
+
+    if (methodName === 'setMessageReaction') {
+      state.reactions.push({
+        chat_id: String(body.chat_id),
+        message_id: body.message_id,
+        reaction: body.reaction,
+        is_big: Boolean(body.is_big)
+      });
+      return writeTelegram(response, true);
     }
 
     if (methodName === 'sendMessage') {
