@@ -34,6 +34,10 @@ const TELEGRAM_EXECUTION_HINT_PATTERN = /(继续|推进|安排|检查|修复|处
 const TELEGRAM_ANALYSIS_INTENT_PATTERN = /(检查|审查|review|inspect|audit|分析|评估|evaluate|analyze|看看|诊断|研究|拆解)/i;
 const TELEGRAM_REASONING_TARGET_PATTERN = /(思考|思维|推理|reasoning|深度|质量|判断|决策)/i;
 const TELEGRAM_ARCHITECTURE_TARGET_PATTERN = /(架构|workflow|工作流|主线程|子线程|调度|planner|prompt|session|任务栏|telegram|cto)/i;
+const TELEGRAM_CTO_NAME_PATTERN = /(cto|open\s*codex|opencodex)/i;
+const TELEGRAM_CTO_CASUAL_CHAT_PATTERN = /(陪我聊聊天|陪聊|聊聊天|聊会儿|聊天吗|可以聊天吗|能聊天吗|陪我说说话|随便聊聊)/i;
+const TELEGRAM_CTO_GREETING_PATTERN = /^(?:(?:cto|open\s*codex|opencodex)[,，:：\s]*)?(?:你在吗|在吗|你好|hello|hi|hey|早上好|晚上好|午安|辛苦了)(?:[!！?？~～\s]*)$/i;
+const TELEGRAM_CTO_STATUS_HINT_PATTERN = /(状态|进度|历史|最近任务|任务历史|workflow|工作流|task\s*history|workflow\s*status|task\s*status|安排了哪些任务)/i;
 
 export function isLikelyTelegramNonDirectiveMessage(text) {
   const rawText = String(text || '').trim();
@@ -127,6 +131,66 @@ export function buildTelegramCtoAutoReplyText(message, continuation = false) {
     return `收到，openCodex CTO 主线程已收到你的补充，继续调度：${preview}`;
   }
   return `收到，openCodex CTO 主线程已接管，正在拆任务并调度：${preview}`;
+}
+
+export function isLikelyTelegramCtoCasualChatMessage(text) {
+  const rawText = String(text || '').trim();
+  if (!rawText) {
+    return false;
+  }
+
+  if (TELEGRAM_EXECUTION_HINT_PATTERN.test(rawText) || TELEGRAM_CTO_STATUS_HINT_PATTERN.test(rawText)) {
+    return false;
+  }
+
+  if (TELEGRAM_CTO_CASUAL_CHAT_PATTERN.test(rawText)) {
+    return true;
+  }
+
+  if (!TELEGRAM_CTO_NAME_PATTERN.test(rawText)) {
+    return false;
+  }
+
+  return TELEGRAM_CTO_GREETING_PATTERN.test(rawText);
+}
+
+export function buildTelegramCtoDirectReplyPrompt({ message, pendingWorkflowState = null, soulText = '', soulPath = '' }) {
+  const lines = [
+    buildTelegramCtoMainThreadSystemPrompt({ soulText, soulPath }),
+    '',
+    'Direct mode: Telegram CTO direct reply.',
+    'This Telegram message is casual chat, not a workflow-planning request.',
+    'Do not create tasks, plans, workflows, TODO lists, or execution steps.',
+    'Reply in Simplified Chinese.',
+    'Be warm, grounded, and concise.',
+    'Keep the reply within 3 short lines.',
+    'Return JSON that matches the provided schema.',
+    'Set `title` to `Telegram CTO direct reply`.',
+    'Set `status` to `completed`.',
+    'Put the exact Telegram reply text in `result`.',
+    'Leave `highlights`, `next_steps`, `risks`, `validation`, `changed_files`, and `findings` empty arrays.'
+  ];
+
+  if (pendingWorkflowState?.workflow_session_id) {
+    lines.push(
+      '',
+      'There is already a waiting CTO workflow for this chat.',
+      `Workflow: ${pendingWorkflowState.workflow_session_id}`,
+      `Pending question: ${asTrimmedString(pendingWorkflowState.pending_question_zh) || '(none)'}`,
+      'You must clearly say that this workflow remains unchanged and waiting.',
+      'If the CEO wants to continue execution, tell them to answer the pending question directly.'
+    );
+  } else {
+    lines.push(
+      '',
+      'There is no active waiting workflow for this chat.',
+      'If the CEO wants execution, tell them to send a concrete goal.',
+      'If the CEO wants status, tell them they can ask about workflow or task status.'
+    );
+  }
+
+  lines.push('', 'Telegram message:', asTrimmedString(message?.text));
+  return lines.join('\n');
 }
 
 export async function loadCtoSoulDocument(cwd = process.cwd(), options = {}) {

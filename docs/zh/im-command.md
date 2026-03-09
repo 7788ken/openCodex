@@ -72,7 +72,7 @@
 - `telegram-log.txt` — 监听生命周期日志
 - `telegram-runs.jsonl` — 开启 `--cto` 后的 CTO 规划与任务执行记录
 
-在 `--cto` 模式下，每条入站 Telegram 消息现在都会先生成一条专用的 `cto` 工作流 session。这个工作流下面可以再挂规划和执行用的 `run` 子 session，也可以在需要时进入“等待 CEO 确认”状态，并在同一个 chat 的下一条 Telegram 回复里继续推进。
+在 `--cto` 模式下，具备明确执行意图的入站 Telegram 消息会生成专用的 `cto` 工作流 session。状态/历史/控制/轻聊天这类追问会以内联方式处理，不会新建或续跑工作流。工作流下面可以再挂规划和执行用的 `run` 子 session，也可以在需要时进入“等待 CEO 确认”状态，并在同一个 chat 的下一条 Telegram 回复里继续推进。
 
 ## 安全说明
 
@@ -95,5 +95,6 @@
 - 带明确工作流引用的问题，例如 `Workflow: cto-... 安排了哪些任务`
 - 最近历史类问题，例如 `最近任务`、`任务历史`、`recent tasks`、`task history`
 - 取消控制类消息，例如 `取消`、`cancel`、`stop`、`Workflow: cto-... cancel`
+- 保守识别的轻聊天消息，例如 `CTO 在吗`、`CTO 陪我聊聊天`、`CTO 辛苦了`
 
-状态类查询会返回匹配工作流的摘要；最近历史类查询会返回这个 Telegram chat 下最近已知的 CTO 任务记录简表。
+状态类查询会返回匹配工作流的摘要；最近历史类查询会返回这个 Telegram chat 下最近已知的 CTO 任务记录简表。轻聊天消息会收到一条简短 direct reply，不会新建或续跑工作流。

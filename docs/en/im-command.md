@@ -72,7 +72,7 @@ Each Telegram listen session stores:
 - `telegram-log.txt` — listener lifecycle log
 - `telegram-runs.jsonl` — delegated CTO planner and task run records when `--cto` is enabled
 
-In `--cto` mode, each inbound Telegram message now creates a dedicated `cto` workflow session under the same local session store. That workflow can contain planner and worker `run` child sessions, remain waiting for a CEO confirmation, and resume from the next Telegram reply in the same chat.
+In `--cto` mode, actionable inbound Telegram messages create dedicated `cto` workflow sessions under the same local session store. Status/history/control/casual-chat follow-ups can be handled inline without creating or resuming a workflow. A workflow can contain planner and worker `run` child sessions, remain waiting for a CEO confirmation, and resume from the next Telegram reply in the same chat.
 
 ## Security Notes
 
@@ -95,5 +95,6 @@ Current supported follow-up patterns include:
 - explicit workflow references such as `Workflow: cto-... 安排了哪些任务`
 - recent-history questions such as `最近任务`, `任务历史`, `recent tasks`, or `task history`
 - cancel controls such as `取消`, `cancel`, `stop`, or `Workflow: cto-... cancel`
+- conservative casual-chat messages such as `CTO 在吗`, `CTO 陪我聊聊天`, or `CTO 辛苦了`
 
-Status queries return the matching workflow summary. Recent-history queries return a compact list of the latest known CTO task records for that Telegram chat.
+Status queries return the matching workflow summary. Recent-history queries return a compact list of the latest known CTO task records for that Telegram chat. Casual-chat messages get a short direct reply and do not create or resume a workflow.

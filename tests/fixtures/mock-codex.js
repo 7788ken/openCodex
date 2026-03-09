@@ -224,6 +224,23 @@ function buildRunPayload(prompt) {
     };
   }
 
+  if (prompt.includes('Direct mode: Telegram CTO direct reply.')) {
+    const hasPendingWorkflow = prompt.includes('There is already a waiting CTO workflow for this chat.');
+    return {
+      title: 'Telegram CTO direct reply',
+      result: hasPendingWorkflow
+        ? '可以，我在。\n当前 Workflow 仍保持等待中；如果要继续，请直接回复待确认问题。\n我不会因为这条闲聊消息改写当前工作流。'
+        : '可以，我在。\n如果你要我执行，请直接告诉我明确目标。\n如果要查进度，也可以直接问我当前 workflow 状态。',
+      status: 'completed',
+      highlights: [],
+      next_steps: [],
+      risks: [],
+      validation: [],
+      changed_files: [],
+      findings: []
+    };
+  }
+
   return {
     title: 'Mock run completed',
     result: 'The mock Codex binary executed successfully.',

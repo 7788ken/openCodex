@@ -7,6 +7,7 @@ import { readJson, readTextIfExists, writeJson, toIsoString } from '../lib/fs.js
 import {
   appendPlanTasksToWorkflow,
   appendWorkflowUserMessage,
+  buildTelegramCtoDirectReplyPrompt,
   buildTelegramCtoFinalText,
   buildTelegramCtoPlanText,
   buildTelegramCtoPlannerPrompt,
@@ -23,6 +24,7 @@ import {
   findPendingWorkflowForChat,
   getReadyWorkflowTasks,
   injectHistoricalCtoRepairTask,
+  isLikelyTelegramCtoCasualChatMessage,
   markWorkflowTaskRunning,
   normalizeTelegramCtoPlan,
   applyWorkflowTaskResult,
@@ -357,6 +359,38 @@ async function runTelegramListen(args) {
             const errorMessage = error instanceof Error ? error.message : String(error);
             await appendFile(logPath, `[${toIsoString()}] workflow status reply error for update ${normalizedMessage.update_id}: ${errorMessage}\n`, 'utf8');
             process.stdout.write(`Workflow status reply failed for update ${normalizedMessage.update_id}: ${errorMessage}\n`);
+          }
+          await persistListenerSession();
+          continue;
+        }
+
+        const workflowDirectReply = delegateMode === 'cto'
+          ? await resolveTelegramCtoDirectReply({
+            cwd,
+            parentSession: session,
+            message: normalizedMessage,
+            workflowRuntimes,
+            runsPath,
+            logPath
+          })
+          : null;
+
+        if (workflowDirectReply) {
+          try {
+            const directReply = await sendTelegramTextMessage({
+              apiBaseUrl,
+              botToken,
+              chatId: normalizedMessage.chat_id,
+              text: workflowDirectReply.text,
+              replyToMessageId: normalizedMessage.message_id
+            });
+            await appendTelegramReply(repliesPath, directReply);
+            await appendFile(logPath, `[${toIsoString()}] workflow direct reply ${workflowDirectReply.workflowId || 'none'} for update ${normalizedMessage.update_id}\n`, 'utf8');
+            process.stdout.write(`Handled CTO casual chat for update ${normalizedMessage.update_id}\n`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            await appendFile(logPath, `[${toIsoString()}] workflow direct reply error for update ${normalizedMessage.update_id}: ${errorMessage}\n`, 'utf8');
+            process.stdout.write(`Workflow direct reply failed for update ${normalizedMessage.update_id}: ${errorMessage}\n`);
           }
           await persistListenerSession();
           continue;
@@ -1521,6 +1555,113 @@ async function resolveTelegramCtoStatusReply({ cwd, message, workflowRuntimes })
     workflowId: runtime.session.session_id,
     text: buildTelegramCtoStatusText(runtime.state)
   };
+}
+
+async function resolveTelegramCtoDirectReply({ cwd, parentSession, message, workflowRuntimes, runsPath, logPath }) {
+  if (!isLikelyTelegramCtoCasualChatMessage(message.text)) {
+    return null;
+  }
+
+  const pendingWorkflow = findPendingWorkflowForChat(workflowRuntimes.values(), message.chat_id);
+  const ctoSoul = await loadCtoSoulDocument(cwd);
+  const outputPath = path.join(
+    getSessionDir(cwd, parentSession.session_id),
+    'artifacts',
+    `telegram-direct-reply-${sanitizeFileComponent(`${message.update_id}-${message.message_id}`)}.json`
+  );
+
+  try {
+    const result = await spawnCliCapture([
+      'run',
+      '--cwd',
+      cwd,
+      '--profile',
+      'safe',
+      '--output',
+      outputPath,
+      buildTelegramCtoDirectReplyPrompt({
+        message,
+        pendingWorkflowState: pendingWorkflow?.state || null,
+        soulText: ctoSoul.text,
+        soulPath: ctoSoul.display_path
+      })
+    ], cwd, {
+      OPENCODEX_PARENT_SESSION_ID: parentSession.session_id,
+      OPENCODEX_IM_SOURCE: 'telegram',
+      OPENCODEX_IM_UPDATE_ID: String(message.update_id),
+      OPENCODEX_CTO_STAGE: 'direct-reply'
+    });
+
+    let outputPayload = null;
+    try {
+      outputPayload = await readJson(outputPath);
+    } catch {
+      outputPayload = null;
+    }
+
+    const sessionId = outputPayload?.session_id || extractSessionId(result.stdout);
+    let childSession = null;
+    if (sessionId) {
+      try {
+        childSession = await loadSession(cwd, sessionId);
+      } catch {
+        childSession = null;
+      }
+      await recordTelegramChildSession(parentSession, cwd, {
+        sessionId,
+        updateId: message.update_id,
+        label: `Direct reply ${message.update_id}`
+      });
+    }
+
+    const runResult = {
+      code: result.code,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      sessionId,
+      childStatus: childSession?.status || '',
+      summary: outputPayload?.summary || childSession?.summary || null
+    };
+
+    await appendFile(runsPath, `${JSON.stringify(buildTelegramRunRecord(message, runResult, { stage: 'direct-reply' }))}\n`, 'utf8');
+    await appendFile(logPath, `[${toIsoString()}] direct reply ${sessionId || 'no-session'} for update ${message.update_id}\n`, 'utf8');
+
+    return {
+      workflowId: pendingWorkflow?.session?.session_id || '',
+      text: pickTelegramCtoDirectReplyText(runResult.summary?.result, pendingWorkflow)
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await appendFile(logPath, `[${toIsoString()}] direct reply error for update ${message.update_id}: ${errorMessage}\n`, 'utf8');
+    return {
+      workflowId: pendingWorkflow?.session?.session_id || '',
+      text: buildTelegramCtoDirectReplyFallbackText(pendingWorkflow)
+    };
+  }
+}
+
+function pickTelegramCtoDirectReplyText(resultText, pendingWorkflow) {
+  const value = String(resultText || '').trim();
+  return value || buildTelegramCtoDirectReplyFallbackText(pendingWorkflow);
+}
+
+function buildTelegramCtoDirectReplyFallbackText(pendingWorkflow) {
+  const workflowId = pendingWorkflow?.session?.session_id || '';
+  const pendingQuestion = truncateInline(pendingWorkflow?.state?.pending_question_zh || '请直接回复当前待确认问题。', 120);
+
+  if (workflowId) {
+    return [
+      '可以，我在。',
+      `当前 Workflow: ${workflowId} 仍保持等待中；待确认：${pendingQuestion}`,
+      '如果要继续，请直接回答这个问题。'
+    ].join('\n');
+  }
+
+  return [
+    '可以，我在。',
+    '这条 Telegram CTO 通道也支持简短交流。',
+    '如果要我执行，请直接发明确目标；如果要查进度，也可以直接问我工作流状态。'
+  ].join('\n');
 }
 
 function parseTelegramCtoStatusIntent(text) {
