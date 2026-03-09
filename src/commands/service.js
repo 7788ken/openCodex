@@ -1554,24 +1554,24 @@ on openDispatchRecord(dispatchIndex)
 		return
 	end try
 
-	set recordPath to my lineValue(detailText, "Record Path: ", "")
-	set eventsPath to my lineValue(detailText, "Events Path: ", "")
-	set actionButtons to {"Close"}
-	if recordPath is not "" then set end of actionButtons to "Open Record"
-	if eventsPath is not "" then set end of actionButtons to "Open Events"
+	set summaryText to my dispatchSummaryText(detailText)
+	repeat
+		try
+			set dialogResult to display dialog summaryText buttons {"Sections", "Paths", "Close"} default button "Sections" with title appTitle
+		on error number -128
+			return
+		end try
 
-	try
-		set dialogResult to display dialog detailText buttons actionButtons default button "Close" with title appTitle
-	on error number -128
-		return
-	end try
-
-	set selectedButton to button returned of dialogResult
-	if selectedButton is "Open Record" then
-		do shell script "open -R " & quoted form of recordPath
-	else if selectedButton is "Open Events" then
-		do shell script "open -R " & quoted form of eventsPath
-	end if
+		set selectedButton to button returned of dialogResult
+		if selectedButton is "Close" then
+			return
+		else if selectedButton is "Paths" then
+			my browseDispatchArtifacts(detailText)
+		else if selectedButton is "Sections" then
+			set panelAction to my browseDispatchSections(detailText)
+			if panelAction is "close" then return
+		end if
+	end repeat
 end openDispatchRecord
 
 on sendStatusReply_(sender)
@@ -1584,6 +1584,137 @@ on sendStatusReply_(sender)
 	end try
 	my refreshStatus()
 end sendStatusReply_
+
+on browseDispatchSections(detailText)
+	repeat
+		set sectionNames to my dispatchSectionNames(detailText)
+		if (count of sectionNames) is 0 then
+			display notification "No extra sections available for this task." with title appTitle
+			return "back"
+		end if
+
+		set picked to choose from list sectionNames with title appTitle with prompt "Select a detail section" OK button name "View" cancel button name "Back"
+		if picked is false then return "back"
+		set sectionName to item 1 of picked
+		set sectionText to my dispatchSectionText(detailText, sectionName)
+
+		repeat
+			try
+				set dialogResult to display dialog sectionText buttons {"Back", "Paths", "Close"} default button "Back" with title (appTitle & " — " & sectionName)
+			on error number -128
+				return "back"
+			end try
+
+			set selectedButton to button returned of dialogResult
+			if selectedButton is "Back" then
+				exit repeat
+			else if selectedButton is "Paths" then
+				my browseDispatchArtifacts(detailText)
+			else if selectedButton is "Close" then
+				return "close"
+			end if
+		end repeat
+	end repeat
+end browseDispatchSections
+
+on browseDispatchArtifacts(detailText)
+	set artifactChoices to {}
+	set recordPath to my lineValue(detailText, "Record Path: ", "")
+	set sessionPath to my lineValue(detailText, "Session Path: ", "")
+	set eventsPath to my lineValue(detailText, "Events Path: ", "")
+	set messagePath to my lineValue(detailText, "Last Message Path: ", "")
+
+	if recordPath is not "" then set end of artifactChoices to "Record — " & my truncateText(recordPath, 72)
+	if sessionPath is not "" and sessionPath is not recordPath then set end of artifactChoices to "Session — " & my truncateText(sessionPath, 72)
+	if eventsPath is not "" then set end of artifactChoices to "Events — " & my truncateText(eventsPath, 72)
+	if messagePath is not "" then set end of artifactChoices to "Last Message — " & my truncateText(messagePath, 72)
+
+	if (count of artifactChoices) is 0 then
+		display notification "No artifact paths available for this task." with title appTitle
+		return
+	end if
+
+	set picked to choose from list artifactChoices with title appTitle with prompt "Reveal a task artifact in Finder" OK button name "Open" cancel button name "Back"
+	if picked is false then return
+	set selectedArtifact to item 1 of picked
+
+	if selectedArtifact starts with "Record — " then
+		do shell script "open -R " & quoted form of recordPath
+	else if selectedArtifact starts with "Session — " then
+		do shell script "open -R " & quoted form of sessionPath
+	else if selectedArtifact starts with "Events — " then
+		do shell script "open -R " & quoted form of eventsPath
+	else if selectedArtifact starts with "Last Message — " then
+		do shell script "open -R " & quoted form of messagePath
+	end if
+end browseDispatchArtifacts
+
+on dispatchSectionNames(detailText)
+	set names to {"Summary"}
+	if detailText contains "Highlights:" then set end of names to "Highlights"
+	if detailText contains "Validation:" then set end of names to "Validation"
+	if detailText contains "Changed Files:" then set end of names to "Changed Files"
+	if detailText contains "Next Steps:" then set end of names to "Next Steps"
+	if detailText contains "Recent Activity:" then set end of names to "Recent Activity"
+	if detailText contains "Last Message:" then set end of names to "Last Message"
+	return names
+end dispatchSectionNames
+
+on dispatchSummaryText(detailText)
+	set summaryLines to {}
+	repeat with oneLine in paragraphs of detailText
+		set currentLine to contents of oneLine
+		if my isDispatchSectionHeader(currentLine) or my isDispatchPathLine(currentLine) then exit repeat
+		set end of summaryLines to currentLine
+	end repeat
+	if (count of summaryLines) is 0 then return detailText
+	return my joinLines(summaryLines)
+end dispatchSummaryText
+
+on dispatchSectionText(detailText, sectionName)
+	if sectionName is "Summary" then return my dispatchSummaryText(detailText)
+
+	set targetHeader to sectionName & ":"
+	set sectionLines to {}
+	set captureLines to false
+	repeat with oneLine in paragraphs of detailText
+		set currentLine to contents of oneLine
+		if currentLine is targetHeader then
+			set captureLines to true
+			set end of sectionLines to currentLine
+		else if captureLines then
+			if my isDispatchSectionHeader(currentLine) or my isDispatchPathLine(currentLine) then exit repeat
+			set end of sectionLines to currentLine
+		end if
+	end repeat
+	if (count of sectionLines) is 0 then return sectionName & ": unavailable"
+	return my joinLines(sectionLines)
+end dispatchSectionText
+
+on isDispatchSectionHeader(lineText)
+	if lineText is "Highlights:" then return true
+	if lineText is "Validation:" then return true
+	if lineText is "Changed Files:" then return true
+	if lineText is "Next Steps:" then return true
+	if lineText is "Recent Activity:" then return true
+	if lineText is "Last Message:" then return true
+	return false
+end isDispatchSectionHeader
+
+on isDispatchPathLine(lineText)
+	if lineText starts with "Record Path: " then return true
+	if lineText starts with "Session Path: " then return true
+	if lineText starts with "Events Path: " then return true
+	if lineText starts with "Last Message Path: " then return true
+	return false
+end isDispatchPathLine
+
+on joinLines(lineItems)
+	set AppleScript's text item delimiters to linefeed
+	set outputText to lineItems as text
+	set AppleScript's text item delimiters to ""
+	return outputText
+end joinLines
 
 on collectPrefixedLines(inputText, prefixText)
 	set matchedLines to {}
