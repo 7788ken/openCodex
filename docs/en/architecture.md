@@ -29,6 +29,7 @@ It is responsible for:
 - result summaries
 - policy and profile mapping
 - project-level conventions
+- same-machine task coordination
 
 ### Layer 3 — openCodex Gateway
 
@@ -47,15 +48,17 @@ The first commands should be thin wrappers around stable Codex CLI surfaces.
 
 Recommended MVP path:
 
-- `opencodex run` -> `codex exec --json --output-schema`
-- `opencodex review` -> `codex review`
-- `opencodex doctor` -> local readiness checks
+- `opencodex run` -> the primary local work surface
+- `opencodex session` -> local trace and coordination surface
+- `opencodex doctor` -> supporting readiness checks
+- `opencodex review` -> second-wave review workflow
 
 ## Explicit Non-Goals
 
 The first version should not:
 
 - rebuild a local coding engine
+- reduce the product to a health-check utility
 - parse interactive TUI text as a primary contract
 - depend on experimental app-server features
 - expand into a gateway platform before the local CLI flow works well

@@ -1,6 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "openCodexRunSummary",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -8,7 +6,11 @@
     "result",
     "status",
     "highlights",
-    "next_steps"
+    "next_steps",
+    "risks",
+    "validation",
+    "changed_files",
+    "findings"
   ],
   "properties": {
     "title": {
@@ -20,8 +22,11 @@
     "status": {
       "type": "string",
       "enum": [
+        "queued",
+        "running",
         "completed",
         "failed",
+        "cancelled",
         "partial"
       ]
     },
@@ -35,6 +40,68 @@
       "type": "array",
       "items": {
         "type": "string"
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "validation": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "changed_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "priority",
+          "title",
+          "location",
+          "detail"
+        ],
+        "properties": {
+          "priority": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "location": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "start_line",
+              "end_line"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "start_line": {
+                "type": "integer"
+              },
+              "end_line": {
+                "type": "integer"
+              }
+            }
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
       }
     }
   }

@@ -22,7 +22,7 @@ export async function runDoctorCommand(args) {
   const cwd = path.resolve(options.cwd || process.cwd());
   const codexBin = getCodexBin();
   const versionResult = await runCommandCapture(codexBin, ['--version'], { cwd });
-  const versionText = pickFirstLine(versionResult.stdout) || pickFirstLine(versionResult.stderr) || 'unknown';
+  const versionText = pickFirstMeaningfulLine(versionResult.stdout) || pickFirstMeaningfulLine(versionResult.stderr) || 'unknown';
 
   const session = createSession({
     command: 'doctor',
@@ -40,15 +40,15 @@ export async function runDoctorCommand(args) {
   const loginResult = versionResult.code === 0
     ? await runCommandCapture(codexBin, ['login', 'status'], { cwd })
     : { code: 1, stdout: '', stderr: 'Skipped because Codex CLI was not available.' };
-  checks.push(toCheck('codex_login', loginResult.code === 0 ? 'pass' : 'fail', true, pickFirstLine(loginResult.stdout || loginResult.stderr)));
+  checks.push(toCheck('codex_login', loginResult.code === 0 ? 'pass' : 'fail', true, pickFirstMeaningfulLine(loginResult.stdout || loginResult.stderr)));
 
   const mcpResult = versionResult.code === 0
     ? await runCommandCapture(codexBin, ['mcp', 'list', '--json'], { cwd })
     : { code: 1, stdout: '', stderr: 'Skipped because Codex CLI was not available.' };
-  checks.push(toCheck('mcp_visibility', mcpResult.code === 0 ? 'pass' : 'warn', false, pickFirstLine(mcpResult.stdout || mcpResult.stderr) || 'No MCP data available.'));
+  checks.push(toCheck('mcp_visibility', mcpResult.code === 0 ? 'pass' : 'warn', false, describeMcpResult(mcpResult.stdout, mcpResult.stderr)));
 
   const gitResult = await runCommandCapture('git', ['rev-parse', '--show-toplevel'], { cwd });
-  checks.push(toCheck('git_workspace', gitResult.code === 0 ? 'pass' : 'warn', false, pickFirstLine(gitResult.stdout || gitResult.stderr) || 'Current directory is not a Git repository.'));
+  checks.push(toCheck('git_workspace', gitResult.code === 0 ? 'pass' : 'warn', false, pickFirstMeaningfulLine(gitResult.stdout || gitResult.stderr) || 'Current directory is not a Git repository.'));
 
   const configPath = path.join(os.homedir(), '.codex', 'config.toml');
   const configExists = await fileExists(configPath);
@@ -60,7 +60,7 @@ export async function runDoctorCommand(args) {
 
   const summary = {
     title: `Doctor ${summaryStatus}`,
-    result: buildDoctorResult(summaryStatus, checks),
+    result: buildDoctorResult(checks),
     status: summaryStatus,
     highlights: checks.map((check) => `${check.status.toUpperCase()} ${check.name}: ${check.details}`),
     next_steps: buildDoctorNextSteps(checks),
@@ -100,7 +100,7 @@ export async function runDoctorCommand(args) {
   }
 }
 
-function buildDoctorResult(status, checks) {
+function buildDoctorResult(checks) {
   const passed = checks.filter((check) => check.status === 'pass').length;
   const warned = checks.filter((check) => check.status === 'warn').length;
   const failed = checks.filter((check) => check.status === 'fail').length;
@@ -134,8 +134,22 @@ function toCheck(name, status, required, details) {
   return { name, status, required, details };
 }
 
-function pickFirstLine(value) {
-  return String(value || '').split('\n').find((line) => line.trim())?.trim() || '';
+function pickFirstMeaningfulLine(value) {
+  return String(value || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith('WARNING: proceeding,')) || '';
+}
+
+function describeMcpResult(stdout, stderr) {
+  try {
+    const servers = JSON.parse(stdout);
+    if (Array.isArray(servers)) {
+      return `${servers.length} configured server(s).`;
+    }
+  } catch {
+  }
+  return pickFirstMeaningfulLine(stdout || stderr) || 'No MCP data available.';
 }
 
 async function fileExists(filePath) {

@@ -1,5 +1,5 @@
-export function parseOptions(args, spec) {
-  const options = {};
+export function parseArgs(args) {
+  const flags = {};
   const positionals = [];
 
   for (let index = 0; index < args.length; index += 1) {
@@ -11,25 +11,39 @@ export function parseOptions(args, spec) {
     }
 
     const name = token.slice(2);
-    const definition = spec[name];
+    const next = args[index + 1];
 
-    if (!definition) {
-      throw new Error(`Unknown option: --${name}`);
-    }
-
-    if (definition.type === 'boolean') {
-      options[name] = true;
+    if (!next || next.startsWith('--')) {
+      flags[name] = true;
       continue;
     }
 
-    const value = args[index + 1];
-    if (!value || value.startsWith('--')) {
+    flags[name] = next;
+    index += 1;
+  }
+
+  return { flags, positionals };
+}
+
+export function parseOptions(args, spec) {
+  const { flags, positionals } = parseArgs(args);
+  const options = {};
+
+  for (const [name, value] of Object.entries(flags)) {
+    const definition = spec[name];
+    if (!definition) {
+      throw new Error(`Unknown option: --${name}`);
+    }
+    if (definition.type === 'boolean') {
+      options[name] = Boolean(value);
+      continue;
+    }
+    if (typeof value !== 'string') {
       throw new Error(`Option --${name} requires a value`);
     }
-
     options[name] = value;
-    index += 1;
   }
 
   return { options, positionals };
 }
+

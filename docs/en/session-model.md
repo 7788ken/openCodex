@@ -51,7 +51,7 @@ Each session should store the following top-level fields.
 ### Field Notes
 
 - `session_id` — unique local identifier for the openCodex session.
-- `command` — one of `run`, `review`, or `doctor`.
+- `command` — one of `run`, `review`, `doctor`, or `auto`.
 - `status` — current final or in-progress session state.
 - `created_at` — session creation timestamp.
 - `updated_at` — latest session update timestamp.
@@ -63,7 +63,7 @@ Each session should store the following top-level fields.
 
 ### Post-MVP Fields
 
-- `parent_session_id`
+- `parent_session_id` — used when child sessions belong to a parent unattended workflow such as `auto`; a resumed `auto` session may also point to the previous parent `auto` session for lineage.
 - `profile`
 - `approval_mode`
 - `sandbox_mode`
@@ -122,6 +122,7 @@ It should be readable by humans and predictable for automation.
 - `changed_files`
 - `findings`
 
+`findings` may be a list of strings for simple summaries, or a list of structured review findings with fields such as `priority`, `title`, `location`, and `detail`.
 These fields are recommended when available, but the model should not require every command to fill them.
 
 ## Artifacts

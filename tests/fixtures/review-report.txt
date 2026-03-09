@@ -1,0 +1,10 @@
+codex
+The patch introduces a user-facing regression in `opencodex run`: the default schema path is resolved from the caller's working directory, so the command breaks outside this repository. It also narrows the structured-output schema in a way that drops previously supported summary fields.
+
+Full review comments:
+
+- [P1] Resolve the bundled run schema relative to the package, not CWD — /Users/lijianqian/svn/tools/openCodex/src/commands/run.js:17-17
+  When `--schema` is omitted, `DEFAULT_SCHEMA_PATH` now points to `path.resolve('schemas', 'run-summary.schema.json')`, which resolves against the user's current working directory. In the normal case where `opencodex` is run inside some other repository (or installed globally), that file does not exist there, so `codex exec --output-schema ...` fails for every `opencodex run` unless the caller manually supplies `--schema`.
+
+- [P2] Keep optional summary fields in the run output schema — /Users/lijianqian/svn/tools/openCodex/src/lib/summary.js:17-20
+  The checked-in schema and `createDefaultRunSchema()` no longer allow `risks`, `validation`, `changed_files`, or `findings`, while `normalizeSummary()` still preserves those fields when Codex returns them. Because `opencodex run` passes this schema to `codex exec` with `additionalProperties: false`, runs that previously emitted these sections will now either lose that metadata or fail schema validation, which is a regression in the stored summary fidelity.

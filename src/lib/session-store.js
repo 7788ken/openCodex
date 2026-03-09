@@ -15,7 +15,7 @@ export function createSessionId() {
 export function createSession({ command, cwd, input, codexCliVersion }) {
   const now = toIsoString();
   return {
-    session_id: createSessionId(),
+    session_id: `${command}-${createSessionId()}`,
     command,
     status: 'queued',
     created_at: now,
@@ -40,7 +40,7 @@ export function getSessionDir(cwd, sessionId) {
 
 export async function saveSession(cwd, session) {
   const sessionDir = getSessionDir(cwd, session.session_id);
-  await mkdir(sessionDir, { recursive: true });
+  await mkdir(path.join(sessionDir, 'artifacts'), { recursive: true });
   await writeJson(path.join(sessionDir, 'session.json'), session);
   return sessionDir;
 }

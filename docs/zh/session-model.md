@@ -51,7 +51,7 @@ session status 应使用以下值：
 ### 字段说明
 
 - `session_id` — openCodex session 的本地唯一标识。
-- `command` — `run`、`review` 或 `doctor` 之一。
+- `command` — `run`、`review`、`doctor` 或 `auto` 之一。
 - `status` — 当前或最终的 session 状态。
 - `created_at` — session 创建时间戳。
 - `updated_at` — 最近一次更新时间戳。
@@ -63,7 +63,7 @@ session status 应使用以下值：
 
 ### MVP 后置字段
 
-- `parent_session_id`
+- `parent_session_id` — 当子 session 属于 `auto` 这类 parent 无人值守工作流时使用；恢复出来的新 `auto` parent session 也可以用它回链到之前的 `auto` session。
 - `profile`
 - `approval_mode`
 - `sandbox_mode`
@@ -122,6 +122,7 @@ session status 应使用以下值：
 - `changed_files`
 - `findings`
 
+`findings` 可以是简单 summary 下的字符串列表，也可以是 review 场景下包含 `priority`、`title`、`location`、`detail` 等字段的结构化对象列表。
 这些字段在可用时建议填写，但模型不应强制每个命令都产出它们。
 
 ## Artifacts

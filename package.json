@@ -10,7 +10,13 @@
   "scripts": {
     "start": "node ./bin/opencodex.js",
     "doctor": "node ./bin/opencodex.js doctor",
-    "test": "node --test"
+    "run": "node ./bin/opencodex.js run",
+    "review": "node ./bin/opencodex.js review",
+    "session": "node ./bin/opencodex.js session",
+    "remote": "node ./bin/opencodex.js remote",
+    "im": "node ./bin/opencodex.js im",
+    "test": "node --test",
+    "service": "node ./bin/opencodex.js service"
   },
   "engines": {
     "node": ">=20"

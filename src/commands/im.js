@@ -7,10 +7,10 @@ import { readJson, readTextIfExists, writeJson, toIsoString } from '../lib/fs.js
 import {
   appendPlanTasksToWorkflow,
   appendWorkflowUserMessage,
-  buildTelegramCtoAutoReplyText,
   buildTelegramCtoFinalText,
   buildTelegramCtoPlanText,
   buildTelegramCtoPlannerPrompt,
+  buildTelegramCtoWorkerExecutionPrompt,
   buildTelegramCtoQuestionText,
   buildTelegramCtoSessionSummary,
   buildTelegramCtoStatusText,
@@ -334,8 +334,13 @@ async function runTelegramListen(args) {
             continuation: Boolean(pendingWorkflow)
           });
           await appendTelegramReply(repliesPath, acknowledgement);
-          await appendFile(logPath, `[${toIsoString()}] reply ${acknowledgement.message_id} to chat ${acknowledgement.chat_id}\n`, 'utf8');
-          process.stdout.write(`Replied to chat ${acknowledgement.chat_id} with message ${acknowledgement.message_id}\n`);
+          if (acknowledgement.kind === 'reaction') {
+            await appendFile(logPath, `[${toIsoString()}] reaction ${acknowledgement.reaction || '👍'} on chat ${acknowledgement.chat_id} message ${acknowledgement.message_id}\n`, 'utf8');
+            process.stdout.write(`Reacted to chat ${acknowledgement.chat_id} message ${acknowledgement.message_id} with ${acknowledgement.reaction || '👍'}\n`);
+          } else {
+            await appendFile(logPath, `[${toIsoString()}] reply ${acknowledgement.message_id} to chat ${acknowledgement.chat_id}\n`, 'utf8');
+            process.stdout.write(`Replied to chat ${acknowledgement.chat_id} with message ${acknowledgement.message_id}\n`);
+          }
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
           await appendFile(logPath, `[${toIsoString()}] reply error for update ${normalizedMessage.update_id}: ${errorMessage}\n`, 'utf8');
@@ -486,14 +491,41 @@ function sanitizeTelegramParams(params) {
 }
 
 async function sendTelegramAutoReply({ apiBaseUrl, botToken, message, delegateMode, continuation = false }) {
-  const replyText = buildTelegramAutoReplyText(message, delegateMode, continuation);
-  return sendTelegramTextMessage({
-    apiBaseUrl,
-    botToken,
-    chatId: message.chat_id,
-    text: replyText,
-    replyToMessageId: message.message_id
+  try {
+    return await sendTelegramMessageReaction({
+      apiBaseUrl,
+      botToken,
+      chatId: message.chat_id,
+      messageId: message.message_id,
+      emoji: '👍'
+    });
+  } catch {
+    const replyText = buildTelegramAutoReplyText(message, delegateMode, continuation);
+    return sendTelegramTextMessage({
+      apiBaseUrl,
+      botToken,
+      chatId: message.chat_id,
+      text: replyText
+    });
+  }
+}
+
+async function sendTelegramMessageReaction({ apiBaseUrl, botToken, chatId, messageId, emoji }) {
+  await callTelegramApi(apiBaseUrl, botToken, 'setMessageReaction', {
+    chat_id: chatId,
+    message_id: messageId,
+    reaction: [{ type: 'emoji', emoji }],
+    is_big: false
   });
+
+  return {
+    provider: 'telegram',
+    kind: 'reaction',
+    chat_id: String(chatId),
+    message_id: messageId,
+    created_at: toIsoString(),
+    reaction: emoji
+  };
 }
 
 async function sendTelegramTextMessage({ apiBaseUrl, botToken, chatId, text, replyToMessageId = undefined }) {
@@ -515,11 +547,7 @@ async function sendTelegramTextMessage({ apiBaseUrl, botToken, chatId, text, rep
 }
 
 function buildTelegramAutoReplyText(message, delegateMode, continuation = false) {
-  if (delegateMode === 'cto') {
-    return buildTelegramCtoAutoReplyText(message, continuation);
-  }
-  const preview = truncateInline(message.text, 120);
-  return `收到，openCodex 已收到你的消息：${preview}`;
+  return '👍';
 }
 
 async function handleTelegramCtoMessage({
@@ -869,7 +897,8 @@ async function executeTelegramCtoTasks({ cwd, profile, message, runtime, runsPat
       parentSessionId: runtime.session.session_id,
       sessionDir: runtime.sessionDir,
       message,
-      task
+      task,
+      workflowState: runtime.state
     });
 
     if (runResult.sessionId) {
@@ -916,7 +945,7 @@ async function executeTelegramCtoTasks({ cwd, profile, message, runtime, runsPat
   }
 }
 
-async function runTelegramCtoTask({ cwd, profile, parentSessionId, sessionDir, message, task }) {
+async function runTelegramCtoTask({ cwd, profile, parentSessionId, sessionDir, message, task, workflowState }) {
   const outputPath = path.join(sessionDir, 'artifacts', `telegram-task-${sanitizeFileComponent(task.id)}.json`);
   const result = await spawnCliCapture([
     'run',
@@ -926,7 +955,11 @@ async function runTelegramCtoTask({ cwd, profile, parentSessionId, sessionDir, m
     profile,
     '--output',
     outputPath,
-    task.worker_prompt
+    buildTelegramCtoWorkerExecutionPrompt({
+      workflowState,
+      task,
+      fallbackMessageText: message.text
+    })
   ], cwd, {
     OPENCODEX_PARENT_SESSION_ID: parentSessionId,
     OPENCODEX_IM_SOURCE: 'telegram',

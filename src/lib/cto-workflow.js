@@ -57,6 +57,28 @@ export function buildTelegramCtoAutoReplyText(message, continuation = false) {
   return `收到，openCodex CTO 主线程已接管，正在拆任务并调度：${preview}`;
 }
 
+export function buildTelegramCtoMainThreadSystemPrompt({ continuation = false } = {}) {
+  return [
+    'You are the dedicated openCodex CTO main thread operating through the Telegram control channel.',
+    'You are the central orchestrator for many worker agents and must stay in the CTO role.',
+    'openCodex is a thin orchestration layer on top of Codex CLI, inspired by openclaw.',
+    'Your job is to decide, sequence, and supervise non-blocking local tasks instead of doing every implementation step yourself.',
+    continuation
+      ? 'You are continuing an existing workflow after the CEO replied.'
+      : 'The user is the CEO and this Telegram message is the active remote control path.',
+    'Return JSON that matches the provided schema.',
+    'Use Simplified Chinese for `summary_zh` and `question_zh`.',
+    'Use English for task titles and worker prompts.',
+    'Create 1-4 concrete tasks at a time. Prefer parallel tasks when dependencies allow.',
+    'You must personally generate and edit every worker prompt. Do not ask workers to invent their own mission.',
+    'Each worker prompt must be self-contained, minimal, reversible, and executable by a child agent without extra clarification.',
+    'Workers reply in Simplified Chinese. Project artifacts stay in English, and docs remain bilingual under docs/en and docs/zh.',
+    continuation
+      ? 'Do not recreate finished tasks. Only create the next executable tasks needed after the CEO response.'
+      : 'If information is insufficient or the next action is high-risk, set mode to "confirm" and ask one concise Chinese question.'
+  ].join('\n');
+}
+
 export function buildTelegramCtoPlannerPrompt({ message, workflowState, continuationMessage = null }) {
   const completedTaskLines = summarizeTasksForPrompt(workflowState.tasks || []);
   const historyLines = (workflowState.user_messages || [])
@@ -65,15 +87,7 @@ export function buildTelegramCtoPlannerPrompt({ message, workflowState, continua
 
   if (continuationMessage) {
     return [
-      'You are the openCodex CTO planner working through the Telegram control channel.',
-      'openCodex is a thin orchestration layer on top of Codex CLI, inspired by openclaw.',
-      'You must remain the orchestration main thread, split work into non-blocking local tasks, and only ask the CEO for confirmation when necessary.',
-      'Return JSON that matches the provided schema.',
-      'Use Simplified Chinese for `summary_zh` and `question_zh`.',
-      'Use English for task titles and worker prompts.',
-      'Create 1-4 concrete tasks at a time. Prefer parallel tasks when dependencies allow.',
-      'Each worker prompt must be self-contained, minimal, reversible, and instruct the worker to reply in Simplified Chinese while keeping project artifacts in English and docs bilingual under docs/en and docs/zh.',
-      'Do not recreate finished tasks. Only create the next executable tasks needed after the CEO response.',
+      buildTelegramCtoMainThreadSystemPrompt({ continuation: true }),
       '',
       'Original Telegram goal:',
       workflowState.goal_text,
@@ -93,16 +107,7 @@ export function buildTelegramCtoPlannerPrompt({ message, workflowState, continua
   }
 
   return [
-    'You are the openCodex CTO planner working through the Telegram control channel.',
-    'The user is the CEO and this Telegram message is the active remote control path.',
-    'openCodex is a thin orchestration layer on top of Codex CLI, inspired by openclaw.',
-    'You must remain the orchestration main thread, split work into non-blocking local tasks, and only ask the CEO for confirmation when necessary.',
-    'Return JSON that matches the provided schema.',
-    'Use Simplified Chinese for `summary_zh` and `question_zh`.',
-    'Use English for task titles and worker prompts.',
-    'Create 1-4 concrete tasks at a time. Prefer parallel tasks when dependencies allow.',
-    'Each worker prompt must be self-contained, minimal, reversible, and instruct the worker to reply in Simplified Chinese while keeping project artifacts in English and docs bilingual under docs/en and docs/zh.',
-    'If information is insufficient or the next action is high-risk, set mode to "confirm" and ask one concise Chinese question.',
+    buildTelegramCtoMainThreadSystemPrompt(),
     '',
     'Telegram message:',
     message.text
@@ -128,7 +133,7 @@ export function normalizeTelegramCtoPlan(rawPlan, fallbackMessageText, workflowS
 
     const title = truncateInline(rawTask.title || `Task ${counter}`, MAX_TITLE_LENGTH) || `Task ${counter}`;
     const workerPrompt = asTrimmedString(rawTask.worker_prompt)
-      || buildFallbackWorkerPrompt({ title, fallbackMessageText });
+      || buildFallbackWorkerDirective({ title, fallbackMessageText });
     const dependsOn = Array.isArray(rawTask.depends_on)
       ? rawTask.depends_on.map((item) => String(item || '').trim()).filter(Boolean)
       : [];
@@ -153,7 +158,7 @@ export function normalizeTelegramCtoPlan(rawPlan, fallbackMessageText, workflowS
     normalizedTasks.push({
       id: ensureUniqueTaskId(`task-${counter}`, seenIds, counter),
       title: truncateInline(fallbackMessageText || 'Local task', MAX_TITLE_LENGTH) || `Task ${counter}`,
-      worker_prompt: buildFallbackWorkerPrompt({ fallbackMessageText }),
+      worker_prompt: buildFallbackWorkerDirective({ fallbackMessageText }),
       depends_on: [],
       status: 'queued',
       session_id: '',
@@ -582,16 +587,43 @@ function findTask(workflowState, taskId) {
   return (workflowState.tasks || []).find((task) => task.id === taskId) || null;
 }
 
-function buildFallbackWorkerPrompt({ title = 'Local task', fallbackMessageText = '' }) {
+export function buildTelegramCtoWorkerSystemPrompt({ workflowState, task }) {
   return [
-    'You are an openCodex worker task delegated by the CTO orchestrator.',
+    'You are an openCodex worker agent delegated by the openCodex CTO main thread.',
+    'The CTO main thread is the sole orchestrator. You are a child worker, not the coordinator.',
+    'Execute only the assigned subtask, report concrete progress, and stop when the task scope is done or blocked.',
     'Reply to the maintainer in Simplified Chinese.',
     'Keep project content in English. Keep docs bilingual under docs/en and docs/zh when docs change.',
-    'Make the smallest practical, reversible progress for this task and validate what you changed when reasonable.',
-    `Task title: ${title}`,
+    'Prefer the smallest practical, reversible change and validate what you changed when reasonable.',
+    `Workflow goal: ${truncateInline(workflowState?.goal_text || '', 160) || '(none)'}`,
+    `Task id: ${task?.id || '(unknown)'}`,
+    `Task title: ${task?.title || '(untitled)'}`,
+    `Dependencies: ${(task?.depends_on || []).length ? task.depends_on.join(', ') : '(none)'}`
+  ].join('\n');
+}
+
+export function buildTelegramCtoWorkerExecutionPrompt({ workflowState, task, fallbackMessageText = '' }) {
+  return [
+    buildTelegramCtoWorkerSystemPrompt({ workflowState, task }),
     '',
-    'Primary instruction:',
-    fallbackMessageText || title
+    'Worker directive from the CTO main thread:',
+    asTrimmedString(task?.worker_prompt) || buildFallbackWorkerDirective({
+      title: task?.title || 'Local task',
+      fallbackMessageText
+    })
+  ].join('\n');
+}
+
+function buildFallbackWorkerDirective({ title = 'Local task', fallbackMessageText = '' }) {
+  return [
+    'Primary instruction from the CTO main thread:',
+    fallbackMessageText || title,
+    '',
+    'Execution constraints:',
+    '- Reply in Simplified Chinese.',
+    '- Keep project content in English.',
+    '- Keep docs bilingual under docs/en and docs/zh when docs change.',
+    '- Prefer the smallest practical, reversible progress and validate what changed when reasonable.'
   ].join('\n');
 }
 

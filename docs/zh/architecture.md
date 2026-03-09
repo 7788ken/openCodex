@@ -29,6 +29,7 @@ openCodex 在 Codex CLI 之上提供编排层。
 - 结果摘要
 - policy 与 profile 映射
 - 项目级约定
+- 同机任务协同
 
 ### Layer 3 — openCodex Gateway
 
@@ -47,15 +48,17 @@ MVP 聚焦 Layer 2。
 
 建议的 MVP 路径：
 
-- `opencodex run` -> `codex exec --json --output-schema`
-- `opencodex review` -> `codex review`
-- `opencodex doctor` -> 本地环境就绪检查
+- `opencodex run` -> 主要的本地干活入口
+- `opencodex session` -> 本地追踪与协同入口
+- `opencodex doctor` -> 辅助型就绪检查
+- `opencodex review` -> 第二阶段 review 工作流
 
 ## 明确的非目标
 
 第一版不应：
 
 - 重写本地 coding engine
+- 把产品收缩成一个健康检查工具
 - 把交互式 TUI 文本解析作为主要契约
 - 依赖 experimental 的 app-server 特性
 - 在本地 CLI 流程尚未跑顺前扩展成 gateway 平台

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { parseArgs } from '../src/lib/args.js';
 import { buildRunArgs, buildSummaryFromMessage } from '../src/commands/run.js';
+import { buildReviewArgs } from '../src/commands/review.js';
 
 test('parseArgs separates flags and positionals', () => {
   const parsed = parseArgs(['hello', '--profile', 'safe', '--json']);
@@ -13,24 +14,55 @@ test('parseArgs separates flags and positionals', () => {
   });
 });
 
-test('buildRunArgs uses schema and output files', () => {
+test('buildRunArgs uses package schema path and output files', () => {
   const args = buildRunArgs('fix bug', { profile: 'safe', cwd: '/tmp/repo' }, {
-    lastMessageFile: '/tmp/message.txt'
+    lastMessagePath: '/tmp/message.txt'
   });
 
   assert.deepEqual(args, [
+    '-a',
+    'never',
+    '-s',
+    'read-only',
+    '-c',
+    'model_reasoning_effort="medium"',
     'exec',
-    'fix bug',
     '--json',
+    '--output-schema',
+    args[9],
     '--output-last-message',
     '/tmp/message.txt',
-    '--output-schema',
-    path.resolve('schemas', 'run-summary.schema.json'),
-    '--cd',
+    '-C',
     '/tmp/repo',
-    '--profile',
-    'safe'
+    'fix bug'
   ]);
+  assert.match(args[9], /schemas[\/]+run-summary\.schema\.json$/);
+});
+
+test('buildReviewArgs applies profile defaults', () => {
+  const args = buildReviewArgs('focus on risks', { profile: 'balanced', uncommitted: true });
+
+  assert.deepEqual(args, [
+    '-a',
+    'never',
+    '-s',
+    'read-only',
+    '-c',
+    'model_reasoning_effort="medium"',
+    'review',
+    '--uncommitted',
+    'focus on risks'
+  ]);
+});
+
+
+test('buildRunArgs uses bundled schema path by default', () => {
+  const args = buildRunArgs('inspect repo', { profile: 'safe', cwd: '/tmp/repo' }, {
+    lastMessagePath: '/tmp/message.txt'
+  });
+
+  assert.equal(path.isAbsolute(args[9]), true);
+  assert.equal(args[9].endsWith('/schemas/run-summary.schema.json'), true);
 });
 
 test('buildSummaryFromMessage parses structured JSON output', () => {
@@ -39,9 +71,15 @@ test('buildSummaryFromMessage parses structured JSON output', () => {
     result: 'Worked',
     status: 'completed',
     highlights: ['a'],
-    next_steps: []
+    next_steps: [],
+    risks: null,
+    validation: null,
+    changed_files: ['src/main.js'],
+    findings: ['one']
   }), 'completed');
 
   assert.equal(summary.title, 'Done');
   assert.equal(summary.status, 'completed');
+  assert.deepEqual(summary.changed_files, ['src/main.js']);
+  assert.deepEqual(summary.findings, ['one']);
 });

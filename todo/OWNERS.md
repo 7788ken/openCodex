@@ -10,6 +10,7 @@ This file maps the current openCodex TODO items to directly responsible owners.
 - `T006-profile-and-policy-layer.md` — Lao Qin
 - `T007-doctor-command.md` — Lao Yan
 - `T008-gateway-spike.md` — Da Liu
+- `T009-auto-run-supervisor.md` — Xiao Lin
 
 ## Review Chain
 

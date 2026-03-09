@@ -24,3 +24,9 @@
 - Capture command outputs.
 - Report validation status in a clear summary.
 
+## Phase 4 — Unattended Execution
+
+- Add a first unattended local workflow surface.
+- Reuse `run`, `session`, and `review` for chained execution.
+- Add safe stop limits and stale-session recovery.
+
