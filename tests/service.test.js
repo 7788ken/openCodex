@@ -545,6 +545,10 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /Use Safe Mode/);
   assert.match(scriptSource, /Use Full Access Mode/);
   assert.match(scriptSource, /Open Latest Workflow/);
+  assert.match(scriptSource, /Edit CTO Soul/);
+  assert.match(scriptSource, /openCtoSoul_/);
+  assert.match(scriptSource, /ctoSoulPath/);
+  assert.match(scriptSource, /open " & quoted form of ctoSoulPath/);
   assert.match(scriptSource, /Send Status Reply/);
   assert.match(scriptSource, /Running Workflows:/);
   assert.match(scriptSource, /Running Tasks:/);

@@ -91,7 +91,7 @@ The app can:
 - browse recent dispatches directly inside the menu bar app and open a detail dialog for each task
 - browse the full task history from the menu bar, then inspect a selected task without leaving the tray workflow
 - change tray settings directly in the UI, including language, badge mode, refresh interval, workflow-id visibility, and path shortcuts
-- reveal the task record, raw events, latest task message, repository, service log, and latest workflow session when needed
+- reveal the task record, raw events, latest task message, repository, service log, latest workflow session, and the editable CTO soul file when needed
 - send a Telegram status reply back to the configured CEO chat
 
 ## Security Notes

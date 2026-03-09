@@ -6,6 +6,7 @@ import { parseOptions } from '../lib/args.js';
 import { ensureDir, pathExists, readJson, readTextIfExists, writeJson } from '../lib/fs.js';
 import { getCodexBin, runCommandCapture } from '../lib/codex.js';
 import { resolveCodexProfile } from '../lib/profile.js';
+import { DEFAULT_CTO_SOUL_RELATIVE_PATH } from '../lib/cto-workflow.js';
 import { getSessionDir, listSessions } from '../lib/session-store.js';
 
 const CLI_PATH = fileURLToPath(new URL('../../bin/opencodex.js', import.meta.url));
@@ -1509,6 +1510,7 @@ property nodePath : ${appleScriptString(process.execPath)}
 property cliPath : ${appleScriptString(CLI_PATH)}
 property stateDir : ${appleScriptString(service.stateDir)}
 property repoPath : ${appleScriptString(service.cwd)}
+property ctoSoulPath : ${appleScriptString(path.join(service.cwd, DEFAULT_CTO_SOUL_RELATIVE_PATH))}
 property stdoutPath : ${appleScriptString(service.stdoutPath)}
 property appTitle : "openCodex CTO"
 
@@ -1578,6 +1580,7 @@ on rebuildMenu(statusText)
 	my addMenuItem(my localizedText(statusText, "Open Repo", "打开仓库"), "openRepo:")
 	my addMenuItem(my localizedText(statusText, "Open Logs", "打开日志"), "openLogs:")
 	my addMenuItem(my localizedText(statusText, "Open Latest Workflow", "打开最近工作流"), "openLatestWorkflow:")
+	my addMenuItem(my localizedText(statusText, "Edit CTO Soul", "编辑 CTO 灵魂文档"), "openCtoSoul:")
 	my addMenuItem(my localizedText(statusText, "Send Status Reply", "发送状态回执"), "sendStatusReply:")
 	my addSeparator()
 	my addMenuItem(my localizedText(statusText, "Quit", "退出"), "quitApp:")
@@ -1884,6 +1887,14 @@ on openLatestWorkflow_(sender)
 		do shell script "open -R " & quoted form of workflowPath
 	end if
 end openLatestWorkflow_
+
+on openCtoSoul_(sender)
+	try
+		do shell script "open " & quoted form of ctoSoulPath
+	on error errorMessage
+		display notification errorMessage with title appTitle
+	end try
+end openCtoSoul_
 
 on openDispatch1_(sender)
 	my openDispatchRecord(1)
