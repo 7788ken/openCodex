@@ -611,6 +611,11 @@ async function collectWorkflowStats(service) {
     sum.total += counts.total;
     return sum;
   }, { running: 0, queued: 0, total: 0 });
+  const childSessionStats = collectChildSessionStats({
+    sessions,
+    trackedSessions,
+    fallbackActiveChildCount: taskTotals.running
+  });
   const dispatchHistory = collectRecentDispatchRecords(service.cwd, workflowInfos);
   const recentDispatches = dispatchHistory.slice(0, 5);
 
@@ -623,8 +628,11 @@ async function collectWorkflowStats(service) {
     dispatch_history_count: dispatchHistory.length,
     recent_dispatch_count: recentDispatches.length,
     recent_dispatches: recentDispatches,
+    active_main_thread_count: runningSessions.length,
     main_thread_count: trackedSessions.length,
-    child_thread_count: trackedSessions.reduce((sum, session) => sum + normalizeChildSessionRefs(session.child_sessions).length, 0),
+    active_child_thread_count: childSessionStats.active,
+    child_session_count: childSessionStats.total,
+    child_thread_count: childSessionStats.total,
     latest_listener_session_id: latestListener?.session_id || '',
     latest_listener_session_path: latestListener ? path.join(getSessionDir(service.cwd, latestListener.session_id), 'session.json') : '',
     latest_workflow_session_id: latestWorkflowInfo?.session_id || '',
@@ -690,6 +698,42 @@ function normalizeChildSessionRefs(childSessions) {
 
   return childSessions.filter((entry) => typeof entry?.session_id === 'string' && entry.session_id);
 }
+
+function collectChildSessionStats({ sessions, trackedSessions, fallbackActiveChildCount = 0 }) {
+  const trackedSessionIds = new Set((trackedSessions || [])
+    .map((session) => typeof session?.session_id === 'string' ? session.session_id : '')
+    .filter(Boolean));
+  const childSessionIds = new Set();
+  const sessionMap = new Map((sessions || [])
+    .filter((session) => typeof session?.session_id === 'string' && session.session_id)
+    .map((session) => [session.session_id, session]));
+
+  for (const session of trackedSessions || []) {
+    for (const entry of normalizeChildSessionRefs(session?.child_sessions)) {
+      childSessionIds.add(entry.session_id);
+    }
+  }
+
+  for (const session of sessions || []) {
+    if (trackedSessionIds.has(session?.parent_session_id)) {
+      childSessionIds.add(session.session_id);
+    }
+  }
+
+  let activeChildCount = 0;
+  for (const childSessionId of childSessionIds) {
+    const childSession = sessionMap.get(childSessionId);
+    if (childSession?.status === 'running' || childSession?.status === 'partial') {
+      activeChildCount += 1;
+    }
+  }
+
+  return {
+    active: Math.max(activeChildCount, fallbackActiveChildCount || 0),
+    total: childSessionIds.size
+  };
+}
+
 function summarizeWorkflowTaskCounts(workflowState) {
   const counts = {
     total: 0,
@@ -835,8 +879,10 @@ function renderServiceOutput(payload, json, title) {
   lines.push(`Running Tasks: ${payload.running_task_count ?? 0}`);
   lines.push(`Queued Tasks: ${payload.queued_task_count ?? 0}`);
   lines.push(`Task History: ${payload.dispatch_history_count ?? 0}`);
-  lines.push(`Main Threads: ${payload.main_thread_count ?? 0}`);
-  lines.push(`Child Threads: ${payload.child_thread_count ?? 0}`);
+  lines.push(`Active Main Threads: ${payload.active_main_thread_count ?? payload.running_workflow_count ?? 0}`);
+  lines.push(`Tracked Main Threads: ${payload.main_thread_count ?? 0}`);
+  lines.push(`Active Child Threads: ${payload.active_child_thread_count ?? payload.running_task_count ?? 0}`);
+  lines.push(`Child Sessions: ${payload.child_session_count ?? payload.child_thread_count ?? 0}`);
   if (payload.latest_workflow_session_id) {
     lines.push(`Latest Workflow: ${payload.latest_workflow_session_id}`);
     lines.push(`Latest Workflow Status: ${payload.latest_workflow_status || 'unknown'}`);
@@ -1315,7 +1361,7 @@ on rebuildMenu(statusText)
 	my addInfoItem("Workflows: running " & my lineValue(statusText, "Running Workflows: ", "0") & " • waiting " & my lineValue(statusText, "Waiting Workflows: ", "0"))
 	my addInfoItem("Tasks: running " & my lineValue(statusText, "Running Tasks: ", "0") & " • queued " & my lineValue(statusText, "Queued Tasks: ", "0"))
 	my addInfoItem("History: total " & my lineValue(statusText, "Task History: ", "0"))
-	my addInfoItem("Threads: main " & my lineValue(statusText, "Main Threads: ", "0") & " • child " & my lineValue(statusText, "Child Threads: ", "0"))
+	my addInfoItem("Threads: main active " & my lineValue(statusText, "Active Main Threads: ", "0") & " • child active " & my lineValue(statusText, "Active Child Threads: ", "0") & " • child total " & my lineValue(statusText, "Child Sessions: ", "0"))
 	set latestWorkflowId to my lineValue(statusText, "Latest Workflow: ", "")
 	if latestWorkflowId is not "" then
 		set latestWorkflowStatus to my lineValue(statusText, "Latest Workflow Status: ", "unknown")
@@ -1379,8 +1425,9 @@ on refreshStatus()
 	set waitingCount to my lineValue(statusText, "Waiting Workflows: ", "0")
 	set runningTaskCount to my lineValue(statusText, "Running Tasks: ", "0")
 	set queuedTaskCount to my lineValue(statusText, "Queued Tasks: ", "0")
-	set mainCount to my lineValue(statusText, "Main Threads: ", "0")
-	set childCount to my lineValue(statusText, "Child Threads: ", "0")
+	set mainCount to my lineValue(statusText, "Active Main Threads: ", "0")
+	set childCount to my lineValue(statusText, "Active Child Threads: ", "0")
+	set totalChildCount to my lineValue(statusText, "Child Sessions: ", "0")
 	if serviceState is "running" then
 		set titlePrefix to "OC●"
 		if modeLabel is "full-access" then
@@ -1396,7 +1443,7 @@ on refreshStatus()
 	else
 		button's setTitle_("OC○")
 	end if
-	button's setToolTip_("openCodex CTO • " & serviceState & " • wf " & runningCount & "/" & waitingCount & " • task " & runningTaskCount & "/" & queuedTaskCount & " • main " & mainCount & " • child " & childCount & " • " & modeLabel)
+	button's setToolTip_("openCodex CTO • " & serviceState & " • wf " & runningCount & "/" & waitingCount & " • task " & runningTaskCount & "/" & queuedTaskCount & " • main active " & mainCount & " • child active " & childCount & " • child total " & totalChildCount & " • " & modeLabel)
 end refreshStatus
 
 on runStatusCommand(asJson)
@@ -1788,7 +1835,7 @@ function buildTelegramServiceStatusReply(payload) {
     `权限：${payload.profile || payload.permission_mode || 'unknown'}`,
     `工作流：running ${payload.running_workflow_count ?? 0} / waiting ${payload.waiting_workflow_count ?? 0}`,
     `任务：running ${payload.running_task_count ?? 0} / queued ${payload.queued_task_count ?? 0}`,
-    `线程：主 ${payload.main_thread_count ?? 0} / 子 ${payload.child_thread_count ?? 0}`
+    `线程：主活跃 ${payload.active_main_thread_count ?? payload.running_workflow_count ?? 0} / 子活跃 ${payload.active_child_thread_count ?? payload.running_task_count ?? 0} / 子累计 ${payload.child_session_count ?? payload.child_thread_count ?? 0}`
   ];
 
   if (payload.latest_workflow_session_id) {

@@ -102,7 +102,10 @@ test('service telegram status includes workflow counts and latest workflow detai
   assert.equal(payload.recent_dispatches.length, 5);
   assert.match(payload.recent_dispatches[0].label, /^\[(completed|running)\]/);
   assert.match(payload.recent_dispatches[0].path, /\.opencodex\/sessions\/.*\/session\.json$/);
+  assert.equal(payload.active_main_thread_count, 1);
   assert.equal(payload.main_thread_count, 2);
+  assert.equal(payload.active_child_thread_count, 1);
+  assert.equal(payload.child_session_count, 5);
   assert.equal(payload.child_thread_count, 5);
   assert.equal(payload.latest_workflow_session_id, 'cto-20260309-100500-waiting');
   assert.equal(payload.latest_workflow_status, 'waiting');
@@ -382,7 +385,7 @@ test('service telegram send-status sends the current workflow snapshot back to T
   assert.match(telegram.state.sentMessages[0].text, /openCodex CTO 状态回执/);
   assert.match(telegram.state.sentMessages[0].text, /工作流：running 1 \/ waiting 1/);
   assert.match(telegram.state.sentMessages[0].text, /任务：running 1 \/ queued 2/);
-  assert.match(telegram.state.sentMessages[0].text, /线程：主 2 \/ 子 5/);
+  assert.match(telegram.state.sentMessages[0].text, /线程：主活跃 1 \/ 子活跃 1 \/ 子累计 5/);
   assert.match(telegram.state.sentMessages[0].text, /Deploy change after confirmation/);
 
   await telegram.close();
@@ -450,8 +453,12 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /Events — /);
   assert.match(scriptSource, /Last Message — /);
   assert.doesNotMatch(scriptSource, /Open Message/);
-  assert.match(scriptSource, /Main Threads:/);
+  assert.match(scriptSource, /Active Main Threads:/);
+  assert.match(scriptSource, /Active Child Threads:/);
+  assert.match(scriptSource, /Child Sessions:/);
+  assert.match(scriptSource, /Threads: main active/);
   assert.match(scriptSource, /runningTaskCount/);
+  assert.match(scriptSource, /totalChildCount/);
   assert.match(scriptSource, /service telegram send-status/);
   assert.match(scriptSource, /OC⚡/);
 });
