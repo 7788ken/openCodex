@@ -34,10 +34,13 @@ const TELEGRAM_EXECUTION_HINT_PATTERN = /(继续|推进|安排|检查|修复|处
 const TELEGRAM_ANALYSIS_INTENT_PATTERN = /(检查|审查|review|inspect|audit|分析|评估|evaluate|analyze|看看|诊断|研究|拆解)/i;
 const TELEGRAM_REASONING_TARGET_PATTERN = /(思考|思维|推理|reasoning|深度|质量|判断|决策)/i;
 const TELEGRAM_ARCHITECTURE_TARGET_PATTERN = /(架构|workflow|工作流|主线程|子线程|调度|planner|prompt|session|任务栏|telegram|cto)/i;
-const TELEGRAM_CTO_NAME_PATTERN = /(cto|open\s*codex|opencodex)/i;
 const TELEGRAM_CTO_CASUAL_CHAT_PATTERN = /(陪我聊聊天|陪聊|聊聊天|聊会儿|聊天吗|可以聊天吗|能聊天吗|陪我说说话|随便聊聊)/i;
-const TELEGRAM_CTO_GREETING_PATTERN = /^(?:(?:cto|open\s*codex|opencodex)[,，:：\s]*)?(?:你在吗|在吗|你好|hello|hi|hey|早上好|晚上好|午安|辛苦了)(?:[!！?？~～\s]*)$/i;
+const TELEGRAM_CTO_GREETING_PATTERN = /^(?:(?:cto|open\s*codex|opencodex)[,，:：\s]*)?(?:嘿|嗨|哈喽|哈啰|你在吗|在吗|在不|在嘛|你好|hello|hi|hey|yo|早上好|晚上好|午安|辛苦了)(?:[!！?？~～\s]*)$/i;
 const TELEGRAM_CTO_STATUS_HINT_PATTERN = /(状态|进度|历史|最近任务|任务历史|workflow|工作流|task\s*history|workflow\s*status|task\s*status|安排了哪些任务)/i;
+const TELEGRAM_SHORT_CASUAL_TEXTS = new Set([
+  '嘿', '嗨', '哈喽', '哈啰', 'hello', 'hi', 'hey', 'yo',
+  '在吗', '你在吗', '在不', '在嘛', '你好', '辛苦了', '早', '早安', '午安', '晚安'
+]);
 
 export function isLikelyTelegramNonDirectiveMessage(text) {
   const rawText = String(text || '').trim();
@@ -133,25 +136,65 @@ export function buildTelegramCtoAutoReplyText(message, continuation = false) {
   return `收到，openCodex CTO 主线程已接管，正在拆任务并调度：${preview}`;
 }
 
-export function isLikelyTelegramCtoCasualChatMessage(text) {
+export function classifyTelegramCtoMessageIntent(text) {
   const rawText = String(text || '').trim();
   if (!rawText) {
-    return false;
+    return {
+      kind: 'empty',
+      label_zh: '空消息',
+      reason_zh: '消息为空。'
+    };
   }
 
-  if (TELEGRAM_EXECUTION_HINT_PATTERN.test(rawText) || TELEGRAM_CTO_STATUS_HINT_PATTERN.test(rawText)) {
-    return false;
+  const compactText = normalizeTelegramIntentText(rawText);
+
+  if (TELEGRAM_CTO_STATUS_HINT_PATTERN.test(rawText)) {
+    return {
+      kind: 'status_query',
+      label_zh: '状态/历史查询',
+      reason_zh: '命中了状态、工作流或任务历史关键词。'
+    };
   }
 
-  if (TELEGRAM_CTO_CASUAL_CHAT_PATTERN.test(rawText)) {
-    return true;
+  if (TELEGRAM_CTO_CASUAL_CHAT_PATTERN.test(rawText)
+    || TELEGRAM_CTO_GREETING_PATTERN.test(rawText)
+    || TELEGRAM_SHORT_CASUAL_TEXTS.has(compactText)
+    || (compactText.length <= 6 && TELEGRAM_SHORT_CASUAL_TEXTS.has(compactText))) {
+    return {
+      kind: 'casual_chat',
+      label_zh: '轻聊天 / 寒暄',
+      reason_zh: '更像打招呼、陪聊或轻反馈，不像执行请求。'
+    };
   }
 
-  if (!TELEGRAM_CTO_NAME_PATTERN.test(rawText)) {
-    return false;
+  if (isLikelyTelegramNonDirectiveMessage(rawText)) {
+    return {
+      kind: 'casual_chat',
+      label_zh: '轻反馈 / 寒暄',
+      reason_zh: '缺少执行意图，更像反馈、点赞或寒暄。'
+    };
   }
 
-  return TELEGRAM_CTO_GREETING_PATTERN.test(rawText);
+  if (TELEGRAM_EXECUTION_HINT_PATTERN.test(rawText)
+    || TELEGRAM_ANALYSIS_INTENT_PATTERN.test(rawText)
+    || TELEGRAM_REASONING_TARGET_PATTERN.test(rawText)
+    || TELEGRAM_ARCHITECTURE_TARGET_PATTERN.test(rawText)) {
+    return {
+      kind: 'directive',
+      label_zh: '执行 / 分析请求',
+      reason_zh: '命中了执行、分析、推理或架构类关键词。'
+    };
+  }
+
+  return {
+    kind: 'directive',
+    label_zh: '可能是执行请求',
+    reason_zh: '当前未命中状态、控制或轻聊天规则，所以会按执行型消息处理。'
+  };
+}
+
+export function isLikelyTelegramCtoCasualChatMessage(text) {
+  return classifyTelegramCtoMessageIntent(text).kind === 'casual_chat';
 }
 
 export function buildTelegramCtoDirectReplyPrompt({ message, pendingWorkflowState = null, soulText = '', soulPath = '' }) {
@@ -1205,6 +1248,14 @@ function ensureUniqueTaskId(baseId, seenIds, index) {
     suffix += 1;
   }
   return `${baseId}-${suffix}` || `task-${index}`;
+}
+
+function normalizeTelegramIntentText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[\(（\[【][^\)）\]】]{0,24}[\)）\]】]/g, '')
+    .replace(/[\s,，。.!！?？、;；:：\-—_~～'"`]+/g, '')
+    .trim();
 }
 
 function truncateInline(value, maxLength = 160) {

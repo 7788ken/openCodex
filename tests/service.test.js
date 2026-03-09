@@ -211,6 +211,9 @@ test('service telegram workflow-detail returns workflow execution details for UI
   assert.equal(payload.workflow_session_id, 'cto-20260309-100500-waiting');
   assert.equal(payload.status, 'waiting');
   assert.equal(payload.goal, 'Deploy change after confirmation');
+  assert.equal(payload.inferred_intent, 'directive');
+  assert.equal(payload.inferred_intent_zh, '执行 / 分析请求');
+  assert.match(payload.routing_hint_zh, /执行\/分析型请求/);
   assert.equal(payload.pending_question, '请确认是否继续发布');
   assert.equal(payload.task_counts.total, 3);
   assert.equal(payload.task_counts.queued, 2);

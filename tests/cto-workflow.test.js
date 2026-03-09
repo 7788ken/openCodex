@@ -15,7 +15,9 @@ import {
   buildDefaultCtoSoulDocument,
   collectHistoricalStuckCtoWorkflowCandidates,
   injectHistoricalCtoRepairTask,
+  isLikelyTelegramCtoCasualChatMessage,
   isLikelyTelegramNonDirectiveMessage,
+  classifyTelegramCtoMessageIntent,
   normalizeTelegramCtoPlan,
   shouldPromoteWorkflowGoal
 } from '../src/lib/cto-workflow.js';
@@ -145,6 +147,17 @@ test('cto workflow keeps the original goal when the later Telegram reply is only
   assert.equal(workflowState.goal_text, '修复 Telegram CTO 续跑逻辑');
   assert.equal(workflowState.latest_user_message, '好的，加油');
   assert.equal(workflowState.user_messages.length, 1);
+});
+
+test('cto intent classifier treats short greeting with emoticon as casual chat', () => {
+  const classified = classifyTelegramCtoMessageIntent('嘿(ಡωಡ)');
+  assert.equal(classified.kind, 'casual_chat');
+  assert.equal(isLikelyTelegramCtoCasualChatMessage('嘿(ಡωಡ)'), true);
+});
+
+test('cto intent classifier still treats explicit execution requests as directive', () => {
+  const classified = classifyTelegramCtoMessageIntent('继续推进 Telegram CTO 的续跑修复');
+  assert.equal(classified.kind, 'directive');
 });
 
 

@@ -6,7 +6,7 @@ import { parseOptions } from '../lib/args.js';
 import { ensureDir, pathExists, readJson, readTextIfExists, writeJson } from '../lib/fs.js';
 import { getCodexBin, runCommandCapture } from '../lib/codex.js';
 import { resolveCodexProfile } from '../lib/profile.js';
-import { DEFAULT_CTO_SOUL_RELATIVE_PATH, buildDefaultCtoSoulDocument, loadCtoSoulDocument } from '../lib/cto-workflow.js';
+import { DEFAULT_CTO_SOUL_RELATIVE_PATH, buildDefaultCtoSoulDocument, classifyTelegramCtoMessageIntent, loadCtoSoulDocument } from '../lib/cto-workflow.js';
 import { getSessionDir, listSessions } from '../lib/session-store.js';
 
 const CLI_PATH = fileURLToPath(new URL('../../bin/opencodex.js', import.meta.url));
@@ -1363,12 +1363,19 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
       })
     : [];
 
+  const goal = workflowState?.goal_text || workflowSession?.input?.prompt || workflow?.goal || '';
+  const inferredIntent = classifyTelegramCtoMessageIntent(goal);
+  const normalizedStatus = normalizeWorkflowHistoryStatus(workflowState?.status || workflowSession?.status || workflow?.status || '');
+
   return {
     ok: true,
     index,
     workflow_session_id: workflowSessionId,
-    status: normalizeWorkflowHistoryStatus(workflowState?.status || workflowSession?.status || workflow?.status || ''),
-    goal: workflowState?.goal_text || workflowSession?.input?.prompt || workflow?.goal || '',
+    status: normalizedStatus,
+    goal,
+    inferred_intent: inferredIntent.kind,
+    inferred_intent_zh: inferredIntent.label_zh,
+    routing_hint_zh: buildWorkflowRoutingHintZh({ goal, status: normalizedStatus, inferredIntent }),
     pending_question: workflowState?.pending_question_zh || workflow?.pending_question || '',
     updated_at: workflow?.updated_at || workflowState?.updated_at || workflowSession?.updated_at || '',
     child_thread_count: typeof workflow?.child_thread_count === 'number' ? workflow.child_thread_count : normalizeChildSessionRefs(workflowSession?.child_sessions).length,
@@ -1390,6 +1397,28 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
   };
 }
 
+function buildWorkflowRoutingHintZh({ goal, status, inferredIntent }) {
+  if (!goal) {
+    return '';
+  }
+
+  if (inferredIntent?.kind === 'casual_chat') {
+    return ['running', 'waiting'].includes(String(status || ''))
+      ? '这条消息本身更像轻聊天；如果它仍进入 workflow，通常表示旧规则误判，或当时没有命中轻聊天分流。'
+      : '这条消息更像轻聊天，正常情况下应直接回复而不是进入 workflow。';
+  }
+
+  if (inferredIntent?.kind === 'status_query') {
+    return '这条消息更像状态/历史查询，正常情况下应直接汇报现有 workflow。';
+  }
+
+  if (inferredIntent?.kind === 'directive') {
+    return '这条消息被识别为执行/分析型请求，所以 CTO 主线程会新建或续跑 workflow。';
+  }
+
+  return inferredIntent?.reason_zh || '';
+}
+
 function renderWorkflowDetailOutput(payload, json, title) {
   if (json) {
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
@@ -1404,6 +1433,12 @@ function renderWorkflowDetailOutput(payload, json, title) {
   lines.push(`Status: ${payload.status || 'unknown'}`);
   if (payload.goal) {
     lines.push(`Goal: ${truncateInline(payload.goal, 160)}`);
+  }
+  if (payload.inferred_intent_zh) {
+    lines.push(`Interpreted Intent: ${payload.inferred_intent_zh}`);
+  }
+  if (payload.routing_hint_zh) {
+    lines.push(`Routing Hint: ${truncateInline(payload.routing_hint_zh, 200)}`);
   }
   if (payload.pending_question) {
     lines.push(`Pending Question: ${truncateInline(payload.pending_question, 160)}`);
