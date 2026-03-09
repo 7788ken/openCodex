@@ -31,3 +31,5 @@ That requires openCodex to hand inbound messages to the local CTO workflow and s
 - Implemented with `--cto` and optional `--profile <name>`.
 - Parent Telegram sessions now record delegated child sessions and add `telegram-runs.jsonl` as an artifact.
 - The delegated completion summary is sent back to the same Telegram chat thread.
+- This is now a transitional bridge: the next phase is to move the CTO identity and workflow ownership fully into the host supervisor.
+- Follow-up tasks `T013`, `T014`, and `T015` will demote sandbox child sessions into advisor/planner/helper roles instead of treating them as the CTO identity.

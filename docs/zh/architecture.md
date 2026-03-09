@@ -31,6 +31,30 @@ openCodex 在 Codex CLI 之上提供编排层。
 - 项目级约定
 - 同机任务协同
 
+### Layer 2A — Host Supervisor
+
+openCodex CTO 应该驻留在这一层。
+这个宿主机上的 supervisor 负责：
+
+- 面向 CEO 的长期身份与主线程归属
+- workflow 状态、路由与队列监管
+- 决定继续、reroute、停止还是回头确认
+- 汇总子会话建议并形成唯一的 CTO 回复
+- 持有任务栏、Telegram 等常驻控制面
+
+### Layer 2B — Sandbox Advisor Sessions
+
+沙箱子会话应当是下属 helper，而不是 CTO 身份本体。
+它们可以承担：
+
+- planner
+- analyst
+- reviewer
+- 局部实现 helper
+
+但它们不应成为 supervisor of record。
+最终决策、状态归属与面向用户的回复仍由宿主 supervisor 持有。
+
 ### Layer 3 — openCodex Gateway
 
 这一层保留给后续阶段。
@@ -52,12 +76,14 @@ MVP 聚焦 Layer 2。
 - `opencodex session` -> 本地追踪与协同入口
 - `opencodex doctor` -> 辅助型就绪检查
 - `opencodex review` -> 第二阶段 review 工作流
+- `opencodex service` / `opencodex im` -> CTO 模式的宿主 supervisor 控制面
 
 ## 明确的非目标
 
 第一版不应：
 
 - 重写本地 coding engine
+- 让某个沙箱子会话冒充 CTO 身份
 - 把产品收缩成一个健康检查工具
 - 把交互式 TUI 文本解析作为主要契约
 - 依赖 experimental 的 app-server 特性

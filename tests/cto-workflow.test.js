@@ -29,7 +29,9 @@ import {
 test('cto main thread prompt declares central orchestration ownership', () => {
   const prompt = buildTelegramCtoMainThreadSystemPrompt();
   assert.match(prompt, /dedicated openCodex CTO main thread/i);
+  assert.match(prompt, /host-level supervisor/i);
   assert.match(prompt, /central orchestrator for many worker agents/i);
+  assert.match(prompt, /not the CEO-facing CTO identity/i);
   assert.match(prompt, /personally generate and edit every worker prompt/i);
   assert.match(prompt, /infer the CEO intent from context/i);
   assert.match(prompt, /openclaw/i);
@@ -80,6 +82,10 @@ test('cto default soul template is based on the Codex CLI personal assistant per
   assert.match(template, /general-purpose Codex CLI personal assistant persona/);
   assert.match(template, /primary local execution engine/);
   assert.match(template, /CTO-style orchestrator/);
+  assert.match(template, /host-supervisor layer/);
+  assert.match(template, /Sandbox Codex sessions are advisors, planners, reviewers/);
+  assert.match(template, /Support natural chat, discussion, and research-style exploration/);
+  assert.match(template, /three interaction modes: chat, exploration, and orchestration/);
 });
 
 test('cto worker execution prompt wraps child work under the main thread', () => {
@@ -95,11 +101,12 @@ test('cto worker execution prompt wraps child work under the main thread', () =>
     }
   });
 
-  assert.match(prompt, /worker agent delegated by the openCodex CTO main thread/i);
+  assert.match(prompt, /sandbox-side advisor session/i);
   assert.match(prompt, /sole orchestrator/i);
   assert.match(prompt, /Workflow goal: Fix the Telegram CTO workflow/);
   assert.match(prompt, /Task id: fix-telegram-cto/);
   assert.match(prompt, /Dependencies: inspect-current-flow/);
+  assert.match(prompt, /CEO-facing CTO identity/i);
   assert.match(prompt, /Worker directive from the CTO main thread:/);
   assert.match(prompt, /Update the IM routing and add regression coverage\./);
 });
@@ -173,6 +180,14 @@ test('cto conversation gate keeps the first vague task-like turn in chat mode', 
   assert.equal(shouldKeepTelegramCtoInConversationMode({
     text: '帮我看看',
     chatState: { direct_reply_count: 0 },
+    hasPendingWorkflow: false
+  }), true);
+});
+
+test('cto conversation gate keeps exploration turns in direct discussion mode', () => {
+  assert.equal(shouldKeepTelegramCtoInConversationMode({
+    text: '我们先研究一下任务栏 UI 和 Telegram 的关系',
+    chatState: { direct_reply_count: 3 },
     hasPendingWorkflow: false
   }), true);
 });

@@ -11,6 +11,8 @@ The goal of this repository is to explore a practical, repo-aware coding workflo
 - apply targeted changes,
 - verify results with focused validation,
 - support same-machine task coordination.
+- keep the CTO role on the host machine while sandbox child sessions stay subordinate helpers.
+- let the CTO support chat, discussion, and research before switching into orchestration.
 
 ## Language Policy
 
@@ -34,8 +36,8 @@ The goal of this repository is to explore a practical, repo-aware coding workflo
 - `opencodex review` — run a repository review and store a normalized review session with structured findings when the report format allows.
 - `opencodex auto` — run an unattended local workflow with a parent session, chained child sessions, optional retries, and optional review.
 - `opencodex remote` — open a token-protected HTTP bridge so your phone can send messages into the current workspace.
-- `opencodex im` — connect openCodex to IM platforms like Telegram without depending on local IP reachability, and route messages into a local CTO orchestration workflow with task splitting, progress replies, and confirmation gates.
-- `opencodex service` — install a macOS launchd service and optional menu bar app for the Telegram CTO bridge, with a configurable permission mode.
+- `opencodex im` — connect openCodex to IM platforms like Telegram without depending on local IP reachability, and route messages into a host-resident CTO supervisor workflow with task splitting, progress replies, and confirmation gates.
+- `opencodex service` — install a macOS launchd service and optional menu bar app for the Telegram CTO bridge, with a configurable permission mode and host-supervisor control loop.
 
 ## Quick Start
 

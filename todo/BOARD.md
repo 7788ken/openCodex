@@ -7,6 +7,8 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 
 - Codex CLI is the local execution engine.
 - openCodex is the orchestration, workflow, and product layer on top.
+- The CTO role must live as a host-resident supervisor, not as a sandbox child agent.
+- Sandbox child sessions are advisors, planners, reviewers, or narrowly scoped helpers for the host supervisor.
 - The primary goal is local work execution and same-machine collaboration.
 - `doctor` is a supporting safety rail, not the main product surface.
 
@@ -28,16 +30,21 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 - `T004-review-command-wrapper.md`
 - `T006-profile-and-policy-layer.md`
 - `T009-auto-run-supervisor.md`
+- `T013-host-supervisor-runtime.md`
+- `T014-sandbox-advisor-session-contract.md`
+- `T015-supervisor-session-and-ui-separation.md`
+- `T016-cto-conversation-and-research-mode.md`
 
 ### P2
 
 - `T008-gateway-spike.md`
 - `T010-remote-mobile-bridge.md`
 - `T011-telegram-im-connector.md`
+- `T012-telegram-cto-delegation.md`
 
 ## Recommended Execution Order
 
-`T001 -> (T002 + T005) -> T003 -> T007 -> T004 -> T006 -> T009 -> T008`
+`T001 -> (T002 + T005) -> T003 -> T007 -> T004 -> T006 -> T009 -> T011 -> T012 -> (T013 + T014) -> T015 -> T016 -> T010 -> T008`
 
 ## Dependency Notes
 
@@ -48,7 +55,12 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 5. `T007` improves readiness checks after the first real work path exists.
 6. `T006` should follow the first concrete command flows instead of leading them.
 7. `T009` should build on top of `run`, `session`, and `review` instead of bypassing them.
-8. `T008` is explicitly isolated from MVP.
+8. `T011` and `T012` establish the phone-to-host control channel.
+9. `T013` moves the CTO identity and workflow ownership fully to the host supervisor.
+10. `T014` defines what sandbox child sessions are allowed to do under that supervisor.
+11. `T015` makes the separation visible in session history, tray UI, and workflow inspection.
+12. `T016` turns chat, discussion, and research into first-class CTO interaction modes.
+13. `T008` is explicitly isolated from MVP.
 
 ## Parallelization Guidance
 
@@ -58,6 +70,9 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 - Keep `T007` as a support track around `T003`, not ahead of it.
 - Keep `T004` and `T006` in the second wave.
 - Move `T009` to the front of the post-MVP execution track once the wrapper surfaces are stable.
+- After the Telegram bridge works, prioritize `T013` and `T014` together.
+- Keep `T015` right behind them so the UI reflects the new control model.
+- Move `T016` right after the supervisor split so the CEO can use CTO naturally even before issuing explicit commands.
 - Keep `T008` parked until the local CLI milestone is complete.
 
 ## Current Status
@@ -73,4 +88,8 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 - `T009` — unattended workflow implemented with parent session and iteration limits
 - `T010` — remote mobile bridge MVP implemented
 - `T011` — Telegram IM connector MVP implemented
-- `T012` — Telegram CTO delegation loop implemented
+- `T012` — Telegram CTO delegation loop implemented as a transitional bridge
+- `T013` — planned
+- `T014` — planned
+- `T015` — planned
+- `T016` — planned

@@ -1751,7 +1751,7 @@ function noteTelegramChatDirectReply(chatState, message, mode = 'casual') {
     return;
   }
   chatState.direct_reply_count = Number(chatState.direct_reply_count || 0) + 1;
-  chatState.last_mode = mode === 'conversation' ? 'conversation' : 'casual';
+  chatState.last_mode = ['conversation', 'exploration'].includes(mode) ? mode : 'casual';
   chatState.last_user_message = message.text;
   chatState.last_updated_at = message.created_at || toIsoString();
 }
@@ -1958,6 +1958,10 @@ async function resolveTelegramCtoDirectReply({ message, pendingWorkflow, chatSta
 }
 
 function determineTelegramCtoReplyMode({ text, pendingWorkflow, chatState }) {
+  const intent = classifyTelegramCtoMessageIntent(text);
+  if (intent.kind === 'exploration') {
+    return 'exploration';
+  }
   if (shouldKeepTelegramCtoInConversationMode({
     text,
     chatState,

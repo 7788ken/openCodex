@@ -11,6 +11,13 @@ This file maps the current openCodex TODO items to directly responsible owners.
 - `T007-doctor-command.md` — Lao Yan
 - `T008-gateway-spike.md` — Da Liu
 - `T009-auto-run-supervisor.md` — Xiao Lin
+- `T010-remote-mobile-bridge.md` — A Feng
+- `T011-telegram-im-connector.md` — Xiao Lin
+- `T012-telegram-cto-delegation.md` — Xiao Lin
+- `T013-host-supervisor-runtime.md` — Lao Qin
+- `T014-sandbox-advisor-session-contract.md` — A Jie
+- `T015-supervisor-session-and-ui-separation.md` — A Feng
+- `T016-cto-conversation-and-research-mode.md` — Xiao Lin
 
 ## Review Chain
 
