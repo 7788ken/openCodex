@@ -77,3 +77,5 @@
 - The macOS tray app now shows task-history count in `status`, adds `Browse Task History…`, and opens a detail dialog with shortcuts to the task record, raw events, and last task message.
 - Service and command-spec docs were updated in both English and Chinese to keep the tray workflow surface documented.
 - Validation passed again after the tray task-history work: `npm test` is green with 76 passing tests.
+- Telegram CTO follow-up queries now support `最近任务` / `任务历史` / `recent tasks` / `task history`, returning a compact task-history summary without creating a new workflow.
+- Validation passed again after the Telegram task-history reply work: `npm test` is green with 77 passing tests.

@@ -521,6 +521,180 @@ test('im telegram listen --cto can report a referenced workflow id without dispa
   assert.equal(sessionIds.length, 2);
 });
 
+test('im telegram listen --cto can report recent task history without dispatching a new workflow', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-task-history-'));
+  const workflowId = 'cto-20260308-232854-zetg6z';
+  const workflowDir = path.join(cwd, '.opencodex', 'sessions', workflowId);
+  const workflowStatePath = path.join(workflowDir, 'artifacts', 'cto-workflow.json');
+  const workflowState = {
+    workflow_session_id: workflowId,
+    provider: 'telegram',
+    chat_id: '123456',
+    source_update_id: 500,
+    source_message_id: 900,
+    sender_display: 'Li Jianqian',
+    goal_text: 'please inspect the repo',
+    latest_user_message: 'please inspect the repo',
+    created_at: '2026-03-08T15:28:54.000Z',
+    updated_at: '2026-03-08T15:29:10.000Z',
+    status: 'completed',
+    plan_mode: 'execute',
+    plan_summary_zh: '已拆分任务并完成执行。',
+    pending_question_zh: '',
+    task_counter: 3,
+    tasks: [
+      {
+        id: 'inspect-repo',
+        title: 'Inspect repository',
+        worker_prompt: 'MOCK_WORKER inspect-repo',
+        depends_on: [],
+        status: 'completed',
+        session_id: 'run-1',
+        summary_status: 'completed',
+        result: 'The mock repository inspection completed successfully.',
+        next_steps: [],
+        changed_files: ['src/mock-inspection.js'],
+        updated_at: '2026-03-08T15:28:59.000Z'
+      },
+      {
+        id: 'summarize-findings',
+        title: 'Summarize findings',
+        worker_prompt: 'MOCK_WORKER summarize-findings',
+        depends_on: ['inspect-repo'],
+        status: 'completed',
+        session_id: 'run-2',
+        summary_status: 'completed',
+        result: 'The mock findings summary completed successfully.',
+        next_steps: [],
+        changed_files: ['docs/en/mock-summary.md', 'docs/zh/mock-summary.md'],
+        updated_at: '2026-03-08T15:29:10.000Z'
+      },
+      {
+        id: 'archive-report',
+        title: 'Archive report',
+        worker_prompt: 'MOCK_WORKER archive-report',
+        depends_on: ['summarize-findings'],
+        status: 'completed',
+        session_id: 'run-3',
+        summary_status: 'completed',
+        result: 'The mock archive task completed successfully.',
+        next_steps: [],
+        changed_files: [],
+        updated_at: '2026-03-08T15:29:12.000Z'
+      }
+    ],
+    user_messages: [
+      {
+        update_id: 500,
+        message_id: 900,
+        text: 'please inspect the repo',
+        created_at: '2026-03-08T15:28:54.000Z'
+      }
+    ]
+  };
+  const workflowSession = {
+    session_id: workflowId,
+    command: 'cto',
+    status: 'completed',
+    created_at: '2026-03-08T15:28:54.000Z',
+    updated_at: '2026-03-08T15:29:12.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'telegram-cto',
+    input: {
+      prompt: 'please inspect the repo',
+      arguments: {
+        provider: 'telegram',
+        profile: 'full-access',
+        update_id: 500,
+        chat_id: '123456',
+        sender: 'Li Jianqian'
+      }
+    },
+    summary: {
+      title: 'CTO workflow completed',
+      result: 'Completed 3/3 workflow task(s).',
+      status: 'completed',
+      highlights: [],
+      next_steps: []
+    },
+    artifacts: [
+      {
+        type: 'cto_workflow',
+        path: workflowStatePath,
+        description: 'Telegram CTO workflow state and task graph.'
+      }
+    ]
+  };
+
+  await mkdir(path.join(workflowDir, 'artifacts'), { recursive: true });
+  await writeFile(path.join(workflowDir, 'session.json'), `${JSON.stringify(workflowSession, null, 2)}\n`, 'utf8');
+  await writeFile(workflowStatePath, `${JSON.stringify(workflowState, null, 2)}\n`, 'utf8');
+
+  const telegram = await startTelegramMockServer({
+    updates: [
+      {
+        update_id: 601,
+        message: {
+          message_id: 1001,
+          date: 1741435601,
+          text: '最近任务',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      }
+    ]
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const child = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  await waitForCondition(() => telegram.state.sentMessages.length >= 1, 'recent task history reply');
+  await waitForCondition(() => stdout.includes('Reported CTO workflow status for update 601'), 'recent task history status log');
+
+  assert.equal(telegram.state.sentMessages.length, 1);
+  assert.match(telegram.state.sentMessages[0].text, /openCodex CTO 最近任务/);
+  assert.match(telegram.state.sentMessages[0].text, /\[completed\] archive-report/);
+  assert.match(telegram.state.sentMessages[0].text, /\[completed\] summarize-findings/);
+  assert.match(telegram.state.sentMessages[0].text, /\[completed\] inspect-repo/);
+  assert.doesNotMatch(stdout, /started workflow .* for update 601/);
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+});
+
 test('im telegram listen --cto asks for confirmation before execution when planner requires it', async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-confirm-'));
   const telegram = await startTelegramMockServer({

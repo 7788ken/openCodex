@@ -25,6 +25,8 @@ The first version supports Telegram only:
 - optionally turns each inbound message into a CTO orchestration workflow with default `full-access` worker permissions
 - plans the request into non-blocking tasks, starts ready tasks in the background, and keeps waiting workflows visible in local sessions
 - sends an acknowledgement, task-plan update, and final result or confirmation request back to the same Telegram chat
+- answers workflow-status questions without spawning a new workflow when the CEO asks about the latest or a referenced CTO workflow
+- answers `recent tasks` / `task history` style questions with a compact mobile-friendly task-history summary
 - keeps the bridge visible in the normal session store
 
 `telegram inbox` reads the latest stored messages from the newest Telegram IM session.
@@ -81,3 +83,15 @@ In `--cto` mode, each inbound Telegram message now creates a dedicated `cto` wor
 ## Official Reference
 
 - Telegram Bot API: `https://core.telegram.org/bots/api`
+
+## Telegram CTO Follow-up Queries
+
+In `--cto` mode, the same chat can ask lightweight follow-up questions without creating a new workflow.
+
+Current supported follow-up patterns include:
+
+- workflow-status questions such as `安排了哪些任务`, `what tasks`, `workflow status`, or `task status`
+- explicit workflow references such as `Workflow: cto-... 安排了哪些任务`
+- recent-history questions such as `最近任务`, `任务历史`, `recent tasks`, or `task history`
+
+Status queries return the matching workflow summary. Recent-history queries return a compact list of the latest known CTO task records for that Telegram chat.

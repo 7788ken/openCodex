@@ -1234,6 +1234,21 @@ async function resolveTelegramCtoStatusReply({ cwd, message, workflowRuntimes })
     return null;
   }
 
+  if (intent.isHistoryQuery && !intent.workflowId) {
+    const historyItems = await collectTelegramTaskHistory({
+      cwd,
+      chatId: message.chat_id,
+      workflowRuntimes,
+      limit: 6
+    });
+    return {
+      workflowId: '',
+      text: historyItems.length
+        ? buildTelegramTaskHistoryText({ chatId: message.chat_id, items: historyItems })
+        : buildTelegramMissingTaskHistoryText({ chatId: message.chat_id })
+    };
+  }
+
   const runtime = await findTelegramWorkflowForStatus({
     cwd,
     chatId: message.chat_id,
@@ -1260,6 +1275,13 @@ async function resolveTelegramCtoStatusReply({ cwd, message, workflowRuntimes })
 function parseTelegramCtoStatusIntent(text) {
   const value = String(text || '').trim();
   const workflowId = extractReferencedWorkflowId(value);
+  const historyPatterns = [
+    /(最近|历史).{0,6}(任务|派发)/i,
+    /任务历史/i,
+    /task\s*history/i,
+    /recent\s+tasks/i,
+    /dispatch\s*history/i
+  ];
   const statusPatterns = [
     /安排了哪些任务/i,
     /安排了什么任务/i,
@@ -1281,16 +1303,91 @@ function parseTelegramCtoStatusIntent(text) {
       .replaceAll(workflowId, '')
       .replace(/workflow[:：]?/ig, '')
       .trim();
+  const isHistoryQuery = historyPatterns.some((pattern) => pattern.test(value));
 
   return {
     workflowId,
-    isStatusQuery: bareWorkflowReference || statusPatterns.some((pattern) => pattern.test(value))
+    isHistoryQuery,
+    isStatusQuery: bareWorkflowReference || isHistoryQuery || statusPatterns.some((pattern) => pattern.test(value))
   };
 }
 
 function extractReferencedWorkflowId(text) {
   const match = String(text || '').match(/\bcto-\d{8}-\d{6}-[a-z0-9]{4,8}\b/i);
   return match ? match[0] : '';
+}
+
+async function collectTelegramTaskHistory({ cwd, chatId, workflowRuntimes, limit = 6 }) {
+  const runtimes = new Map();
+
+  for (const runtime of workflowRuntimes.values()) {
+    if (String(runtime?.state?.chat_id || '') !== String(chatId)) {
+      continue;
+    }
+    runtimes.set(runtime.session.session_id, runtime);
+  }
+
+  const sessions = await listSessions(cwd);
+  for (const session of sessions) {
+    if (session.command !== 'cto') {
+      continue;
+    }
+    if (String(session.input?.arguments?.chat_id || '') !== String(chatId)) {
+      continue;
+    }
+    if (runtimes.has(session.session_id)) {
+      continue;
+    }
+
+    const runtime = await loadTelegramWorkflowRuntime(cwd, session.session_id, chatId);
+    if (runtime) {
+      runtimes.set(session.session_id, runtime);
+    }
+  }
+
+  return Array.from(runtimes.values())
+    .flatMap((runtime) => buildTelegramTaskHistoryItems(runtime.state))
+    .sort((left, right) => String(right.updated_at || '').localeCompare(String(left.updated_at || '')))
+    .slice(0, limit);
+}
+
+function buildTelegramTaskHistoryItems(workflowState) {
+  if (!Array.isArray(workflowState?.tasks)) {
+    return [];
+  }
+
+  return workflowState.tasks
+    .filter((task) => task && typeof task === 'object' && (task.session_id || ['running', 'completed', 'failed', 'partial'].includes(task.status)))
+    .map((task) => ({
+      workflow_session_id: workflowState.workflow_session_id || '',
+      task_id: typeof task.id === 'string' ? task.id : '',
+      title: typeof task.title === 'string' ? task.title : '',
+      status: typeof task.status === 'string' && task.status ? task.status : 'unknown',
+      updated_at: typeof task.updated_at === 'string' ? task.updated_at : (workflowState.updated_at || '')
+    }));
+}
+
+function buildTelegramTaskHistoryText({ chatId, items }) {
+  const lines = [
+    'openCodex CTO 最近任务',
+    `Chat: ${chatId}`,
+    `数量：${items.length}`
+  ];
+
+  for (const item of items) {
+    const workflowSuffix = item.workflow_session_id ? ` (${item.workflow_session_id})` : '';
+    lines.push(`- [${item.status}] ${item.task_id} ${truncateInline(item.title, 64)}${workflowSuffix}`.trim());
+  }
+
+  return lines.join('\n');
+}
+
+function buildTelegramMissingTaskHistoryText({ chatId }) {
+  return [
+    'openCodex CTO 当前没有可汇报的任务历史',
+    `Chat: ${chatId}`,
+    '说明：当前没有匹配的 CTO 任务历史记录可供汇报。'
+  ].join('\n');
 }
 
 async function findTelegramWorkflowForStatus({ cwd, chatId, workflowId, workflowRuntimes }) {

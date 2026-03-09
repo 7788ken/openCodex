@@ -25,6 +25,8 @@
 - 可选地把每条入站消息升级成一条 CTO 编排工作流，worker 默认使用 `full-access` 权限
 - 先拆出可并行的后台任务，启动已就绪任务，并把等待确认的工作流保存在本地 session 里
 - 给同一个 Telegram chat 回确认回执、任务拆解进度，以及最终结果或待确认问题
+- 当 CEO 追问最近工作流或指定工作流状态时，直接回工作流汇报，而不是新开一条工作流
+- 当 CEO 询问 `最近任务` / `任务历史` 这类问题时，直接回一份适合手机阅读的简版任务历史
 - 让这条连接继续出现在正常的 session store 中
 
 `telegram inbox` 会从最新一条 Telegram IM session 里读取最近消息。
@@ -81,3 +83,15 @@
 ## 官方参考
 
 - Telegram Bot API：`https://core.telegram.org/bots/api`
+
+## Telegram CTO 追问查询
+
+在 `--cto` 模式下，同一个 chat 现在可以发起轻量追问，而不需要为每次追问都新开一条工作流。
+
+当前支持的追问类型包括：
+
+- 工作流状态类问题，例如 `安排了哪些任务`、`workflow status`、`task status`
+- 带明确工作流引用的问题，例如 `Workflow: cto-... 安排了哪些任务`
+- 最近历史类问题，例如 `最近任务`、`任务历史`、`recent tasks`、`task history`
+
+状态类查询会返回匹配工作流的摘要；最近历史类查询会返回这个 Telegram chat 下最近已知的 CTO 任务记录简表。
