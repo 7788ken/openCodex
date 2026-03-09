@@ -4,6 +4,66 @@ export const CTO_PLANNER_SCHEMA_PATH = fileURLToPath(new URL('../../schemas/cto-
 
 const MAX_TASKS = 4;
 const MAX_TITLE_LENGTH = 72;
+const TELEGRAM_GENERIC_ACK_TOKENS = new Set([
+  'ok',
+  'okay',
+  'cool',
+  'great',
+  'nice',
+  '收到',
+  '明白',
+  '了解',
+  '好',
+  '好的',
+  '好啊',
+  '很好',
+  '可以',
+  '行',
+  '嗯',
+  '嗯嗯',
+  '加油',
+  '辛苦了',
+  '谢谢'
+]);
+const TELEGRAM_EXECUTION_HINT_PATTERN = /(继续|推进|安排|检查|修复|处理|分析|实现|开发|发布|上线|review|fix|inspect|check|continue|ship|deploy|implement|build|plan|task)/i;
+
+export function isLikelyTelegramNonDirectiveMessage(text) {
+  const rawText = String(text || '').trim();
+  if (!rawText) {
+    return true;
+  }
+
+  if (TELEGRAM_EXECUTION_HINT_PATTERN.test(rawText)) {
+    return false;
+  }
+
+  const tokens = rawText
+    .toLowerCase()
+    .split(/[\s,，。.!！?？、;；:：\-—]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (!tokens.length) {
+    return true;
+  }
+
+  return tokens.every((token) => TELEGRAM_GENERIC_ACK_TOKENS.has(token));
+}
+
+export function shouldPromoteWorkflowGoal(workflowState, message) {
+  const nextText = String(message?.text || '').trim();
+  if (!nextText) {
+    return false;
+  }
+
+  const currentGoal = String(workflowState?.goal_text || '').trim();
+  if (!currentGoal) {
+    return true;
+  }
+
+  return isLikelyTelegramNonDirectiveMessage(currentGoal)
+    && !isLikelyTelegramNonDirectiveMessage(nextText);
+}
 
 export function createTelegramWorkflowState({ workflowSessionId, relatedWorkflowId = '', message }) {
   return {
@@ -36,6 +96,10 @@ export function createTelegramWorkflowState({ workflowSessionId, relatedWorkflow
 }
 
 export function appendWorkflowUserMessage(workflowState, message) {
+  if (shouldPromoteWorkflowGoal(workflowState, message)) {
+    workflowState.goal_text = message.text;
+  }
+
   workflowState.latest_user_message = message.text;
   workflowState.updated_at = message.created_at;
   if (!Array.isArray(workflowState.user_messages)) {

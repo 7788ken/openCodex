@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  appendWorkflowUserMessage,
   buildTelegramCtoMainThreadSystemPrompt,
   buildTelegramCtoPlannerPrompt,
-  buildTelegramCtoWorkerExecutionPrompt
+  buildTelegramCtoWorkerExecutionPrompt,
+  isLikelyTelegramNonDirectiveMessage,
+  shouldPromoteWorkflowGoal
 } from '../src/lib/cto-workflow.js';
 
 test('cto main thread prompt declares central orchestration ownership', () => {
@@ -50,4 +53,53 @@ test('cto worker execution prompt wraps child work under the main thread', () =>
   assert.match(prompt, /Dependencies: inspect-current-flow/);
   assert.match(prompt, /Worker directive from the CTO main thread:/);
   assert.match(prompt, /Update the IM routing and add regression coverage\./);
+});
+
+
+test('cto workflow promotes a later actionable Telegram reply into the workflow goal', () => {
+  const workflowState = {
+    goal_text: '很好.加油',
+    latest_user_message: '很好.加油',
+    updated_at: '2026-03-09T04:49:40.000Z',
+    user_messages: []
+  };
+  const message = {
+    text: '继续推进，不需要等我，遇到高风险再确认',
+    update_id: 2,
+    message_id: 3,
+    created_at: '2026-03-09T04:51:34.000Z'
+  };
+
+  assert.equal(isLikelyTelegramNonDirectiveMessage('很好.加油'), true);
+  assert.equal(shouldPromoteWorkflowGoal(workflowState, message), true);
+
+  appendWorkflowUserMessage(workflowState, message);
+
+  assert.equal(workflowState.goal_text, '继续推进，不需要等我，遇到高风险再确认');
+  assert.equal(workflowState.latest_user_message, '继续推进，不需要等我，遇到高风险再确认');
+  assert.equal(workflowState.user_messages.length, 1);
+});
+
+test('cto workflow keeps the original goal when the later Telegram reply is only acknowledgement', () => {
+  const workflowState = {
+    goal_text: '修复 Telegram CTO 续跑逻辑',
+    latest_user_message: '修复 Telegram CTO 续跑逻辑',
+    updated_at: '2026-03-09T04:49:40.000Z',
+    user_messages: []
+  };
+  const message = {
+    text: '好的，加油',
+    update_id: 4,
+    message_id: 5,
+    created_at: '2026-03-09T04:52:34.000Z'
+  };
+
+  assert.equal(isLikelyTelegramNonDirectiveMessage(message.text), true);
+  assert.equal(shouldPromoteWorkflowGoal(workflowState, message), false);
+
+  appendWorkflowUserMessage(workflowState, message);
+
+  assert.equal(workflowState.goal_text, '修复 Telegram CTO 续跑逻辑');
+  assert.equal(workflowState.latest_user_message, '好的，加油');
+  assert.equal(workflowState.user_messages.length, 1);
 });
