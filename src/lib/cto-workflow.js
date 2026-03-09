@@ -4,8 +4,10 @@ import { readTextIfExists } from './fs.js';
 
 export const CTO_PLANNER_SCHEMA_PATH = fileURLToPath(new URL('../../schemas/cto-workflow-plan.schema.json', import.meta.url));
 export const DEFAULT_CTO_SOUL_RELATIVE_PATH = path.join('prompts', 'cto-soul.md');
+export const DEFAULT_CTO_HISTORY_REPAIR_STALE_MINUTES = 30;
 
 const MAX_TASKS = 4;
+const CTO_HISTORY_REPAIR_TASK_ID = 'repair-historical-workflows';
 const MAX_TITLE_LENGTH = 72;
 const TELEGRAM_GENERIC_ACK_TOKENS = new Set([
   'ok',
@@ -330,6 +332,216 @@ function buildInferredTelegramCtoPlan({ fallbackMessageText, workflowState }) {
       }
     ]
   };
+}
+
+
+export function collectHistoricalStuckCtoWorkflowCandidates(workflows, options = {}) {
+  const currentWorkflowSessionId = asTrimmedString(options.currentWorkflowSessionId);
+  const parsedStaleMinutes = Number(options.staleMinutes);
+  const staleMinutes = Number.isFinite(parsedStaleMinutes) && parsedStaleMinutes >= 0
+    ? parsedStaleMinutes
+    : DEFAULT_CTO_HISTORY_REPAIR_STALE_MINUTES;
+  const nowTime = resolveWorkflowRepairTimeValue(options.now);
+
+  return (workflows || [])
+    .map((item) => buildHistoricalStuckCtoWorkflowCandidate(item, {
+      currentWorkflowSessionId,
+      staleMinutes,
+      nowTime
+    }))
+    .filter(Boolean)
+    .sort((left, right) => String(left.updated_at || '').localeCompare(String(right.updated_at || '')));
+}
+
+function buildHistoricalStuckCtoWorkflowCandidate(item, { currentWorkflowSessionId, staleMinutes, nowTime }) {
+  const session = item?.session;
+  const workflowState = item?.workflowState;
+  if (!session || session.command !== 'cto') {
+    return null;
+  }
+  if (session.session_id === currentWorkflowSessionId) {
+    return null;
+  }
+
+  const updatedAt = asTrimmedString(workflowState?.updated_at) || asTrimmedString(session.updated_at);
+  if (!updatedAt || !isWorkflowOlderThan(updatedAt, staleMinutes, nowTime)) {
+    return null;
+  }
+
+  const sessionStatus = asTrimmedString(session.status);
+  const workflowStatus = asTrimmedString(workflowState?.status) || sessionStatus;
+  const pendingQuestion = asTrimmedString(workflowState?.pending_question_zh);
+  const counts = summarizeWorkflowCounts(workflowState || { tasks: [] });
+  const reason = deriveHistoricalCtoWorkflowReason({
+    sessionStatus,
+    workflowStatus,
+    pendingQuestion,
+    counts
+  });
+  if (!reason) {
+    return null;
+  }
+
+  return {
+    session_id: session.session_id,
+    status: workflowStatus || sessionStatus || 'unknown',
+    updated_at: updatedAt,
+    goal_text: asTrimmedString(workflowState?.goal_text) || asTrimmedString(session.input?.prompt),
+    pending_question: pendingQuestion,
+    reason,
+    running_task_count: counts.running,
+    queued_task_count: counts.queued,
+    completed_task_count: counts.completed,
+    partial_task_count: counts.partial,
+    failed_task_count: counts.failed
+  };
+}
+
+function deriveHistoricalCtoWorkflowReason({ sessionStatus, workflowStatus, pendingQuestion, counts }) {
+  if (pendingQuestion) {
+    return '';
+  }
+
+  if (sessionStatus === 'queued' || workflowStatus === 'planning') {
+    return 'workflow stayed queued past the stale threshold';
+  }
+
+  if (sessionStatus === 'running' || workflowStatus === 'running') {
+    if (counts.running > 0) {
+      return 'running task state stayed active past the stale threshold';
+    }
+    if (counts.failed > 0 || counts.partial > 0 || counts.queued > 0) {
+      return 'workflow still has unresolved task state without a CEO question';
+    }
+    return 'workflow remained running without observable progress';
+  }
+
+  if (sessionStatus === 'partial' || workflowStatus === 'partial' || workflowStatus === 'waiting_for_user') {
+    if (counts.failed > 0 || counts.partial > 0 || counts.queued > 0) {
+      return 'partial workflow has unresolved task state but no pending CEO question';
+    }
+    return 'partial workflow has no pending CEO question';
+  }
+
+  return '';
+}
+
+function isWorkflowOlderThan(updatedAt, staleMinutes, nowTime) {
+  const updatedTime = Date.parse(updatedAt);
+  if (!Number.isFinite(updatedTime)) {
+    return false;
+  }
+  return (nowTime - updatedTime) >= staleMinutes * 60 * 1000;
+}
+
+function resolveWorkflowRepairTimeValue(value) {
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return Date.now();
+}
+
+export function injectHistoricalCtoRepairTask(plan, options = {}) {
+  if (!plan || plan.mode !== 'execute') {
+    return plan;
+  }
+
+  const candidates = Array.isArray(options.candidates)
+    ? options.candidates.filter(Boolean)
+    : [];
+  if (!candidates.length) {
+    return plan;
+  }
+
+  const existingTasks = Array.isArray(plan.tasks) ? plan.tasks : [];
+  if (existingTasks.some((task) => String(task?.id || '') === CTO_HISTORY_REPAIR_TASK_ID)) {
+    return plan;
+  }
+
+  const parsedStaleMinutes = Number(options.staleMinutes);
+  const staleMinutes = Number.isFinite(parsedStaleMinutes) && parsedStaleMinutes >= 0
+    ? parsedStaleMinutes
+    : DEFAULT_CTO_HISTORY_REPAIR_STALE_MINUTES;
+  const nextTaskCounter = Number.isInteger(plan.task_counter)
+    ? plan.task_counter + 1
+    : existingTasks.length + 1;
+  const seenIds = new Set(existingTasks.map((task) => task.id));
+  const taskId = ensureUniqueTaskId(CTO_HISTORY_REPAIR_TASK_ID, seenIds, nextTaskCounter);
+  const summaryPrefix = `已发现 ${candidates.length} 条历史卡住 workflow，已默认加入清理/修复任务。`;
+
+  return {
+    ...plan,
+    summary_zh: [summaryPrefix, asTrimmedString(plan.summary_zh)].filter(Boolean).join(' '),
+    task_counter: nextTaskCounter,
+    tasks: [
+      {
+        id: taskId,
+        title: 'Repair historical stuck workflows',
+        worker_prompt: buildHistoricalCtoRepairTaskPrompt({
+          candidates,
+          cwd: asTrimmedString(options.cwd),
+          currentWorkflowSessionId: asTrimmedString(options.currentWorkflowSessionId),
+          staleMinutes
+        }),
+        depends_on: [],
+        status: 'queued',
+        session_id: '',
+        summary_status: '',
+        result: '',
+        next_steps: [],
+        changed_files: [],
+        updated_at: ''
+      },
+      ...existingTasks
+    ]
+  };
+}
+
+function buildHistoricalCtoRepairTaskPrompt({ candidates, cwd, currentWorkflowSessionId, staleMinutes }) {
+  const commandParts = [];
+  if (currentWorkflowSessionId) {
+    commandParts.push(`OPENCODEX_REPAIR_SKIP_SESSION_ID=${JSON.stringify(currentWorkflowSessionId)}`);
+  }
+  commandParts.push('node ./bin/opencodex.js session repair');
+  if (cwd) {
+    commandParts.push(`--cwd ${JSON.stringify(cwd)}`);
+  }
+  commandParts.push(`--stale-minutes ${staleMinutes}`);
+  commandParts.push('--json');
+
+  const lines = [
+    'Inspect and repair historical stuck openCodex CTO workflows as a default maintenance pass.',
+    'Do not destructively delete workflow history. Prefer safe repair, diagnosis, and a clear next-step summary.',
+    currentWorkflowSessionId
+      ? `Never modify or repair the current workflow session itself: ${currentWorkflowSessionId}`
+      : 'If the current workflow session can be identified later, exclude it from repair.',
+    `First run this command exactly once: ${commandParts.join(' ')}`,
+    'Then inspect each targeted workflow session.json and artifacts/cto-workflow.json to confirm which workflows were repaired.',
+    'Summarize: 1) repaired workflows, 2) workflows still blocked, 3) the safest follow-up action.',
+    'If a workflow still cannot be repaired safely, diagnose the blocker instead of guessing or rewriting history.',
+    'Target workflows:'
+  ];
+
+  for (const candidate of candidates.slice(0, 6)) {
+    lines.push(
+      `- ${candidate.session_id} | ${candidate.status} | updated ${candidate.updated_at} | reason: ${candidate.reason}`
+    );
+  }
+
+  if (candidates.length > 6) {
+    lines.push(`- ...and ${candidates.length - 6} more historical workflow(s)`);
+  }
+
+  return lines.join('\n');
 }
 
 export function normalizeTelegramCtoPlan(rawPlan, fallbackMessageText, workflowState) {
@@ -763,6 +975,13 @@ function buildWorkflowResultLine(workflowState, counts) {
     return counts.failed > 0
       ? `Workflow failed after ${counts.failed} failed task(s).`
       : 'Workflow failed before task execution completed.';
+  }
+
+  if (workflowState.status === 'partial') {
+    if (counts.partial > 0 || counts.failed > 0) {
+      return `Workflow needs follow-up after ${counts.completed} completed, ${counts.partial} partial, and ${counts.failed} failed task(s).`;
+    }
+    return 'Workflow needs follow-up before it can be marked completed.';
   }
 
   return `Workflow is running with ${counts.running} active task(s).`;

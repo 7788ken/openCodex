@@ -24,6 +24,7 @@ The first version supports Telegram only:
 - sends an automatic acknowledgement back to the same Telegram chat
 - optionally turns each inbound message into a CTO orchestration workflow with default `full-access` worker permissions
 - plans the request into non-blocking tasks, starts ready tasks in the background, and keeps waiting workflows visible in local sessions
+- injects a default maintenance task to inspect and repair historical stuck CTO workflows when stale workflow state is detected
 - sends an acknowledgement, task-plan update, and final result or confirmation request back to the same Telegram chat
 - answers workflow-status questions without spawning a new workflow when the CEO asks about the latest or a referenced CTO workflow
 - answers `recent tasks` / `task history` style questions with a compact mobile-friendly task-history summary

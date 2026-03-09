@@ -186,6 +186,140 @@ test('im telegram listen --cto orchestrates a workflow and returns structured pr
   assert.ok(workflowState.tasks.every((task) => task.status === 'completed'));
 });
 
+
+test('im telegram listen --cto injects a default repair task when stale workflows exist', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-repair-'));
+  const staleWorkflowId = 'cto-20260308-stale-zombie';
+  const staleWorkflowDir = path.join(cwd, '.opencodex', 'sessions', staleWorkflowId);
+  const staleWorkflowStatePath = path.join(staleWorkflowDir, 'artifacts', 'cto-workflow.json');
+  await mkdir(path.join(staleWorkflowDir, 'artifacts'), { recursive: true });
+  await writeFile(path.join(staleWorkflowDir, 'session.json'), `${JSON.stringify({
+    session_id: staleWorkflowId,
+    command: 'cto',
+    status: 'running',
+    created_at: '2026-03-08T00:00:00.000Z',
+    updated_at: '2026-03-08T00:00:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'telegram-bot-api',
+    input: { prompt: 'Old stale workflow', arguments: { provider: 'telegram' } },
+    summary: {
+      title: 'CTO workflow running',
+      result: 'Workflow is running with 1 active task(s).',
+      status: 'running',
+      highlights: [],
+      next_steps: []
+    },
+    artifacts: [
+      { type: 'cto_workflow', path: staleWorkflowStatePath, description: 'Telegram CTO workflow state and task graph.' }
+    ]
+  }, null, 2)}
+`, 'utf8');
+  await writeFile(staleWorkflowStatePath, `${JSON.stringify({
+    workflow_session_id: staleWorkflowId,
+    related_workflow_id: '',
+    provider: 'telegram',
+    chat_id: '123456',
+    source_update_id: 1,
+    source_message_id: 1,
+    sender_display: 'CEO',
+    goal_text: 'Old stale workflow',
+    latest_user_message: 'Old stale workflow',
+    created_at: '2026-03-08T00:00:00.000Z',
+    updated_at: '2026-03-08T00:00:00.000Z',
+    status: 'running',
+    plan_mode: 'execute',
+    plan_summary_zh: 'Old stale workflow.',
+    pending_question_zh: '',
+    task_counter: 1,
+    tasks: [
+      {
+        id: 'old-task',
+        title: 'Old task',
+        worker_prompt: 'Inspect the stale workflow.',
+        depends_on: [],
+        status: 'running',
+        session_id: '',
+        summary_status: '',
+        result: '',
+        next_steps: [],
+        changed_files: [],
+        updated_at: '2026-03-08T00:00:00.000Z'
+      }
+    ],
+    user_messages: []
+  }, null, 2)}
+`, 'utf8');
+
+  const telegram = await startTelegramMockServer({
+    updates: [
+      {
+        update_id: 211,
+        message: {
+          message_id: 611,
+          date: 1741435301,
+          text: 'please inspect the repo',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      }
+    ]
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const child = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  const imSessionId = await waitForValue(() => extractSessionId(stdout), 'telegram cto repair session id');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => /Repair historical stuck workflows/.test(message.text)), 'repair task plan reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => /工作流已完成/.test(message.text)), 'repair task final reply');
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+
+  const sessionsRoot = path.join(cwd, '.opencodex', 'sessions');
+  const imSession = JSON.parse(await readFile(path.join(sessionsRoot, imSessionId, 'session.json'), 'utf8'));
+  const ctoSessionId = imSession.child_sessions.find((entry) => entry.command === 'cto')?.session_id;
+  assert.ok(ctoSessionId);
+
+  const workflowState = JSON.parse(await readFile(path.join(sessionsRoot, ctoSessionId, 'artifacts', 'cto-workflow.json'), 'utf8'));
+  assert.equal(workflowState.tasks[0].id, 'repair-historical-workflows');
+  assert.equal(workflowState.tasks[0].status, 'completed');
+  assert.match(workflowState.plan_summary_zh, /历史卡住 workflow/);
+  assert.match(telegram.state.sentMessages[0].text, /Repair historical stuck workflows/);
+});
+
 test('im telegram listen --cto keeps later messages non-blocking while a slow workflow is running', async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-parallel-'));
   const telegram = await startTelegramMockServer({

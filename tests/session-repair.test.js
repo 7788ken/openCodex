@@ -88,6 +88,254 @@ test('session repair restores summary from last-message when turn completed', as
   assert.notEqual(repaired.summary.result, 'The Codex turn completed, but the wrapper did not finish writing a final session status.');
 });
 
+test('session repair completes stale cto workflows from finished child sessions', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-repair-cto-completed-'));
+  const ctoSessionId = 'cto-20260308-stale-completed';
+  const childSessionId = 'run-20260308-stale-child';
+  const ctoSessionDir = path.join(cwd, '.opencodex', 'sessions', ctoSessionId);
+  const childSessionDir = path.join(cwd, '.opencodex', 'sessions', childSessionId);
+  const workflowStatePath = path.join(ctoSessionDir, 'artifacts', 'cto-workflow.json');
+
+  await mkdir(path.join(ctoSessionDir, 'artifacts'), { recursive: true });
+  await mkdir(path.join(childSessionDir, 'artifacts'), { recursive: true });
+  await writeFile(path.join(ctoSessionDir, 'session.json'), `${JSON.stringify({
+    session_id: ctoSessionId,
+    command: 'cto',
+    status: 'running',
+    created_at: '2026-03-08T00:00:00.000Z',
+    updated_at: '2026-03-08T00:00:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'telegram-bot-api',
+    input: { prompt: 'Repair completed workflow', arguments: { provider: 'telegram' } },
+    summary: { title: 'CTO workflow running', result: 'running', status: 'running', highlights: [], next_steps: [] },
+    artifacts: [
+      { type: 'cto_workflow', path: workflowStatePath, description: 'Telegram CTO workflow state and task graph.' }
+    ],
+    child_sessions: [
+      { label: 'Task sync-task', command: 'run', session_id: childSessionId, status: 'completed' }
+    ]
+  }, null, 2)}
+`, 'utf8');
+  await writeFile(workflowStatePath, `${JSON.stringify({
+    workflow_session_id: ctoSessionId,
+    provider: 'telegram',
+    chat_id: '123456',
+    source_update_id: 1,
+    source_message_id: 1,
+    sender_display: 'CEO',
+    goal_text: 'Repair completed workflow',
+    latest_user_message: 'Repair completed workflow',
+    created_at: '2026-03-08T00:00:00.000Z',
+    updated_at: '2026-03-08T00:00:00.000Z',
+    status: 'running',
+    plan_mode: 'execute',
+    plan_summary_zh: 'Repair completed workflow.',
+    pending_question_zh: '',
+    task_counter: 1,
+    tasks: [
+      {
+        id: 'sync-task',
+        title: 'Sync child task',
+        worker_prompt: 'Inspect child output.',
+        depends_on: [],
+        status: 'running',
+        session_id: childSessionId,
+        summary_status: '',
+        result: '',
+        next_steps: [],
+        changed_files: [],
+        updated_at: '2026-03-08T00:00:00.000Z'
+      }
+    ],
+    user_messages: []
+  }, null, 2)}
+`, 'utf8');
+  await writeFile(path.join(childSessionDir, 'session.json'), `${JSON.stringify({
+    session_id: childSessionId,
+    command: 'run',
+    status: 'completed',
+    created_at: '2026-03-08T00:00:00.000Z',
+    updated_at: '2026-03-08T00:05:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'codex-cli 0.111.0',
+    input: { prompt: 'child', arguments: {} },
+    summary: {
+      title: 'Child task completed',
+      result: 'Recovered child completion summary.',
+      status: 'completed',
+      highlights: [],
+      next_steps: [],
+      changed_files: ['src/repaired-child.js'],
+      findings: []
+    },
+    artifacts: []
+  }, null, 2)}
+`, 'utf8');
+
+  const result = await runCli(['session', 'repair', '--json', '--cwd', cwd, '--stale-minutes', '1']);
+  assert.equal(result.code, 0);
+
+  const payload = JSON.parse(result.stdout);
+  const repairedWorkflow = payload.repaired.find((item) => item.session_id === ctoSessionId);
+  assert.ok(repairedWorkflow);
+  assert.equal(repairedWorkflow.to, 'completed');
+
+  const repairedSession = JSON.parse(await readFile(path.join(ctoSessionDir, 'session.json'), 'utf8'));
+  const repairedWorkflowState = JSON.parse(await readFile(workflowStatePath, 'utf8'));
+  assert.equal(repairedSession.status, 'completed');
+  assert.equal(repairedSession.summary.title, 'CTO workflow completed');
+  assert.equal(repairedWorkflowState.status, 'completed');
+  assert.equal(repairedWorkflowState.tasks[0].status, 'completed');
+  assert.equal(repairedWorkflowState.tasks[0].result, 'Recovered child completion summary.');
+  assert.deepEqual(repairedWorkflowState.tasks[0].changed_files, ['src/repaired-child.js']);
+});
+
+test('session repair converts orphaned stale cto tasks into a waiting workflow', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-repair-cto-orphaned-'));
+  const ctoSessionId = 'cto-20260308-stale-orphaned';
+  const ctoSessionDir = path.join(cwd, '.opencodex', 'sessions', ctoSessionId);
+  const workflowStatePath = path.join(ctoSessionDir, 'artifacts', 'cto-workflow.json');
+
+  await mkdir(path.join(ctoSessionDir, 'artifacts'), { recursive: true });
+  await writeFile(path.join(ctoSessionDir, 'session.json'), `${JSON.stringify({
+    session_id: ctoSessionId,
+    command: 'cto',
+    status: 'running',
+    created_at: '2026-03-08T00:00:00.000Z',
+    updated_at: '2026-03-08T00:00:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'telegram-bot-api',
+    input: { prompt: 'Repair orphaned workflow', arguments: { provider: 'telegram' } },
+    summary: { title: 'CTO workflow running', result: 'running', status: 'running', highlights: [], next_steps: [] },
+    artifacts: [
+      { type: 'cto_workflow', path: workflowStatePath, description: 'Telegram CTO workflow state and task graph.' }
+    ]
+  }, null, 2)}
+`, 'utf8');
+  await writeFile(workflowStatePath, `${JSON.stringify({
+    workflow_session_id: ctoSessionId,
+    provider: 'telegram',
+    chat_id: '123456',
+    source_update_id: 1,
+    source_message_id: 1,
+    sender_display: 'CEO',
+    goal_text: 'Repair orphaned workflow',
+    latest_user_message: 'Repair orphaned workflow',
+    created_at: '2026-03-08T00:00:00.000Z',
+    updated_at: '2026-03-08T00:00:00.000Z',
+    status: 'running',
+    plan_mode: 'execute',
+    plan_summary_zh: 'Repair orphaned workflow.',
+    pending_question_zh: '',
+    task_counter: 1,
+    tasks: [
+      {
+        id: 'orphaned-task',
+        title: 'Orphaned task',
+        worker_prompt: 'Dispatch never happened.',
+        depends_on: [],
+        status: 'running',
+        session_id: '',
+        summary_status: '',
+        result: '',
+        next_steps: [],
+        changed_files: [],
+        updated_at: '2026-03-08T00:00:00.000Z'
+      }
+    ],
+    user_messages: []
+  }, null, 2)}
+`, 'utf8');
+
+  const result = await runCli(['session', 'repair', '--json', '--cwd', cwd, '--stale-minutes', '1']);
+  assert.equal(result.code, 0);
+
+  const payload = JSON.parse(result.stdout);
+  const repairedWorkflow = payload.repaired.find((item) => item.session_id === ctoSessionId);
+  assert.ok(repairedWorkflow);
+  assert.equal(repairedWorkflow.to, 'partial');
+
+  const repairedSession = JSON.parse(await readFile(path.join(ctoSessionDir, 'session.json'), 'utf8'));
+  const repairedWorkflowState = JSON.parse(await readFile(workflowStatePath, 'utf8'));
+  assert.equal(repairedSession.status, 'partial');
+  assert.equal(repairedSession.summary.title, 'CTO workflow waiting');
+  assert.equal(repairedWorkflowState.status, 'waiting_for_user');
+  assert.equal(repairedWorkflowState.tasks[0].status, 'partial');
+  assert.match(repairedWorkflowState.tasks[0].result, /worker session was created/i);
+  assert.match(repairedWorkflowState.pending_question_zh, /重新派发该任务/);
+});
+
+
+test('session repair gives failed stale cto workflows a generic follow-up question when detail is missing', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-repair-cto-failed-'));
+  const ctoSessionId = 'cto-20260308-stale-failed';
+  const ctoSessionDir = path.join(cwd, '.opencodex', 'sessions', ctoSessionId);
+  const workflowStatePath = path.join(ctoSessionDir, 'artifacts', 'cto-workflow.json');
+
+  await mkdir(path.join(ctoSessionDir, 'artifacts'), { recursive: true });
+  await writeFile(path.join(ctoSessionDir, 'session.json'), `${JSON.stringify({
+    session_id: ctoSessionId,
+    command: 'cto',
+    status: 'partial',
+    created_at: '2026-03-08T00:00:00.000Z',
+    updated_at: '2026-03-08T00:00:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'telegram-bot-api',
+    input: { prompt: 'Repair failed workflow', arguments: { provider: 'telegram' } },
+    summary: { title: 'CTO workflow waiting', result: 'stale', status: 'partial', highlights: [], next_steps: [] },
+    artifacts: [
+      { type: 'cto_workflow', path: workflowStatePath, description: 'Telegram CTO workflow state and task graph.' }
+    ]
+  }, null, 2)}
+`, 'utf8');
+  await writeFile(workflowStatePath, `${JSON.stringify({
+    workflow_session_id: ctoSessionId,
+    provider: 'telegram',
+    chat_id: '123456',
+    source_update_id: 1,
+    source_message_id: 1,
+    sender_display: 'CEO',
+    goal_text: 'Repair failed workflow',
+    latest_user_message: 'Repair failed workflow',
+    created_at: '2026-03-08T00:00:00.000Z',
+    updated_at: '2026-03-08T00:00:00.000Z',
+    status: 'partial',
+    plan_mode: 'execute',
+    plan_summary_zh: 'Repair failed workflow.',
+    pending_question_zh: '',
+    task_counter: 1,
+    tasks: [
+      {
+        id: 'failed-task',
+        title: 'Failed task',
+        worker_prompt: 'A failed task without detail.',
+        depends_on: [],
+        status: 'failed',
+        session_id: '',
+        summary_status: 'failed',
+        result: '',
+        next_steps: [],
+        changed_files: [],
+        updated_at: '2026-03-08T00:00:00.000Z'
+      }
+    ],
+    user_messages: []
+  }, null, 2)}
+`, 'utf8');
+
+  const result = await runCli(['session', 'repair', '--json', '--cwd', cwd, '--stale-minutes', '1']);
+  assert.equal(result.code, 0);
+
+  const payload = JSON.parse(result.stdout);
+  const repairedWorkflow = payload.repaired.find((item) => item.session_id === ctoSessionId);
+  assert.ok(repairedWorkflow);
+  assert.equal(repairedWorkflow.to, 'partial');
+
+  const repairedWorkflowState = JSON.parse(await readFile(workflowStatePath, 'utf8'));
+  assert.equal(repairedWorkflowState.status, 'waiting_for_user');
+  assert.match(repairedWorkflowState.pending_question_zh, /重新派发失败任务/);
+});
+
 test('session repair restores stale review sessions from review-report artifact', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-repair-review-'));
   const sessionId = 'review-20260308-stale';

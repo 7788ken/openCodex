@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { parseOptions } from '../lib/args.js';
 import { listSessions, loadSession, saveSession, getSessionDir } from '../lib/session-store.js';
-import { readTextIfExists } from '../lib/fs.js';
+import { readJson, readTextIfExists, writeJson } from '../lib/fs.js';
+import { buildTelegramCtoSessionSummary, finalizeWorkflowStatus } from '../lib/cto-workflow.js';
 import { buildSummaryFromMessage } from './run.js';
 import { buildReviewSummary } from './review.js';
 import { renderHumanSummary } from '../lib/summary.js';
@@ -126,7 +127,7 @@ async function repairSessions(cwd, staleMinutes) {
     if (excludedSessionId && session.session_id === excludedSessionId) {
       continue;
     }
-    if (!['queued', 'running'].includes(session.status)) {
+    if (!shouldRepairStaleSession(session)) {
       continue;
     }
     if (!isOlderThan(session.updated_at, staleMinutes)) {
@@ -153,6 +154,9 @@ async function repairSessions(cwd, staleMinutes) {
     }
     if (Number.isInteger(repair.iteration_count)) {
       session.iteration_count = repair.iteration_count;
+    }
+    if (repair.workflow_state && repair.workflow_state_path) {
+      await writeJson(repair.workflow_state_path, repair.workflow_state);
     }
     await saveSession(cwd, session);
     repairs.push({
@@ -308,9 +312,238 @@ async function deriveRepair(cwd, session, lineage = new Set()) {
     return deriveAutoRepair(cwd, session, nextLineage);
   }
 
+  if (session.command === 'cto') {
+    return deriveCtoRepair(cwd, session, nextLineage);
+  }
+
   return deriveRunRepair(cwd, session);
 }
 
+
+function shouldRepairStaleSession(session) {
+  if (['queued', 'running'].includes(session?.status)) {
+    return true;
+  }
+  return session?.command === 'cto' && session?.status === 'partial';
+}
+
+async function deriveCtoRepair(cwd, session, lineage) {
+  const workflowStatePath = getCtoWorkflowStatePath(cwd, session);
+  if (!workflowStatePath) {
+    return null;
+  }
+
+  let workflowState = session.workflow_state && typeof session.workflow_state === 'object'
+    ? structuredClone(session.workflow_state)
+    : null;
+  if (!workflowState) {
+    try {
+      workflowState = await readJson(workflowStatePath);
+    } catch {
+      workflowState = null;
+    }
+  }
+  if (!workflowState || !Array.isArray(workflowState.tasks)) {
+    return null;
+  }
+
+  const originalWorkflowState = JSON.stringify(workflowState);
+  const originalChildSessions = JSON.stringify(normalizeChildSessions(session.child_sessions));
+  const childSessions = normalizeChildSessions(session.child_sessions).map((child) => ({ ...child }));
+  const childSessionById = new Map(childSessions.map((child) => [child.session_id, child]));
+  const childSessionByTaskId = new Map(
+    childSessions
+      .map((child) => [extractTaskIdFromChildLabel(child.label), child])
+      .filter(([taskId]) => taskId)
+  );
+
+  for (const task of workflowState.tasks) {
+    await repairCtoWorkflowTask(cwd, task, childSessionById, childSessionByTaskId, lineage);
+  }
+
+  for (const child of childSessions) {
+    if (!child?.session_id) {
+      continue;
+    }
+    let childSession = null;
+    try {
+      childSession = await loadSession(cwd, child.session_id);
+    } catch {
+      childSession = null;
+    }
+    if (!childSession) {
+      continue;
+    }
+    const resolvedChild = await resolveRepairSnapshot(cwd, childSession, lineage);
+    child.status = resolvedChild.status || child.status || 'unknown';
+    child.command = resolvedChild.command || child.command || 'run';
+  }
+
+  const derivedPendingQuestion = deriveCtoPendingQuestion(workflowState.tasks);
+  if (!asTrimmedString(workflowState.pending_question_zh) && derivedPendingQuestion) {
+    workflowState.pending_question_zh = derivedPendingQuestion;
+    workflowState.status = 'waiting_for_user';
+  } else if (workflowState.status !== 'waiting_for_user') {
+    workflowState.pending_question_zh = '';
+  }
+
+  if (workflowState.status !== 'waiting_for_user' || !asTrimmedString(workflowState.pending_question_zh)) {
+    if (!asTrimmedString(workflowState.pending_question_zh)) {
+      workflowState.pending_question_zh = '';
+    }
+    finalizeWorkflowStatus(workflowState);
+  }
+
+  workflowState.updated_at = new Date().toISOString();
+  const summary = buildTelegramCtoSessionSummary(workflowState);
+  const workflowChanged = JSON.stringify(workflowState) != originalWorkflowState;
+  const childSessionsChanged = JSON.stringify(childSessions) != originalChildSessions;
+  if (!workflowChanged && !childSessionsChanged && session.status === summary.status) {
+    return null;
+  }
+
+  return {
+    from: session.status,
+    status: summary.status,
+    reason: summary.result,
+    summary,
+    workflow_state: workflowState,
+    workflow_state_path: workflowStatePath,
+    child_sessions: childSessions
+  };
+}
+
+async function repairCtoWorkflowTask(cwd, task, childSessionById, childSessionByTaskId, lineage) {
+  if (!task || typeof task !== 'object') {
+    return;
+  }
+
+  let taskSessionId = asTrimmedString(task.session_id);
+  if (!taskSessionId) {
+    const linkedChildSession = childSessionByTaskId.get(task.id);
+    taskSessionId = asTrimmedString(linkedChildSession?.session_id);
+    if (taskSessionId) {
+      task.session_id = taskSessionId;
+    }
+  }
+
+  if (!taskSessionId) {
+    if (task.status === 'running') {
+      markCtoTaskAsStalled(task, 'Task dispatch stalled before the worker session was created.');
+    }
+    return;
+  }
+
+  let childSession = null;
+  try {
+    childSession = await loadSession(cwd, taskSessionId);
+  } catch {
+    childSession = null;
+  }
+  if (!childSession) {
+    if (task.status === 'running') {
+      markCtoTaskAsStalled(task, 'Task worker session could not be found during repair.');
+    }
+    return;
+  }
+
+  const resolvedChild = await resolveRepairSnapshot(cwd, childSession, lineage);
+  const childMetadata = childSessionById.get(taskSessionId);
+  if (childMetadata) {
+    childMetadata.status = resolvedChild.status || childMetadata.status || 'unknown';
+    childMetadata.command = resolvedChild.command || childMetadata.command || 'run';
+  }
+  syncCtoTaskFromChild(task, resolvedChild);
+}
+
+function syncCtoTaskFromChild(task, childSession) {
+  const summaryStatus = asTrimmedString(childSession?.summary?.status) || asTrimmedString(childSession?.status);
+  const mappedStatus = ['completed', 'failed', 'partial'].includes(summaryStatus)
+    ? summaryStatus
+    : ['completed', 'failed', 'partial'].includes(childSession?.status)
+      ? childSession.status
+      : '';
+
+  if (!mappedStatus) {
+    if (asTrimmedString(childSession?.status) === 'running' && task.status !== 'running') {
+      task.status = 'running';
+    }
+    task.summary_status = summaryStatus || task.summary_status || '';
+    task.updated_at = childSession?.updated_at || task.updated_at || new Date().toISOString();
+    return;
+  }
+
+  task.status = mappedStatus;
+  task.summary_status = summaryStatus || mappedStatus;
+  task.result = asTrimmedString(childSession?.summary?.result) || task.result || '';
+  task.next_steps = normalizeStringList(childSession?.summary?.next_steps);
+  task.changed_files = normalizeStringList(childSession?.summary?.changed_files);
+  task.updated_at = childSession?.updated_at || new Date().toISOString();
+}
+
+function markCtoTaskAsStalled(task, reason) {
+  task.status = 'partial';
+  task.summary_status = 'partial';
+  task.result = asTrimmedString(task.result) || reason;
+  task.next_steps = normalizeStringList(task.next_steps);
+  if (!task.next_steps.length) {
+    task.next_steps = ['请确认是否重新派发该任务，或重建当前工作流。'];
+  }
+  task.changed_files = normalizeStringList(task.changed_files);
+  task.updated_at = new Date().toISOString();
+}
+
+function deriveCtoPendingQuestion(tasks) {
+  let sawFailedTask = false;
+
+  for (const task of tasks || []) {
+    const nextSteps = normalizeStringList(task?.next_steps);
+    if ((task?.status === 'partial' || task?.status === 'failed') && nextSteps.length) {
+      return nextSteps[0];
+    }
+    if ((task?.status === 'partial' || task?.status === 'failed') && asTrimmedString(task?.result)) {
+      return task.result.trim();
+    }
+    if (task?.status === 'failed') {
+      sawFailedTask = true;
+    }
+  }
+
+  if (sawFailedTask) {
+    return '检测到失败任务但缺少明确下一步，请确认是否重新派发失败任务。';
+  }
+
+  return '';
+}
+
+function getCtoWorkflowStatePath(cwd, session) {
+  const artifactPath = Array.isArray(session?.artifacts)
+    ? session.artifacts.find((artifact) => artifact?.type === 'cto_workflow' && typeof artifact.path === 'string' && artifact.path)?.path
+    : '';
+  if (artifactPath) {
+    return artifactPath;
+  }
+  if (!session?.session_id) {
+    return '';
+  }
+  return path.join(getSessionDir(cwd, session.session_id), 'artifacts', 'cto-workflow.json');
+}
+
+function extractTaskIdFromChildLabel(label) {
+  const match = String(label || '').match(/^Task\s+(.+)$/i);
+  return match?.[1]?.trim() || '';
+}
+
+function asTrimmedString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
+function normalizeStringList(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item) => String(item || '').trim()).filter(Boolean);
+}
 async function deriveRunRepair(cwd, session) {
   const sessionDir = getSessionDir(cwd, session.session_id);
   const eventsPath = path.join(sessionDir, 'events.jsonl');

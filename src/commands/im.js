@@ -14,11 +14,14 @@ import {
   buildTelegramCtoQuestionText,
   buildTelegramCtoSessionSummary,
   buildTelegramCtoStatusText,
+  collectHistoricalStuckCtoWorkflowCandidates,
   createTelegramWorkflowState,
   CTO_PLANNER_SCHEMA_PATH,
+  DEFAULT_CTO_HISTORY_REPAIR_STALE_MINUTES,
   finalizeWorkflowStatus,
   findPendingWorkflowForChat,
   getReadyWorkflowTasks,
+  injectHistoricalCtoRepairTask,
   markWorkflowTaskRunning,
   normalizeTelegramCtoPlan,
   applyWorkflowTaskResult,
@@ -29,6 +32,9 @@ import { createSession, getSessionDir, listSessions, loadSession, saveSession } 
 const CLI_PATH = fileURLToPath(new URL('../../bin/opencodex.js', import.meta.url));
 const TELEGRAM_MAX_TEXT_LENGTH = 3900;
 const MAX_PARALLEL_CTO_TASKS = 3;
+const DEFAULT_TELEGRAM_CTO_HISTORY_REPAIR_STALE_MINUTES = Number.isFinite(Number(process.env.OPENCODEX_CTO_HISTORY_REPAIR_STALE_MINUTES))
+  ? Math.max(0, Number(process.env.OPENCODEX_CTO_HISTORY_REPAIR_STALE_MINUTES))
+  : DEFAULT_CTO_HISTORY_REPAIR_STALE_MINUTES;
 
 const TELEGRAM_LISTEN_OPTION_SPEC = {
   cwd: { type: 'string' },
@@ -868,11 +874,21 @@ async function planTelegramCtoWorkflow({ cwd, message, triggerMessage, continuat
     await persistTelegramWorkflowRuntime(cwd, runtime);
   }
 
-  const plan = normalizeTelegramCtoPlan(
+  let plan = normalizeTelegramCtoPlan(
     tryParseJson(rawPlanText),
     continuationMessage ? continuationMessage.text : message.text,
     runtime.state
   );
+  const historicalRepairCandidates = await collectTelegramCtoHistoryRepairCandidates({
+    cwd,
+    currentWorkflowSessionId: runtime.session.session_id
+  });
+  plan = injectHistoricalCtoRepairTask(plan, {
+    candidates: historicalRepairCandidates,
+    cwd,
+    currentWorkflowSessionId: runtime.session.session_id,
+    staleMinutes: DEFAULT_TELEGRAM_CTO_HISTORY_REPAIR_STALE_MINUTES
+  });
   const runRecord = buildTelegramRunRecord(triggerMessage, {
     code: result.code,
     stdout: result.stdout,
@@ -1000,6 +1016,44 @@ async function runTelegramCtoTask({ cwd, profile, parentSessionId, sessionDir, m
     childStatus: childSession?.status || '',
     summary: outputPayload?.summary || childSession?.summary || null
   };
+}
+
+
+async function collectTelegramCtoHistoryRepairCandidates({ cwd, currentWorkflowSessionId }) {
+  const sessions = await listSessions(cwd);
+  const workflowItems = await Promise.all(
+    sessions
+      .filter((session) => session.command === 'cto' && session.session_id !== currentWorkflowSessionId)
+      .map(async (session) => ({
+        session,
+        workflowState: await loadTelegramCtoWorkflowState(cwd, session)
+      }))
+  );
+
+  return collectHistoricalStuckCtoWorkflowCandidates(workflowItems, {
+    currentWorkflowSessionId,
+    staleMinutes: DEFAULT_TELEGRAM_CTO_HISTORY_REPAIR_STALE_MINUTES
+  });
+}
+
+async function loadTelegramCtoWorkflowState(cwd, session) {
+  const artifactPath = Array.isArray(session?.artifacts)
+    ? session.artifacts.find((artifact) => artifact?.type === 'cto_workflow' && typeof artifact.path === 'string' && artifact.path)?.path
+    : '';
+  if (session?.workflow_state && typeof session.workflow_state === 'object') {
+    return session.workflow_state;
+  }
+  if (!artifactPath) {
+    return null;
+  }
+  const resolvedArtifactPath = path.isAbsolute(artifactPath)
+    ? artifactPath
+    : path.join(getSessionDir(cwd, session.session_id), artifactPath);
+  try {
+    return await readJson(resolvedArtifactPath);
+  } catch {
+    return null;
+  }
 }
 
 function buildTelegramRunRecord(message, runResult, extra = {}) {

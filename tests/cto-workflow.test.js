@@ -7,9 +7,12 @@ import {
   appendWorkflowUserMessage,
   buildTelegramCtoMainThreadSystemPrompt,
   buildTelegramCtoPlannerPrompt,
+  buildTelegramCtoSessionSummary,
   buildTelegramCtoWorkerExecutionPrompt,
   loadCtoSoulDocument,
   buildDefaultCtoSoulDocument,
+  collectHistoricalStuckCtoWorkflowCandidates,
+  injectHistoricalCtoRepairTask,
   isLikelyTelegramNonDirectiveMessage,
   normalizeTelegramCtoPlan,
   shouldPromoteWorkflowGoal
@@ -142,6 +145,105 @@ test('cto workflow keeps the original goal when the later Telegram reply is only
   assert.equal(workflowState.user_messages.length, 1);
 });
 
+
+
+test('cto workflow identifies stale historical workflows and injects a default repair task', () => {
+  const candidates = collectHistoricalStuckCtoWorkflowCandidates([
+    {
+      session: {
+        session_id: 'cto-20260309-old-running',
+        command: 'cto',
+        status: 'running',
+        updated_at: '2026-03-09T05:00:00.000Z',
+        input: { prompt: 'Repair the tray UI' }
+      },
+      workflowState: {
+        status: 'running',
+        goal_text: 'Repair the tray UI',
+        pending_question_zh: '',
+        updated_at: '2026-03-09T05:00:00.000Z',
+        tasks: [
+          { status: 'running' }
+        ]
+      }
+    },
+    {
+      session: {
+        session_id: 'cto-20260309-waiting',
+        command: 'cto',
+        status: 'partial',
+        updated_at: '2026-03-09T05:00:00.000Z',
+        input: { prompt: 'Need a decision' }
+      },
+      workflowState: {
+        status: 'waiting_for_user',
+        goal_text: 'Need a decision',
+        pending_question_zh: '请确认是否继续。',
+        updated_at: '2026-03-09T05:00:00.000Z',
+        tasks: []
+      }
+    }
+  ], {
+    currentWorkflowSessionId: 'cto-current',
+    staleMinutes: 30,
+    now: '2026-03-09T06:00:00.000Z'
+  });
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].session_id, 'cto-20260309-old-running');
+  assert.match(candidates[0].reason, /stale threshold/i);
+
+  const plan = injectHistoricalCtoRepairTask({
+    mode: 'execute',
+    summary_zh: '已拆分 1 个可执行任务。',
+    question_zh: '',
+    task_counter: 1,
+    tasks: [
+      {
+        id: 'inspect-repo',
+        title: 'Inspect repo',
+        worker_prompt: 'Inspect the repository.',
+        depends_on: [],
+        status: 'queued',
+        session_id: '',
+        summary_status: '',
+        result: '',
+        next_steps: [],
+        changed_files: [],
+        updated_at: ''
+      }
+    ]
+  }, {
+    candidates,
+    cwd: '/repo/openCodex',
+    currentWorkflowSessionId: 'cto-current',
+    staleMinutes: 30
+  });
+
+  assert.equal(plan.tasks.length, 2);
+  assert.equal(plan.tasks[0].id, 'repair-historical-workflows');
+  assert.match(plan.tasks[0].title, /Repair historical stuck workflows/);
+  assert.match(plan.tasks[0].worker_prompt, /session repair/);
+  assert.match(plan.tasks[0].worker_prompt, /OPENCODEX_REPAIR_SKIP_SESSION_ID/);
+  assert.match(plan.summary_zh, /历史卡住 workflow/);
+});
+
+
+test('cto session summary describes partial workflows without calling them running', () => {
+  const summary = buildTelegramCtoSessionSummary({
+    chat_id: '123456',
+    status: 'partial',
+    pending_question_zh: '',
+    tasks: [
+      { status: 'completed' },
+      { status: 'failed' }
+    ]
+  });
+
+  assert.equal(summary.status, 'partial');
+  assert.match(summary.result, /needs follow-up/i);
+  assert.doesNotMatch(summary.result, /running with 0 active/i);
+});
 
 test('cto planner auto-infers a safe execute plan from an abstract inspection request', () => {
   const plan = normalizeTelegramCtoPlan({
