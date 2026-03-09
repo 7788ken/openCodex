@@ -704,7 +704,7 @@ export function buildTelegramCtoStatusText(workflowState) {
     `目标：${truncateInline(workflowState.goal_text, 160)}`,
     `状态：${formatTelegramWorkflowStatus(workflowState.status)}`,
     `摘要：${truncateInline(summary, 220)}`,
-    `进度：queued ${counts.queued}, running ${counts.running}, completed ${counts.completed}, partial ${counts.partial}, failed ${counts.failed}`
+    `进度：queued ${counts.queued}, running ${counts.running}, completed ${counts.completed}, partial ${counts.partial}, failed ${counts.failed}, cancelled ${counts.cancelled}`
   ];
 
   if (latestTasks.length) {
@@ -730,12 +730,14 @@ export function buildTelegramCtoFinalText(workflowState) {
     ? 'openCodex CTO 工作流已完成'
     : workflowState.status === 'waiting_for_user'
       ? 'openCodex CTO 工作流待确认'
-      : 'openCodex CTO 工作流已结束';
+      : workflowState.status === 'cancelled'
+        ? 'openCodex CTO 工作流已取消'
+        : 'openCodex CTO 工作流已结束';
 
   const lines = [
     statusTitle,
     `目标：${truncateInline(workflowState.goal_text, 160)}`,
-    `进度：completed ${counts.completed}, partial ${counts.partial}, failed ${counts.failed}, queued ${counts.queued}`
+    `进度：completed ${counts.completed}, partial ${counts.partial}, failed ${counts.failed}, cancelled ${counts.cancelled}, queued ${counts.queued}`
   ];
 
   const highlights = collectWorkflowHighlights(workflowState).slice(0, 4);
@@ -774,7 +776,8 @@ export function buildTelegramCtoSessionSummary(workflowState) {
     `Tasks: ${counts.total}`,
     `Completed: ${counts.completed}`,
     `Partial: ${counts.partial}`,
-    `Failed: ${counts.failed}`
+    `Failed: ${counts.failed}`,
+    `Cancelled: ${counts.cancelled}`
   ];
 
   const nextSteps = collectWorkflowNextSteps(workflowState).slice(0, 4);
@@ -792,7 +795,9 @@ export function buildTelegramCtoSessionSummary(workflowState) {
         ? 'CTO workflow waiting'
         : status === 'failed'
           ? 'CTO workflow failed'
-          : 'CTO workflow running',
+          : status === 'cancelled'
+            ? 'CTO workflow cancelled'
+            : 'CTO workflow running',
     result: buildWorkflowResultLine(workflowState, counts),
     status,
     highlights,
@@ -812,6 +817,10 @@ export function findPendingWorkflowForChat(workflows, chatId) {
 }
 
 export function getReadyWorkflowTasks(workflowState) {
+  if (workflowState?.status === 'cancelled') {
+    return [];
+  }
+
   const completedTaskIds = new Set((workflowState.tasks || [])
     .filter((task) => task.status === 'completed')
     .map((task) => task.id));
@@ -825,6 +834,10 @@ export function getReadyWorkflowTasks(workflowState) {
 }
 
 export function markWorkflowTaskRunning(workflowState, taskId, sessionId = '') {
+  if (workflowState?.status === 'cancelled') {
+    return null;
+  }
+
   const task = findTask(workflowState, taskId);
   if (!task) {
     return null;
@@ -846,6 +859,14 @@ export function applyWorkflowTaskResult(workflowState, taskId, runResult) {
   const summaryStatus = asTrimmedString(runResult?.summary?.status)
     || asTrimmedString(runResult?.childStatus)
     || (runResult?.code === 0 ? 'completed' : 'failed');
+
+  if (workflowState?.status === 'cancelled') {
+    task.session_id = runResult?.sessionId || task.session_id || '';
+    task.summary_status = summaryStatus;
+    task.updated_at = new Date().toISOString();
+    workflowState.updated_at = task.updated_at;
+    return task;
+  }
   task.status = ['completed', 'failed', 'partial'].includes(summaryStatus)
     ? summaryStatus
     : (runResult?.code === 0 ? 'completed' : 'failed');
@@ -867,6 +888,10 @@ export function applyWorkflowTaskResult(workflowState, taskId, runResult) {
 
 export function finalizeWorkflowStatus(workflowState) {
   const counts = summarizeWorkflowCounts(workflowState);
+
+  if (workflowState.status === 'cancelled') {
+    return workflowState.status;
+  }
 
   if (workflowState.status === 'waiting_for_user') {
     return workflowState.status;
@@ -907,7 +932,8 @@ export function summarizeWorkflowCounts(workflowState) {
     running: 0,
     completed: 0,
     partial: 0,
-    failed: 0
+    failed: 0,
+    cancelled: 0
   };
 
   for (const task of workflowState.tasks || []) {
@@ -949,6 +975,25 @@ function collectWorkflowNextSteps(workflowState) {
   return dedupeList(values);
 }
 
+
+export function cancelTelegramWorkflowState(workflowState) {
+  const now = new Date().toISOString();
+  workflowState.status = 'cancelled';
+  workflowState.pending_question_zh = '';
+  workflowState.updated_at = now;
+
+  for (const task of workflowState.tasks || []) {
+    if (task?.status === 'queued' || task?.status === 'running') {
+      task.status = 'cancelled';
+      task.summary_status = task.summary_status || 'cancelled';
+      task.updated_at = now;
+      task.next_steps = [];
+    }
+  }
+
+  return workflowState;
+}
+
 function collectWorkflowRisks(workflowState) {
   const values = [];
   for (const task of workflowState.tasks || []) {
@@ -977,6 +1022,12 @@ function buildWorkflowResultLine(workflowState, counts) {
       : 'Workflow failed before task execution completed.';
   }
 
+  if (workflowState.status === 'cancelled') {
+    return counts.cancelled > 0
+      ? `Workflow was cancelled after ${counts.cancelled} task(s) were marked cancelled.`
+      : 'Workflow was cancelled by the CEO.';
+  }
+
   if (workflowState.status === 'partial') {
     if (counts.partial > 0 || counts.failed > 0) {
       return `Workflow needs follow-up after ${counts.completed} completed, ${counts.partial} partial, and ${counts.failed} failed task(s).`;
@@ -991,7 +1042,7 @@ function mapWorkflowStatus(status) {
   if (status === 'waiting_for_user' || status === 'partial') {
     return 'partial';
   }
-  if (status === 'completed' || status === 'failed' || status === 'running') {
+  if (status === 'completed' || status === 'failed' || status === 'running' || status === 'cancelled') {
     return status;
   }
   return 'running';
@@ -1009,6 +1060,8 @@ function formatTelegramWorkflowStatus(status) {
       return 'completed（已完成）';
     case 'failed':
       return 'failed（失败）';
+    case 'cancelled':
+      return 'cancelled（已取消）';
     case 'partial':
       return 'partial（部分完成）';
     default:

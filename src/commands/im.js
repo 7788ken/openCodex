@@ -14,6 +14,7 @@ import {
   buildTelegramCtoQuestionText,
   buildTelegramCtoSessionSummary,
   buildTelegramCtoStatusText,
+  cancelTelegramWorkflowState,
   collectHistoricalStuckCtoWorkflowCandidates,
   createTelegramWorkflowState,
   CTO_PLANNER_SCHEMA_PATH,
@@ -298,6 +299,39 @@ async function runTelegramListen(args) {
         await appendFile(updatesPath, `${JSON.stringify(normalizedMessage)}\n`, 'utf8');
         await appendFile(logPath, `[${normalizedMessage.created_at}] update ${normalizedMessage.update_id} chat ${normalizedMessage.chat_id}\n`, 'utf8');
         process.stdout.write(`Message ${normalizedMessage.update_id} from chat ${normalizedMessage.chat_id}: ${normalizedMessage.text}\n`);
+
+        const workflowControlReply = delegateMode === 'cto'
+          ? await resolveTelegramCtoControlReply({
+            cwd,
+            message: normalizedMessage,
+            workflowRuntimes,
+            persistWorkflowRuntime: async (runtime) => {
+              await persistTelegramWorkflowRuntime(cwd, runtime);
+              await persistListenerSession();
+            }
+          })
+          : null;
+
+        if (workflowControlReply) {
+          try {
+            const controlReply = await sendTelegramTextMessage({
+              apiBaseUrl,
+              botToken,
+              chatId: normalizedMessage.chat_id,
+              text: workflowControlReply.text,
+              replyToMessageId: normalizedMessage.message_id
+            });
+            await appendTelegramReply(repliesPath, controlReply);
+            await appendFile(logPath, `[${toIsoString()}] workflow control reply ${workflowControlReply.workflowId || 'none'} for update ${normalizedMessage.update_id}\n`, 'utf8');
+            process.stdout.write(`Handled CTO workflow control for update ${normalizedMessage.update_id}\n`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            await appendFile(logPath, `[${toIsoString()}] workflow control reply error for update ${normalizedMessage.update_id}: ${errorMessage}\n`, 'utf8');
+            process.stdout.write(`Workflow control reply failed for update ${normalizedMessage.update_id}: ${errorMessage}\n`);
+          }
+          await persistListenerSession();
+          continue;
+        }
 
         const workflowStatusReply = delegateMode === 'cto'
           ? await resolveTelegramCtoStatusReply({
@@ -739,11 +773,27 @@ async function processTelegramCtoWorkflow({
       logPath
     });
 
+    if (runtime.state.status === 'cancelled') {
+      await persistTelegramWorkflowRuntime(cwd, runtime);
+      await persistListenerSession();
+      workflowRuntimes.delete(runtime.session.session_id);
+      await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} cancelled before plan commit\n`, 'utf8');
+      process.stdout.write(`CTO workflow ${runtime.session.session_id} cancelled before plan commit\n`);
+      return;
+    }
+
     appendPlanTasksToWorkflow(runtime.state, planResult.plan);
     await persistTelegramWorkflowRuntime(cwd, runtime);
     await persistListenerSession();
 
     if (planResult.plan.mode === 'confirm') {
+      if (runtime.state.status === 'cancelled') {
+        await persistTelegramWorkflowRuntime(cwd, runtime);
+        await persistListenerSession();
+        workflowRuntimes.delete(runtime.session.session_id);
+        return;
+      }
+
       const questionReply = await sendTelegramTextMessage({
         apiBaseUrl,
         botToken,
@@ -774,6 +824,15 @@ async function processTelegramCtoWorkflow({
       runsPath,
       logPath
     });
+
+    if (runtime.state.status === 'cancelled') {
+      await persistTelegramWorkflowRuntime(cwd, runtime);
+      await persistListenerSession();
+      workflowRuntimes.delete(runtime.session.session_id);
+      await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} cancelled during execution\n`, 'utf8');
+      process.stdout.write(`CTO workflow ${runtime.session.session_id} cancelled during execution\n`);
+      return;
+    }
 
     finalizeWorkflowStatus(runtime.state);
     await persistTelegramWorkflowRuntime(cwd, runtime);
@@ -941,13 +1000,17 @@ async function executeTelegramCtoTasks({ cwd, profile, message, runtime, runsPat
     await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} task ${task.id} -> ${runResult.sessionId || 'no-session'} (${runResult.summary?.status || runResult.childStatus || runResult.code})\n`, 'utf8');
     await persistTelegramWorkflowRuntime(cwd, runtime);
     process.stdout.write(`CTO workflow ${runtime.session.session_id} task ${task.id} finished with ${(runtime.state.tasks.find((item) => item.id === task.id) || {}).status || 'unknown'}\n`);
-    if (runtime.state.status === 'waiting_for_user') {
+    if (runtime.state.status === 'waiting_for_user' || runtime.state.status === 'cancelled') {
       schedulingEnabled = false;
     }
     return runResult;
   };
 
   while (true) {
+    if (runtime.state.status === 'cancelled') {
+      schedulingEnabled = false;
+    }
+
     if (schedulingEnabled) {
       const readyTasks = getReadyWorkflowTasks(runtime.state);
       while (readyTasks.length > 0 && runningTasks.size < MAX_PARALLEL_CTO_TASKS) {
@@ -1288,6 +1351,134 @@ function createTelegramListenerStatePayload({ me, lastOffset, allowedChatId, del
   };
 }
 
+
+async function resolveTelegramCtoControlReply({ cwd, message, workflowRuntimes, persistWorkflowRuntime }) {
+  const intent = parseTelegramCtoControlIntent(message.text);
+  if (!intent.isCancelQuery) {
+    return null;
+  }
+
+  const runtime = await findTelegramWorkflowForCancel({
+    cwd,
+    chatId: message.chat_id,
+    workflowId: intent.workflowId,
+    workflowRuntimes
+  });
+
+  if (!runtime) {
+    return {
+      workflowId: intent.workflowId,
+      text: buildTelegramMissingWorkflowCancelText({
+        chatId: message.chat_id,
+        workflowId: intent.workflowId
+      })
+    };
+  }
+
+  if (!isTelegramWorkflowCancellable(runtime.state)) {
+    return {
+      workflowId: runtime.session.session_id,
+      text: buildTelegramNonCancellableWorkflowText({
+        workflowId: runtime.session.session_id,
+        chatId: message.chat_id,
+        status: runtime.state.status
+      })
+    };
+  }
+
+  cancelTelegramWorkflowState(runtime.state);
+  await persistWorkflowRuntime(runtime);
+  workflowRuntimes.delete(runtime.session.session_id);
+
+  return {
+    workflowId: runtime.session.session_id,
+    text: buildTelegramCtoFinalText(runtime.state)
+  };
+}
+
+function parseTelegramCtoControlIntent(text) {
+  const value = String(text || '').trim();
+  const workflowId = extractReferencedWorkflowId(value);
+  const cancelPatterns = [
+    /^(取消|停止|终止|中止)(当前)?(工作流|workflow|任务)?$/i,
+    /(取消|停止|终止|中止).{0,8}(工作流|workflow|任务)?/i,
+    /(workflow|工作流).{0,8}(取消|停止|终止|中止)/i,
+    /\b(cancel|stop|abort)\b/i
+  ];
+
+  return {
+    workflowId,
+    isCancelQuery: cancelPatterns.some((pattern) => pattern.test(value))
+  };
+}
+
+async function findTelegramWorkflowForCancel({ cwd, chatId, workflowId, workflowRuntimes }) {
+  if (workflowId) {
+    const activeRuntime = workflowRuntimes.get(workflowId);
+    if (activeRuntime?.state?.chat_id === chatId) {
+      return activeRuntime;
+    }
+    const runtime = await loadTelegramWorkflowRuntime(cwd, workflowId, chatId);
+    return isTelegramWorkflowCancellable(runtime?.state) ? runtime : runtime || null;
+  }
+
+  const activeRuntime = Array.from(workflowRuntimes.values())
+    .filter((runtime) => runtime?.state?.chat_id === chatId && isTelegramWorkflowCancellable(runtime.state))
+    .sort((left, right) => String(right.state.updated_at || '').localeCompare(String(left.state.updated_at || '')))[0] || null;
+  if (activeRuntime) {
+    return activeRuntime;
+  }
+
+  const sessions = await listSessions(cwd);
+  for (const session of sessions) {
+    if (session.command !== 'cto') {
+      continue;
+    }
+    if (String(session.input?.arguments?.chat_id || '') !== String(chatId)) {
+      continue;
+    }
+
+    const runtime = await loadTelegramWorkflowRuntime(cwd, session.session_id, chatId);
+    if (isTelegramWorkflowCancellable(runtime?.state)) {
+      return runtime;
+    }
+  }
+
+  return null;
+}
+
+function isTelegramWorkflowCancellable(workflowState) {
+  if (!workflowState || typeof workflowState !== 'object') {
+    return false;
+  }
+  return !['completed', 'failed', 'cancelled'].includes(String(workflowState.status || ''));
+}
+
+function buildTelegramMissingWorkflowCancelText({ chatId, workflowId = '' }) {
+  const lines = [
+    workflowId
+      ? 'openCodex CTO 未找到可取消的工作流'
+      : 'openCodex CTO 当前没有可取消的工作流'
+  ];
+
+  if (workflowId) {
+    lines.push(`Workflow: ${workflowId}`);
+  }
+  lines.push(`Chat: ${chatId}`);
+  lines.push('说明：当前没有匹配的进行中或待确认 CTO 工作流。');
+  return lines.join('\n');
+}
+
+function buildTelegramNonCancellableWorkflowText({ workflowId, chatId, status }) {
+  return [
+    'openCodex CTO 工作流不可取消',
+    `Workflow: ${workflowId}`,
+    `Chat: ${chatId}`,
+    `状态：${status || 'unknown'}`,
+    '说明：该工作流已经结束，无需再次取消。'
+  ].join('\n');
+}
+
 async function resolveTelegramCtoStatusReply({ cwd, message, workflowRuntimes }) {
   const intent = parseTelegramCtoStatusIntent(message.text);
   if (!intent.isStatusQuery) {
@@ -1417,7 +1608,7 @@ function buildTelegramTaskHistoryItems(workflowState) {
   }
 
   return workflowState.tasks
-    .filter((task) => task && typeof task === 'object' && (task.session_id || ['running', 'completed', 'failed', 'partial'].includes(task.status)))
+    .filter((task) => task && typeof task === 'object' && (task.session_id || ['running', 'completed', 'failed', 'partial', 'cancelled'].includes(task.status)))
     .map((task) => ({
       workflow_session_id: workflowState.workflow_session_id || '',
       task_id: typeof task.id === 'string' ? task.id : '',

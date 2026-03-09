@@ -94,5 +94,6 @@
 - 工作流状态类问题，例如 `安排了哪些任务`、`workflow status`、`task status`
 - 带明确工作流引用的问题，例如 `Workflow: cto-... 安排了哪些任务`
 - 最近历史类问题，例如 `最近任务`、`任务历史`、`recent tasks`、`task history`
+- 取消控制类消息，例如 `取消`、`cancel`、`stop`、`Workflow: cto-... cancel`
 
 状态类查询会返回匹配工作流的摘要；最近历史类查询会返回这个 Telegram chat 下最近已知的 CTO 任务记录简表。

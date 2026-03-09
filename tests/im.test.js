@@ -320,6 +320,165 @@ test('im telegram listen --cto injects a default repair task when stale workflow
   assert.match(telegram.state.sentMessages[0].text, /Repair historical stuck workflows/);
 });
 
+
+test('im telegram listen --cto cancels the current waiting workflow without dispatching a new one', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-cancel-'));
+  const telegram = await startTelegramMockServer({
+    updates: [
+      {
+        update_id: 321,
+        message: {
+          message_id: 721,
+          date: 1741435450,
+          text: 'need confirm',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      }
+    ]
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const child = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 721 && /需要你确认下一步/.test(message.text)), 'confirmation reply');
+
+  telegram.state.updates.push({
+    update_id: 322,
+    message: {
+      message_id: 722,
+      date: 1741435451,
+      text: '取消',
+      chat: { id: 123456, type: 'private' },
+      from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+    }
+  });
+
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 722 && /工作流已取消/.test(message.text)), 'cancel reply');
+  await waitForCondition(() => stdout.includes('Handled CTO workflow control for update 322'), 'cancel control log');
+
+  const planReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 721 && /Workflow: cto-/.test(message.text));
+  assert.ok(planReply);
+  const workflowIdMatch = planReply.text.match(/Workflow:\s+(cto-[^\s]+)/);
+  assert.ok(workflowIdMatch);
+
+  const cancelReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 722 && /工作流已取消/.test(message.text));
+  assert.ok(cancelReply);
+  assert.ok(cancelReply.text.includes(`Workflow: ${workflowIdMatch[1]}`));
+  assert.equal(telegram.state.reactions.length, 1);
+  assert.doesNotMatch(stdout, /started workflow .* for update 322/);
+
+  await waitForCondition(async () => {
+    const workflowState = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'sessions', workflowIdMatch[1], 'artifacts', 'cto-workflow.json'), 'utf8'));
+    return workflowState.status === 'cancelled';
+  }, 'cancelled workflow state');
+
+  const workflowState = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'sessions', workflowIdMatch[1], 'artifacts', 'cto-workflow.json'), 'utf8'));
+  assert.equal(workflowState.status, 'cancelled');
+  assert.equal(workflowState.pending_question_zh, '');
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+});
+
+test('im telegram listen --cto does not dispatch a new workflow when no cancellable workflow exists', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-cancel-missing-'));
+  const telegram = await startTelegramMockServer({
+    updates: [
+      {
+        update_id: 331,
+        message: {
+          message_id: 731,
+          date: 1741435460,
+          text: 'cancel',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      }
+    ]
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const child = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 731 && /没有可取消的工作流/.test(message.text)), 'missing cancel reply');
+  await waitForCondition(() => stdout.includes('Handled CTO workflow control for update 331'), 'missing cancel control log');
+
+  assert.equal(telegram.state.reactions.length, 0);
+  assert.equal(telegram.state.sentMessages.length, 1);
+  assert.match(telegram.state.sentMessages[0].text, /当前没有可取消的工作流/);
+  assert.doesNotMatch(stdout, /started workflow .* for update 331/);
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+});
+
 test('im telegram listen --cto keeps later messages non-blocking while a slow workflow is running', async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-parallel-'));
   const telegram = await startTelegramMockServer({
@@ -1181,7 +1340,7 @@ async function waitForValue(readValue, label) {
 async function waitForCondition(check, label) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < 5000) {
-    if (check()) {
+    if (await Promise.resolve(check())) {
       return;
     }
     await delay(25);

@@ -5,10 +5,12 @@ import path from 'node:path';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import {
   appendWorkflowUserMessage,
+  buildTelegramCtoFinalText,
   buildTelegramCtoMainThreadSystemPrompt,
   buildTelegramCtoPlannerPrompt,
   buildTelegramCtoSessionSummary,
   buildTelegramCtoWorkerExecutionPrompt,
+  cancelTelegramWorkflowState,
   loadCtoSoulDocument,
   buildDefaultCtoSoulDocument,
   collectHistoricalStuckCtoWorkflowCandidates,
@@ -228,6 +230,31 @@ test('cto workflow identifies stale historical workflows and injects a default r
   assert.match(plan.summary_zh, /历史卡住 workflow/);
 });
 
+
+
+test('cto cancel helper marks active tasks cancelled and renders a cancelled final reply', () => {
+  const workflowState = cancelTelegramWorkflowState({
+    workflow_session_id: 'cto-demo',
+    goal_text: 'Cancel demo workflow',
+    status: 'running',
+    pending_question_zh: 'old question',
+    updated_at: '2026-03-09T00:00:00.000Z',
+    tasks: [
+      { id: 'task-1', title: 'Queued task', status: 'queued', next_steps: ['x'] },
+      { id: 'task-2', title: 'Running task', status: 'running', next_steps: ['y'] },
+      { id: 'task-3', title: 'Completed task', status: 'completed', next_steps: [] }
+    ]
+  });
+
+  const finalText = buildTelegramCtoFinalText(workflowState);
+  assert.equal(workflowState.status, 'cancelled');
+  assert.equal(workflowState.pending_question_zh, '');
+  assert.equal(workflowState.tasks[0].status, 'cancelled');
+  assert.equal(workflowState.tasks[1].status, 'cancelled');
+  assert.equal(workflowState.tasks[2].status, 'completed');
+  assert.match(finalText, /工作流已取消/);
+  assert.match(finalText, /cancelled 2/);
+});
 
 test('cto session summary describes partial workflows without calling them running', () => {
   const summary = buildTelegramCtoSessionSummary({

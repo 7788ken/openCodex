@@ -94,5 +94,6 @@ Current supported follow-up patterns include:
 - workflow-status questions such as `安排了哪些任务`, `what tasks`, `workflow status`, or `task status`
 - explicit workflow references such as `Workflow: cto-... 安排了哪些任务`
 - recent-history questions such as `最近任务`, `任务历史`, `recent tasks`, or `task history`
+- cancel controls such as `取消`, `cancel`, `stop`, or `Workflow: cto-... cancel`
 
 Status queries return the matching workflow summary. Recent-history queries return a compact list of the latest known CTO task records for that Telegram chat.
