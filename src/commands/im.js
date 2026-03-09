@@ -21,7 +21,8 @@ import {
   getReadyWorkflowTasks,
   markWorkflowTaskRunning,
   normalizeTelegramCtoPlan,
-  applyWorkflowTaskResult
+  applyWorkflowTaskResult,
+  loadCtoSoulDocument
 } from '../lib/cto-workflow.js';
 import { createSession, getSessionDir, listSessions, loadSession, saveSession } from '../lib/session-store.js';
 
@@ -824,6 +825,9 @@ async function processTelegramCtoWorkflow({
 }
 
 async function planTelegramCtoWorkflow({ cwd, message, triggerMessage, continuationMessage, runtime, runsPath, logPath }) {
+  const ctoSoul = await loadCtoSoulDocument(cwd);
+  runtime.state.cto_soul_path = ctoSoul.display_path;
+
   const result = await spawnCliCapture([
     'run',
     '--cwd',
@@ -835,7 +839,9 @@ async function planTelegramCtoWorkflow({ cwd, message, triggerMessage, continuat
     buildTelegramCtoPlannerPrompt({
       message,
       workflowState: runtime.state,
-      continuationMessage
+      continuationMessage,
+      soulText: ctoSoul.text,
+      soulPath: ctoSoul.display_path
     })
   ], cwd, {
     OPENCODEX_PARENT_SESSION_ID: runtime.session.session_id,

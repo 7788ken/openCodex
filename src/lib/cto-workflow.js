@@ -1,6 +1,9 @@
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readTextIfExists } from './fs.js';
 
 export const CTO_PLANNER_SCHEMA_PATH = fileURLToPath(new URL('../../schemas/cto-workflow-plan.schema.json', import.meta.url));
+export const DEFAULT_CTO_SOUL_RELATIVE_PATH = path.join('prompts', 'cto-soul.md');
 
 const MAX_TASKS = 4;
 const MAX_TITLE_LENGTH = 72;
@@ -124,8 +127,67 @@ export function buildTelegramCtoAutoReplyText(message, continuation = false) {
   return `收到，openCodex CTO 主线程已接管，正在拆任务并调度：${preview}`;
 }
 
-export function buildTelegramCtoMainThreadSystemPrompt({ continuation = false } = {}) {
+export async function loadCtoSoulDocument(cwd = process.cwd(), options = {}) {
+  const resolvedCwd = path.resolve(cwd || process.cwd());
+  const overridePath = String(options.path || process.env.OPENCODEX_CTO_SOUL_PATH || '').trim();
+  const candidatePaths = [];
+
+  if (overridePath) {
+    candidatePaths.push(path.isAbsolute(overridePath) ? overridePath : path.resolve(resolvedCwd, overridePath));
+  }
+  candidatePaths.push(path.resolve(resolvedCwd, DEFAULT_CTO_SOUL_RELATIVE_PATH));
+
+  for (const candidatePath of candidatePaths) {
+    const text = (await readTextIfExists(candidatePath))?.trim() || '';
+    if (text) {
+      return {
+        path: candidatePath,
+        display_path: path.relative(resolvedCwd, candidatePath) || path.basename(candidatePath),
+        text,
+        builtin: false
+      };
+    }
+  }
+
+  return {
+    path: path.resolve(resolvedCwd, DEFAULT_CTO_SOUL_RELATIVE_PATH),
+    display_path: DEFAULT_CTO_SOUL_RELATIVE_PATH,
+    text: defaultCtoSoulDocument(),
+    builtin: true
+  };
+}
+
+function defaultCtoSoulDocument() {
   return [
+    '# openCodex CTO Soul',
+    '',
+    'You are the openCodex CTO main thread.',
+    '',
+    '## Identity',
+    '- Stay in the CTO role and behave like the long-lived orchestrator for the CEO.',
+    '- Treat Codex CLI as the best local execution engine and build on top of it instead of replacing it.',
+    '- Keep openCodex as a thin orchestration layer inspired by openclaw.',
+    '',
+    '## Operating Style',
+    '- Prefer non-blocking delegation, visible progress, and reversible implementation steps.',
+    '- Infer intent when a safe, high-leverage default path is obvious.',
+    '- Ask for confirmation only when external side effects, safety, or strategy would materially change.',
+    '- Maintain awareness of running, waiting, and blocked workflows.',
+    '',
+    '## Language Policy',
+    '- Reply to the CEO in Simplified Chinese on the control channel.',
+    '- Keep task titles, implementation prompts, and project artifacts in English.',
+    '- Keep documentation bilingual under docs/en and docs/zh when docs change.',
+    '',
+    '## Delegation Policy',
+    '- The CTO main thread owns planning policy and edits every worker prompt.',
+    '- Worker agents are executors, not policy authors or substitute coordinators.',
+    '- Keep worker prompts concrete, scoped, and independently executable.'
+  ].join('\n');
+}
+
+export function buildTelegramCtoMainThreadSystemPrompt({ continuation = false, soulText = '', soulPath = '' } = {}) {
+  const lines = [
     'You are the dedicated openCodex CTO main thread operating through the Telegram control channel.',
     'You are the central orchestrator for many worker agents and must stay in the CTO role.',
     'openCodex is a thin orchestration layer on top of Codex CLI, inspired by openclaw.',
@@ -145,10 +207,19 @@ export function buildTelegramCtoMainThreadSystemPrompt({ continuation = false } 
     continuation
       ? 'Do not recreate finished tasks. Only create the next executable tasks needed after the CEO response.'
       : 'Ask one concise Chinese question only when ambiguity would materially change the execution path or create a meaningful external risk.'
-  ].join('\n');
+  ];
+
+  const normalizedSoulText = String(soulText || '').trim();
+  if (normalizedSoulText) {
+    lines.push('', soulPath
+      ? `Active CTO soul document (${soulPath}):`
+      : 'Active CTO soul document:', normalizedSoulText);
+  }
+
+  return lines.join('\n');
 }
 
-export function buildTelegramCtoPlannerPrompt({ message, workflowState, continuationMessage = null }) {
+export function buildTelegramCtoPlannerPrompt({ message, workflowState, continuationMessage = null, soulText = '', soulPath = '' }) {
   const completedTaskLines = summarizeTasksForPrompt(workflowState.tasks || []);
   const historyLines = (workflowState.user_messages || [])
     .slice(-4)
@@ -156,7 +227,7 @@ export function buildTelegramCtoPlannerPrompt({ message, workflowState, continua
 
   if (continuationMessage) {
     return [
-      buildTelegramCtoMainThreadSystemPrompt({ continuation: true }),
+      buildTelegramCtoMainThreadSystemPrompt({ continuation: true, soulText, soulPath }),
       '',
       'Original Telegram goal:',
       workflowState.goal_text,
@@ -176,7 +247,7 @@ export function buildTelegramCtoPlannerPrompt({ message, workflowState, continua
   }
 
   return [
-    buildTelegramCtoMainThreadSystemPrompt(),
+    buildTelegramCtoMainThreadSystemPrompt({ soulText, soulPath }),
     '',
     'Telegram message:',
     message.text

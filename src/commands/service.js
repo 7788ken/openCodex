@@ -14,6 +14,13 @@ const DEFAULT_MENU_BAR_APP_NAME = 'OpenCodex Tray.app';
 const SERVICE_CONFIG_FILE = 'service.json';
 const DEFAULT_POLL_TIMEOUT = 30;
 const DEFAULT_PROFILE = 'full-access';
+const DEFAULT_SERVICE_SETTINGS = Object.freeze({
+  ui_language: 'en',
+  badge_mode: 'tasks',
+  refresh_interval_seconds: 15,
+  show_workflow_ids: true,
+  show_paths: true
+});
 
 const TELEGRAM_INSTALL_OPTION_SPEC = {
   cwd: { type: 'string' },
@@ -41,6 +48,16 @@ const TELEGRAM_SERVICE_OPTION_SPEC = {
   json: { type: 'boolean' }
 };
 
+const TELEGRAM_SET_SETTING_OPTION_SPEC = {
+  label: { type: 'string' },
+  profile: { type: 'string' },
+  'launch-agent-dir': { type: 'string' },
+  'state-dir': { type: 'string' },
+  'applications-dir': { type: 'string' },
+  key: { type: 'string' },
+  value: { type: 'string' },
+  json: { type: 'boolean' }
+};
 
 const TELEGRAM_DISPATCH_DETAIL_OPTION_SPEC = {
   label: { type: 'string' },
@@ -74,6 +91,7 @@ export async function runServiceCommand(args) {
       '  opencodex service telegram stop [--json]\n' +
       '  opencodex service telegram restart [--json]\n' +
       '  opencodex service telegram set-profile --profile <name> [--json]\n' +
+      '  opencodex service telegram set-setting --key <name> --value <value> [--json]\n' +
       '  opencodex service telegram send-status [--json]\n' +
       '  opencodex service telegram task-history [--limit <n>] [--json]\n' +
       '  opencodex service telegram dispatch-detail --index <n> [--json]\n' +
@@ -113,6 +131,11 @@ export async function runServiceCommand(args) {
 
   if (subcommand === 'set-profile') {
     await runTelegramServiceSetProfile(rest);
+    return;
+  }
+
+  if (subcommand === 'set-setting') {
+    await runTelegramServiceSetSetting(rest);
     return;
   }
 
@@ -246,6 +269,39 @@ async function runTelegramServiceRestart(args) {
   await stopService(service, { quietIfStopped: true });
   const payload = await startService(service);
   renderServiceOutput({ ...payload, action: 'restart' }, options.json, 'Telegram CTO service restarted');
+}
+
+async function runTelegramServiceSetSetting(args) {
+  const { options, positionals } = parseOptions(args, TELEGRAM_SET_SETTING_OPTION_SPEC);
+  if (positionals.length) {
+    throw new Error('`opencodex service telegram set-setting` does not accept positional arguments');
+  }
+
+  if (typeof options.key !== 'string' || !options.key.trim()) {
+    throw new Error('`opencodex service telegram set-setting` requires `--key <name>`');
+  }
+  if (typeof options.value !== 'string' || !options.value.trim()) {
+    throw new Error('`opencodex service telegram set-setting` requires `--value <value>`');
+  }
+
+  const service = await loadInstalledService(options);
+  const existingConfig = await readExistingServiceConfig(service);
+  const { settingKey, settingValue, settings } = applyServiceSetting(service.settings, options.key, options.value);
+  service.settings = settings;
+
+  await writeJson(service.configPath, buildServiceConfig(service, {
+    ...existingConfig,
+    installed_at: existingConfig.installed_at || new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  }));
+
+  const payload = await inspectService(service);
+  renderServiceOutput({
+    ...payload,
+    action: 'set-setting',
+    setting_key: settingKey,
+    setting_value: settingValue
+  }, options.json, 'Telegram CTO tray setting updated');
 }
 
 async function runTelegramServiceSetProfile(args) {
@@ -409,6 +465,7 @@ function resolveTelegramServiceSettings(options) {
     chatId,
     pollTimeout,
     profile,
+    settings: defaultServiceSettings(),
     stateDir,
     launchAgentDir,
     applicationsDir,
@@ -434,6 +491,7 @@ async function loadInstalledService(options) {
       chatId: config.chat_id || service.chatId,
       pollTimeout: Number.isInteger(config.poll_timeout) ? config.poll_timeout : service.pollTimeout,
       profile: config.profile || config.permission_mode || service.profile,
+      settings: normalizeServiceSettings(config.settings),
       launchAgentDir: config.launch_agent_dir || service.launchAgentDir,
       stateDir: config.state_dir || service.stateDir,
       applicationsDir: config.applications_dir || service.applicationsDir,
@@ -477,6 +535,7 @@ function buildServiceConfig(service, overrides = {}) {
     poll_timeout: service.pollTimeout,
     profile: service.profile,
     permission_mode: service.profile,
+    settings: normalizeServiceSettings(service.settings),
     launch_agent_dir: service.launchAgentDir,
     state_dir: service.stateDir,
     applications_dir: service.applicationsDir,
@@ -491,6 +550,119 @@ function buildServiceConfig(service, overrides = {}) {
     cli_path: CLI_PATH,
     codex_bin: getCodexBin()
   };
+}
+
+function defaultServiceSettings() {
+  return { ...DEFAULT_SERVICE_SETTINGS };
+}
+
+function normalizeServiceSettings(settings = {}) {
+  const raw = settings && typeof settings === 'object' && !Array.isArray(settings) ? settings : {};
+  return {
+    ui_language: normalizeUiLanguage(raw.ui_language),
+    badge_mode: normalizeBadgeMode(raw.badge_mode),
+    refresh_interval_seconds: normalizeRefreshInterval(raw.refresh_interval_seconds),
+    show_workflow_ids: normalizeBooleanSetting(raw.show_workflow_ids, DEFAULT_SERVICE_SETTINGS.show_workflow_ids),
+    show_paths: normalizeBooleanSetting(raw.show_paths, DEFAULT_SERVICE_SETTINGS.show_paths)
+  };
+}
+
+function flattenServiceSettings(settings = {}) {
+  const normalized = normalizeServiceSettings(settings);
+  return {
+    ui_language: normalized.ui_language,
+    badge_mode: normalized.badge_mode,
+    refresh_interval_seconds: normalized.refresh_interval_seconds,
+    show_workflow_ids: normalized.show_workflow_ids,
+    show_paths: normalized.show_paths
+  };
+}
+
+function applyServiceSetting(currentSettings, key, value) {
+  const normalized = normalizeServiceSettings(currentSettings);
+  const settingKey = normalizeSettingKey(key);
+  if (settingKey === 'ui_language') {
+    normalized.ui_language = normalizeUiLanguage(value);
+    return { settingKey, settingValue: normalized.ui_language, settings: normalized };
+  }
+  if (settingKey === 'badge_mode') {
+    normalized.badge_mode = normalizeBadgeMode(value);
+    return { settingKey, settingValue: normalized.badge_mode, settings: normalized };
+  }
+  if (settingKey === 'refresh_interval_seconds') {
+    normalized.refresh_interval_seconds = normalizeRefreshInterval(value);
+    return { settingKey, settingValue: String(normalized.refresh_interval_seconds), settings: normalized };
+  }
+  if (settingKey === 'show_workflow_ids') {
+    normalized.show_workflow_ids = normalizeBooleanSetting(value, DEFAULT_SERVICE_SETTINGS.show_workflow_ids);
+    return { settingKey, settingValue: normalized.show_workflow_ids ? 'on' : 'off', settings: normalized };
+  }
+  if (settingKey === 'show_paths') {
+    normalized.show_paths = normalizeBooleanSetting(value, DEFAULT_SERVICE_SETTINGS.show_paths);
+    return { settingKey, settingValue: normalized.show_paths ? 'on' : 'off', settings: normalized };
+  }
+
+  throw new Error(`Unknown tray setting: ${key}`);
+}
+
+function normalizeSettingKey(key) {
+  const value = String(key || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  if (value in DEFAULT_SERVICE_SETTINGS) {
+    return value;
+  }
+  if (value === 'language' || value === 'ui') {
+    return 'ui_language';
+  }
+  if (value === 'badge') {
+    return 'badge_mode';
+  }
+  if (value === 'refresh_interval' || value === 'refresh' || value === 'interval') {
+    return 'refresh_interval_seconds';
+  }
+  if (value === 'workflow_ids' || value === 'show_ids') {
+    return 'show_workflow_ids';
+  }
+  if (value === 'paths') {
+    return 'show_paths';
+  }
+  return value;
+}
+
+function normalizeUiLanguage(value) {
+  return String(value || '').trim().toLowerCase() === 'zh' ? 'zh' : 'en';
+}
+
+function normalizeBadgeMode(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'workflows' || normalized === 'workflow') {
+    return 'workflows';
+  }
+  if (normalized === 'none' || normalized === 'off') {
+    return 'none';
+  }
+  return 'tasks';
+}
+
+function normalizeRefreshInterval(value) {
+  const parsed = Number.parseInt(String(value || ''), 10);
+  if ([5, 15, 30, 60].includes(parsed)) {
+    return parsed;
+  }
+  return DEFAULT_SERVICE_SETTINGS.refresh_interval_seconds;
+}
+
+function normalizeBooleanSetting(value, fallback) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on', 'show', 'enabled'].includes(normalized)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'off', 'hide', 'disabled'].includes(normalized)) {
+    return false;
+  }
+  return fallback;
 }
 
 function normalizeProfileName(profileName, cwd) {
@@ -532,6 +704,7 @@ async function inspectService(service) {
       chat_id: service.chatId,
       profile: service.profile,
       permission_mode: service.profile,
+      ...flattenServiceSettings(service.settings),
       ...workflowStats
     };
   }
@@ -560,6 +733,7 @@ async function inspectService(service) {
     chat_id: service.chatId,
     profile: service.profile,
     permission_mode: service.profile,
+    ...flattenServiceSettings(service.settings),
     launchctl_output: rawOutput.trim(),
     ...workflowStats
   };
@@ -874,6 +1048,11 @@ function renderServiceOutput(payload, json, title) {
     lines.push(`Permission Mode: ${formatPermissionMode(payload.permission_mode || payload.profile)}`);
     lines.push(`Profile: ${payload.profile || payload.permission_mode}`);
   }
+  lines.push(`UI Language: ${payload.ui_language || DEFAULT_SERVICE_SETTINGS.ui_language}`);
+  lines.push(`Badge Mode: ${payload.badge_mode || DEFAULT_SERVICE_SETTINGS.badge_mode}`);
+  lines.push(`Refresh Interval: ${payload.refresh_interval_seconds || DEFAULT_SERVICE_SETTINGS.refresh_interval_seconds}`);
+  lines.push(`Show Workflow IDs: ${payload.show_workflow_ids === false ? 'off' : 'on'}`);
+  lines.push(`Show Paths: ${payload.show_paths === false ? 'off' : 'on'}`);
   lines.push(`Running Workflows: ${payload.running_workflow_count ?? 0}`);
   lines.push(`Waiting Workflows: ${payload.waiting_workflow_count ?? 0}`);
   lines.push(`Running Tasks: ${payload.running_task_count ?? 0}`);
@@ -1342,8 +1521,7 @@ on reopen
 end reopen
 
 on idle
-	my refreshStatus()
-	return 15
+	return my refreshStatus()
 end idle
 
 on setupMenuBar()
@@ -1357,22 +1535,27 @@ end setupMenuBar
 
 on rebuildMenu(statusText)
 	statusMenu's removeAllItems()
-	my addInfoItem("Service: " & my lineValue(statusText, "State: ", "unknown") & " • " & my detectMode(statusText))
-	my addInfoItem("Workflows: running " & my lineValue(statusText, "Running Workflows: ", "0") & " • waiting " & my lineValue(statusText, "Waiting Workflows: ", "0"))
-	my addInfoItem("Tasks: running " & my lineValue(statusText, "Running Tasks: ", "0") & " • queued " & my lineValue(statusText, "Queued Tasks: ", "0"))
-	my addInfoItem("History: total " & my lineValue(statusText, "Task History: ", "0"))
-	my addInfoItem("Threads: main active " & my lineValue(statusText, "Active Main Threads: ", "0") & " • child active " & my lineValue(statusText, "Active Child Threads: ", "0") & " • child total " & my lineValue(statusText, "Child Sessions: ", "0"))
+	my addInfoItem(my localizedText(statusText, "Service", "服务") & ": " & my lineValue(statusText, "State: ", "unknown") & " • " & my detectMode(statusText))
+	my addInfoItem(my localizedText(statusText, "Workflows", "工作流") & ": running " & my lineValue(statusText, "Running Workflows: ", "0") & " • waiting " & my lineValue(statusText, "Waiting Workflows: ", "0"))
+	my addInfoItem(my localizedText(statusText, "Tasks", "任务") & ": running " & my lineValue(statusText, "Running Tasks: ", "0") & " • queued " & my lineValue(statusText, "Queued Tasks: ", "0"))
+	my addInfoItem(my localizedText(statusText, "History", "历史") & ": total " & my lineValue(statusText, "Task History: ", "0"))
+	my addInfoItem(my localizedText(statusText, "Threads", "线程") & ": " & my localizedText(statusText, "main active", "主活跃") & " " & my lineValue(statusText, "Active Main Threads: ", "0") & " • " & my localizedText(statusText, "child active", "子活跃") & " " & my lineValue(statusText, "Active Child Threads: ", "0") & " • " & my localizedText(statusText, "child total", "子累计") & " " & my lineValue(statusText, "Child Sessions: ", "0"))
 	set latestWorkflowId to my lineValue(statusText, "Latest Workflow: ", "")
+	set showWorkflowIds to my settingEnabled(statusText, "Show Workflow IDs: ", true)
 	if latestWorkflowId is not "" then
 		set latestWorkflowStatus to my lineValue(statusText, "Latest Workflow Status: ", "unknown")
-		my addInfoItem("Latest: " & latestWorkflowId & " (" & latestWorkflowStatus & ")")
+		if showWorkflowIds then
+			my addInfoItem(my localizedText(statusText, "Latest", "最近") & ": " & latestWorkflowId & " (" & latestWorkflowStatus & ")")
+		else
+			my addInfoItem(my localizedText(statusText, "Latest Workflow", "最近工作流") & ": " & latestWorkflowStatus)
+		end if
 		set latestGoal to my lineValue(statusText, "Latest Workflow Goal: ", "")
-		if latestGoal is not "" then my addInfoItem("Goal: " & my truncateText(latestGoal, 72))
+		if latestGoal is not "" then my addInfoItem(my localizedText(statusText, "Goal", "目标") & ": " & my truncateText(latestGoal, 72))
 	end if
 	set firstDispatch to my lineValue(statusText, "Dispatch 1: ", "")
 	if firstDispatch is not "" then
 		my addSeparator()
-		my addInfoItem("Recent Dispatches")
+		my addInfoItem(my localizedText(statusText, "Recent Dispatches", "最近派发"))
 		repeat with dispatchIndex from 1 to 5
 			set dispatchTitle to my lineValue(statusText, "Dispatch " & dispatchIndex & ": ", "")
 			if dispatchTitle is not "" then
@@ -1380,23 +1563,24 @@ on rebuildMenu(statusText)
 			end if
 		end repeat
 	end if
-	my addMenuItem("Browse Task History… (" & my lineValue(statusText, "Task History: ", "0") & ")", "browseTaskHistory:")
+	my addMenuItem(my localizedText(statusText, "Browse Task History…", "浏览任务历史…") & " (" & my lineValue(statusText, "Task History: ", "0") & ")", "browseTaskHistory:")
+	my addMenuItem(my localizedText(statusText, "Settings…", "设置…"), "openSettings:")
 	my addSeparator()
-	my addMenuItem("Show Status", "showStatus:")
-	my addMenuItem("Start CTO Service", "startService:")
-	my addMenuItem("Stop CTO Service", "stopService:")
-	my addMenuItem("Restart CTO Service", "restartService:")
+	my addMenuItem(my localizedText(statusText, "Show Status", "查看状态"), "showStatus:")
+	my addMenuItem(my localizedText(statusText, "Start CTO Service", "启动 CTO 服务"), "startService:")
+	my addMenuItem(my localizedText(statusText, "Stop CTO Service", "停止 CTO 服务"), "stopService:")
+	my addMenuItem(my localizedText(statusText, "Restart CTO Service", "重启 CTO 服务"), "restartService:")
 	my addSeparator()
-	my addMenuItem("Use Safe Mode (Read-Only)", "useSafeMode:")
-	my addMenuItem("Use Balanced Mode", "useBalancedMode:")
-	my addMenuItem("Use Full Access Mode", "useFullAccessMode:")
+	my addMenuItem(my localizedText(statusText, "Use Safe Mode (Read-Only)", "切换到 Safe 模式（只读）"), "useSafeMode:")
+	my addMenuItem(my localizedText(statusText, "Use Balanced Mode", "切换到 Balanced 模式"), "useBalancedMode:")
+	my addMenuItem(my localizedText(statusText, "Use Full Access Mode", "切换到 Full Access 模式"), "useFullAccessMode:")
 	my addSeparator()
-	my addMenuItem("Open Repo", "openRepo:")
-	my addMenuItem("Open Logs", "openLogs:")
-	my addMenuItem("Open Latest Workflow", "openLatestWorkflow:")
-	my addMenuItem("Send Status Reply", "sendStatusReply:")
+	my addMenuItem(my localizedText(statusText, "Open Repo", "打开仓库"), "openRepo:")
+	my addMenuItem(my localizedText(statusText, "Open Logs", "打开日志"), "openLogs:")
+	my addMenuItem(my localizedText(statusText, "Open Latest Workflow", "打开最近工作流"), "openLatestWorkflow:")
+	my addMenuItem(my localizedText(statusText, "Send Status Reply", "发送状态回执"), "sendStatusReply:")
 	my addSeparator()
-	my addMenuItem("Quit", "quitApp:")
+	my addMenuItem(my localizedText(statusText, "Quit", "退出"), "quitApp:")
 end rebuildMenu
 
 on addMenuItem(titleText, actionName)
@@ -1415,6 +1599,56 @@ on addSeparator()
 	statusMenu's addItem_(current application's NSMenuItem's separatorItem())
 end addSeparator
 
+on currentUiLanguage(statusText)
+	set configuredLanguage to my lineValue(statusText, "UI Language: ", "en")
+	if configuredLanguage is "zh" then return "zh"
+	return "en"
+end currentUiLanguage
+
+on localizedText(statusText, englishText, chineseText)
+	if my currentUiLanguage(statusText) is "zh" then return chineseText
+	return englishText
+end localizedText
+
+on settingEnabled(statusText, prefixText, fallbackValue)
+	set rawValue to my lineValue(statusText, prefixText, "")
+	if rawValue is "on" then return true
+	if rawValue is "off" then return false
+	return fallbackValue
+end settingEnabled
+
+on describeUiLanguage(statusText)
+	set currentValue to my lineValue(statusText, "UI Language: ", "en")
+	if currentValue is "zh" then return my localizedText(statusText, "Language: Chinese", "语言：中文")
+	return my localizedText(statusText, "Language: English", "语言：英文")
+end describeUiLanguage
+
+on describeBadgeMode(statusText)
+	set currentValue to my lineValue(statusText, "Badge Mode: ", "tasks")
+	if currentValue is "workflows" then return my localizedText(statusText, "Badge: Running workflows", "角标：运行中的工作流")
+	if currentValue is "none" then return my localizedText(statusText, "Badge: Off", "角标：关闭")
+	return my localizedText(statusText, "Badge: Running tasks", "角标：运行中的任务")
+end describeBadgeMode
+
+on describeRefreshInterval(statusText)
+	set currentValue to my lineValue(statusText, "Refresh Interval: ", "15")
+	return my localizedText(statusText, "Refresh: every ", "刷新：每 ") & currentValue & my localizedText(statusText, "s", " 秒")
+end describeRefreshInterval
+
+on describeWorkflowIds(statusText)
+	if my settingEnabled(statusText, "Show Workflow IDs: ", true) then
+		return my localizedText(statusText, "Workflow IDs: On", "工作流 ID：显示")
+	end if
+	return my localizedText(statusText, "Workflow IDs: Off", "工作流 ID：隐藏")
+end describeWorkflowIds
+
+on describePaths(statusText)
+	if my settingEnabled(statusText, "Show Paths: ", true) then
+		return my localizedText(statusText, "Path Shortcuts: On", "路径快捷入口：显示")
+	end if
+	return my localizedText(statusText, "Path Shortcuts: Off", "路径快捷入口：隐藏")
+end describePaths
+
 on refreshStatus()
 	set statusText to my runStatusCommand(false)
 	set button to statusItem's button()
@@ -1428,6 +1662,8 @@ on refreshStatus()
 	set mainCount to my lineValue(statusText, "Active Main Threads: ", "0")
 	set childCount to my lineValue(statusText, "Active Child Threads: ", "0")
 	set totalChildCount to my lineValue(statusText, "Child Sessions: ", "0")
+	set badgeMode to my lineValue(statusText, "Badge Mode: ", "tasks")
+	set refreshIntervalValue to my lineValue(statusText, "Refresh Interval: ", "15")
 	if serviceState is "running" then
 		set titlePrefix to "OC●"
 		if modeLabel is "full-access" then
@@ -1435,7 +1671,15 @@ on refreshStatus()
 		else if modeLabel is "safe" then
 			set titlePrefix to "OC△"
 		end if
-		if runningTaskCount is not "0" then
+		if badgeMode is "workflows" then
+			if runningCount is not "0" then
+				button's setTitle_(titlePrefix & runningCount)
+			else
+				button's setTitle_(titlePrefix)
+			end if
+		else if badgeMode is "none" then
+			button's setTitle_(titlePrefix)
+		else if runningTaskCount is not "0" then
 			button's setTitle_(titlePrefix & runningTaskCount)
 		else
 			button's setTitle_(titlePrefix)
@@ -1444,6 +1688,11 @@ on refreshStatus()
 		button's setTitle_("OC○")
 	end if
 	button's setToolTip_("openCodex CTO • " & serviceState & " • wf " & runningCount & "/" & waitingCount & " • task " & runningTaskCount & "/" & queuedTaskCount & " • main active " & mainCount & " • child active " & childCount & " • child total " & totalChildCount & " • " & modeLabel)
+	try
+		return refreshIntervalValue as integer
+	on error
+		return 15
+	end try
 end refreshStatus
 
 on runStatusCommand(asJson)
@@ -1461,6 +1710,95 @@ on showStatus_(sender)
 	display dialog responseText buttons {"OK"} default button "OK" with title appTitle
 	my refreshStatus()
 end showStatus_
+
+on openSettings_(sender)
+	set statusText to my runStatusCommand(false)
+	repeat
+		set settingChoices to {my describeUiLanguage(statusText), my describeBadgeMode(statusText), my describeRefreshInterval(statusText), my describeWorkflowIds(statusText), my describePaths(statusText)}
+		set picked to choose from list settingChoices with title appTitle with prompt (my localizedText(statusText, "Choose a tray setting to change", "选择要修改的任务栏设置")) OK button name (my localizedText(statusText, "Change", "修改")) cancel button name (my localizedText(statusText, "Close", "关闭"))
+		if picked is false then return
+		set selectedChoice to item 1 of picked
+		if selectedChoice is item 1 of settingChoices then
+			my chooseUiLanguage(statusText)
+		else if selectedChoice is item 2 of settingChoices then
+			my chooseBadgeMode(statusText)
+		else if selectedChoice is item 3 of settingChoices then
+			my chooseRefreshInterval(statusText)
+		else if selectedChoice is item 4 of settingChoices then
+			my chooseWorkflowIds(statusText)
+		else if selectedChoice is item 5 of settingChoices then
+			my choosePaths(statusText)
+		end if
+		set statusText to my runStatusCommand(false)
+	end repeat
+end openSettings_
+
+on chooseUiLanguage(statusText)
+	set choices to {my localizedText(statusText, "English", "英文"), my localizedText(statusText, "Chinese", "中文")}
+	set picked to choose from list choices with title appTitle with prompt (my localizedText(statusText, "Choose the tray language", "选择任务栏语言")) OK button name (my localizedText(statusText, "Apply", "应用")) cancel button name (my localizedText(statusText, "Back", "返回"))
+	if picked is false then return
+	if (item 1 of picked) is item 1 of choices then
+		my runSettingCommand("ui_language", "en")
+	else
+		my runSettingCommand("ui_language", "zh")
+	end if
+end chooseUiLanguage
+
+on chooseBadgeMode(statusText)
+	set choices to {my localizedText(statusText, "Running Tasks", "运行中的任务"), my localizedText(statusText, "Running Workflows", "运行中的工作流"), my localizedText(statusText, "No Badge Count", "不显示数字角标")}
+	set picked to choose from list choices with title appTitle with prompt (my localizedText(statusText, "Choose the menu bar badge mode", "选择菜单栏角标模式")) OK button name (my localizedText(statusText, "Apply", "应用")) cancel button name (my localizedText(statusText, "Back", "返回"))
+	if picked is false then return
+	if (item 1 of picked) is item 1 of choices then
+		my runSettingCommand("badge_mode", "tasks")
+	else if (item 1 of picked) is item 2 of choices then
+		my runSettingCommand("badge_mode", "workflows")
+	else
+		my runSettingCommand("badge_mode", "none")
+	end if
+end chooseBadgeMode
+
+on chooseRefreshInterval(statusText)
+	set choices to {"5s", "15s", "30s", "60s"}
+	set picked to choose from list choices with title appTitle with prompt (my localizedText(statusText, "Choose the refresh interval", "选择刷新间隔")) OK button name (my localizedText(statusText, "Apply", "应用")) cancel button name (my localizedText(statusText, "Back", "返回"))
+	if picked is false then return
+	set choiceValue to item 1 of picked
+	if choiceValue ends with "s" then set choiceValue to text 1 thru -2 of choiceValue
+	my runSettingCommand("refresh_interval_seconds", choiceValue)
+end chooseRefreshInterval
+
+on chooseWorkflowIds(statusText)
+	set choices to {my localizedText(statusText, "Show Workflow IDs", "显示工作流 ID"), my localizedText(statusText, "Hide Workflow IDs", "隐藏工作流 ID")}
+	set picked to choose from list choices with title appTitle with prompt (my localizedText(statusText, "Choose workflow ID visibility", "选择工作流 ID 显示方式")) OK button name (my localizedText(statusText, "Apply", "应用")) cancel button name (my localizedText(statusText, "Back", "返回"))
+	if picked is false then return
+	if (item 1 of picked) is item 1 of choices then
+		my runSettingCommand("show_workflow_ids", "on")
+	else
+		my runSettingCommand("show_workflow_ids", "off")
+	end if
+end chooseWorkflowIds
+
+on choosePaths(statusText)
+	set choices to {my localizedText(statusText, "Show Path Shortcuts", "显示路径快捷入口"), my localizedText(statusText, "Hide Path Shortcuts", "隐藏路径快捷入口")}
+	set picked to choose from list choices with title appTitle with prompt (my localizedText(statusText, "Choose path shortcut visibility", "选择路径快捷入口显示方式")) OK button name (my localizedText(statusText, "Apply", "应用")) cancel button name (my localizedText(statusText, "Back", "返回"))
+	if picked is false then return
+	if (item 1 of picked) is item 1 of choices then
+		my runSettingCommand("show_paths", "on")
+	else
+		my runSettingCommand("show_paths", "off")
+	end if
+end choosePaths
+
+on runSettingCommand(settingKey, settingValue)
+	set commandText to quoted form of nodePath & space & quoted form of cliPath & " service telegram set-setting --key " & quoted form of settingKey & " --value " & quoted form of settingValue & " --state-dir " & quoted form of stateDir
+	set statusText to my runStatusCommand(false)
+	try
+		set outputText to do shell script commandText
+		display notification outputText with title appTitle
+	on error errorMessage
+		display notification errorMessage with title appTitle
+	end try
+	my refreshStatus()
+end runSettingCommand
 
 on startService_(sender)
 	my runServiceCommand("start")
@@ -1541,7 +1879,7 @@ on openLatestWorkflow_(sender)
 	set statusText to my runStatusCommand(false)
 	set workflowPath to my lineValue(statusText, "Latest Workflow Path: ", "")
 	if workflowPath is "" then
-		display notification "No workflow session found yet." with title appTitle
+		display notification (my localizedText(my runStatusCommand(false), "No workflow session found yet.", "还没有工作流会话。")) with title appTitle
 	else
 		do shell script "open -R " & quoted form of workflowPath
 	end if
@@ -1577,16 +1915,17 @@ on browseTaskHistory_(sender)
 
 	set historyItems to my collectPrefixedLines(historyText, "History ")
 	if (count of historyItems) is 0 then
-		display notification "No task history found yet." with title appTitle
+		display notification (my localizedText(my runStatusCommand(false), "No task history found yet.", "还没有任务历史。")) with title appTitle
 		return
 	end if
 
-	set picked to choose from list historyItems with title appTitle with prompt "Select a task to inspect" OK button name "Open Detail" cancel button name "Cancel"
+	set statusText to my runStatusCommand(false)
+	set picked to choose from list historyItems with title appTitle with prompt (my localizedText(statusText, "Select a task to inspect", "选择要查看的任务")) OK button name (my localizedText(statusText, "Open Detail", "打开详情")) cancel button name (my localizedText(statusText, "Cancel", "取消"))
 	if picked is false then return
 
 	set selectedIndex to my historyIndexFromLine(item 1 of picked)
 	if selectedIndex is 0 then
-		display notification "Unable to parse the selected task history item." with title appTitle
+		display notification (my localizedText(my runStatusCommand(false), "Unable to parse the selected task history item.", "无法解析所选任务历史项。")) with title appTitle
 		return
 	end if
 
@@ -1602,19 +1941,26 @@ on openDispatchRecord(dispatchIndex)
 	end try
 
 	set summaryText to my dispatchSummaryText(detailText)
+	set statusText to my runStatusCommand(false)
+	set pathsVisible to my settingEnabled(statusText, "Show Paths: ", true)
+	if pathsVisible then
+		set actionButtons to {my localizedText(statusText, "Sections", "分段"), my localizedText(statusText, "Paths", "路径"), my localizedText(statusText, "Close", "关闭")}
+	else
+		set actionButtons to {my localizedText(statusText, "Sections", "分段"), my localizedText(statusText, "Close", "关闭")}
+	end if
 	repeat
 		try
-			set dialogResult to display dialog summaryText buttons {"Sections", "Paths", "Close"} default button "Sections" with title appTitle
+			set dialogResult to display dialog summaryText buttons actionButtons default button (item 1 of actionButtons) with title appTitle
 		on error number -128
 			return
 		end try
 
 		set selectedButton to button returned of dialogResult
-		if selectedButton is "Close" then
+		if selectedButton is my localizedText(statusText, "Close", "关闭") then
 			return
-		else if selectedButton is "Paths" then
+		else if pathsVisible and selectedButton is my localizedText(statusText, "Paths", "路径") then
 			my browseDispatchArtifacts(detailText)
-		else if selectedButton is "Sections" then
+		else if selectedButton is my localizedText(statusText, "Sections", "分段") then
 			set panelAction to my browseDispatchSections(detailText)
 			if panelAction is "close" then return
 		end if
@@ -1636,28 +1982,35 @@ on browseDispatchSections(detailText)
 	repeat
 		set sectionNames to my dispatchSectionNames(detailText)
 		if (count of sectionNames) is 0 then
-			display notification "No extra sections available for this task." with title appTitle
+			display notification (my localizedText(my runStatusCommand(false), "No extra sections available for this task.", "这个任务没有更多分段内容。")) with title appTitle
 			return "back"
 		end if
 
-		set picked to choose from list sectionNames with title appTitle with prompt "Select a detail section" OK button name "View" cancel button name "Back"
+		set statusText to my runStatusCommand(false)
+		set picked to choose from list sectionNames with title appTitle with prompt (my localizedText(statusText, "Select a detail section", "选择详情分段")) OK button name (my localizedText(statusText, "View", "查看")) cancel button name (my localizedText(statusText, "Back", "返回"))
 		if picked is false then return "back"
 		set sectionName to item 1 of picked
 		set sectionText to my dispatchSectionText(detailText, sectionName)
 
 		repeat
+			set pathsVisible to my settingEnabled(statusText, "Show Paths: ", true)
+			if pathsVisible then
+				set sectionButtons to {my localizedText(statusText, "Back", "返回"), my localizedText(statusText, "Paths", "路径"), my localizedText(statusText, "Close", "关闭")}
+			else
+				set sectionButtons to {my localizedText(statusText, "Back", "返回"), my localizedText(statusText, "Close", "关闭")}
+			end if
 			try
-				set dialogResult to display dialog sectionText buttons {"Back", "Paths", "Close"} default button "Back" with title (appTitle & " — " & sectionName)
+				set dialogResult to display dialog sectionText buttons sectionButtons default button (item 1 of sectionButtons) with title (appTitle & " — " & sectionName)
 			on error number -128
 				return "back"
 			end try
 
 			set selectedButton to button returned of dialogResult
-			if selectedButton is "Back" then
+			if selectedButton is my localizedText(statusText, "Back", "返回") then
 				exit repeat
-			else if selectedButton is "Paths" then
+			else if pathsVisible and selectedButton is my localizedText(statusText, "Paths", "路径") then
 				my browseDispatchArtifacts(detailText)
-			else if selectedButton is "Close" then
+			else if selectedButton is my localizedText(statusText, "Close", "关闭") then
 				return "close"
 			end if
 		end repeat
@@ -1677,11 +2030,12 @@ on browseDispatchArtifacts(detailText)
 	if messagePath is not "" then set end of artifactChoices to "Last Message — " & my truncateText(messagePath, 72)
 
 	if (count of artifactChoices) is 0 then
-		display notification "No artifact paths available for this task." with title appTitle
+		display notification (my localizedText(my runStatusCommand(false), "No artifact paths available for this task.", "这个任务没有可打开的路径。")) with title appTitle
 		return
 	end if
 
-	set picked to choose from list artifactChoices with title appTitle with prompt "Reveal a task artifact in Finder" OK button name "Open" cancel button name "Back"
+	set statusText to my runStatusCommand(false)
+	set picked to choose from list artifactChoices with title appTitle with prompt (my localizedText(statusText, "Reveal a task artifact in Finder", "在 Finder 中显示任务产物")) OK button name (my localizedText(statusText, "Open", "打开")) cancel button name (my localizedText(statusText, "Back", "返回"))
 	if picked is false then return
 	set selectedArtifact to item 1 of picked
 

@@ -15,6 +15,7 @@
 - `opencodex service telegram stop`
 - `opencodex service telegram restart`
 - `opencodex service telegram set-profile`
+- `opencodex service telegram set-setting`
 - `opencodex service telegram send-status`
 - `opencodex service telegram task-history`
 - `opencodex service telegram dispatch-detail`
@@ -61,6 +62,20 @@
 - `--index <n>`
 - `--json`
 
+### `telegram set-setting`
+
+- `--key <name>`
+- `--value <value>`
+- `--json`
+
+第一版支持的设置项：
+
+- `ui_language` → `en` 或 `zh`
+- `badge_mode` → `tasks`、`workflows` 或 `none`
+- `refresh_interval_seconds` → `5`、`15`、`30` 或 `60`
+- `show_workflow_ids` → `on` 或 `off`
+- `show_paths` → `on` 或 `off`
+
 ### `telegram uninstall`
 
 - `--remove-menubar`
@@ -75,6 +90,7 @@
 - 启动、停止或重启 Telegram CTO 服务
 - 直接在菜单栏内浏览最近派发记录，并为单个任务弹出详情窗口
 - 从菜单栏进入完整的 `Task History` 浏览列表，再对选中的任务继续查看详情
+- 直接在 UI 中修改任务栏设置，包括语言、角标模式、刷新间隔、工作流 ID 显示与路径快捷入口
 - 需要时可一键打开任务记录、原始事件日志、最后消息文件、仓库目录、服务日志与最近工作流
 - 把当前状态回执发回配置好的 CEO Telegram chat
 

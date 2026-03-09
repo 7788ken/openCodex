@@ -107,6 +107,11 @@ test('service telegram status includes workflow counts and latest workflow detai
   assert.equal(payload.active_child_thread_count, 1);
   assert.equal(payload.child_session_count, 5);
   assert.equal(payload.child_thread_count, 5);
+  assert.equal(payload.ui_language, 'en');
+  assert.equal(payload.badge_mode, 'tasks');
+  assert.equal(payload.refresh_interval_seconds, 15);
+  assert.equal(payload.show_workflow_ids, true);
+  assert.equal(payload.show_paths, true);
   assert.equal(payload.latest_workflow_session_id, 'cto-20260309-100500-waiting');
   assert.equal(payload.latest_workflow_status, 'waiting');
   assert.equal(payload.latest_workflow_goal, 'Deploy change after confirmation');
@@ -340,6 +345,114 @@ test('service telegram set-profile updates the wrapper and restarts a loaded ser
   assert.equal(uninstallPayload.installed, false);
 });
 
+test('service telegram set-setting persists tray settings and exposes them in status', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-settings-'));
+  const cwd = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+  const launchctlState = path.join(root, 'launchctl-state.json');
+  const launchctl = await writeMockLaunchctl(path.join(root, 'mock-launchctl.js'), launchctlState);
+
+  await mkdir(cwd, { recursive: true });
+  await seedWorkflowSessions(cwd);
+
+  await runCli([
+    'service', 'telegram', 'install',
+    '--cwd', cwd,
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  const updated = await runCli([
+    'service', 'telegram', 'set-setting',
+    '--state-dir', stateDir,
+    '--key', 'ui_language',
+    '--value', 'zh',
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(updated.code, 0);
+  const updatedPayload = JSON.parse(updated.stdout);
+  assert.equal(updatedPayload.action, 'set-setting');
+  assert.equal(updatedPayload.setting_key, 'ui_language');
+  assert.equal(updatedPayload.setting_value, 'zh');
+  assert.equal(updatedPayload.ui_language, 'zh');
+
+  await runCli([
+    'service', 'telegram', 'set-setting',
+    '--state-dir', stateDir,
+    '--key', 'badge_mode',
+    '--value', 'workflows'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+  await runCli([
+    'service', 'telegram', 'set-setting',
+    '--state-dir', stateDir,
+    '--key', 'refresh_interval_seconds',
+    '--value', '30'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+  await runCli([
+    'service', 'telegram', 'set-setting',
+    '--state-dir', stateDir,
+    '--key', 'show_workflow_ids',
+    '--value', 'off'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+  await runCli([
+    'service', 'telegram', 'set-setting',
+    '--state-dir', stateDir,
+    '--key', 'show_paths',
+    '--value', 'off'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  const config = JSON.parse(await readFile(path.join(stateDir, 'service.json'), 'utf8'));
+  assert.deepEqual(config.settings, {
+    ui_language: 'zh',
+    badge_mode: 'workflows',
+    refresh_interval_seconds: 30,
+    show_workflow_ids: false,
+    show_paths: false
+  });
+
+  const status = await runCli([
+    'service', 'telegram', 'status',
+    '--state-dir', stateDir,
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(status.code, 0);
+  const payload = JSON.parse(status.stdout);
+  assert.equal(payload.ui_language, 'zh');
+  assert.equal(payload.badge_mode, 'workflows');
+  assert.equal(payload.refresh_interval_seconds, 30);
+  assert.equal(payload.show_workflow_ids, false);
+  assert.equal(payload.show_paths, false);
+});
+
 test('service telegram send-status sends the current workflow snapshot back to Telegram', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-send-status-'));
   const cwd = path.join(root, 'repo');
@@ -440,8 +553,18 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /dispatch-detail --index/);
   assert.match(scriptSource, /task-history --state-dir/);
   assert.match(scriptSource, /Browse Task History/);
+  assert.match(scriptSource, /Settings…/);
+  assert.match(scriptSource, /openSettings_/);
   assert.match(scriptSource, /choose from list historyItems/);
-  assert.match(scriptSource, /display dialog summaryText buttons \{"Sections", "Paths", "Close"\}/);
+  assert.match(scriptSource, /UI Language:/);
+  assert.match(scriptSource, /Badge Mode:/);
+  assert.match(scriptSource, /Refresh Interval:/);
+  assert.match(scriptSource, /Show Workflow IDs:/);
+  assert.match(scriptSource, /Show Paths:/);
+  assert.match(scriptSource, /localizedText/);
+  assert.match(scriptSource, /runSettingCommand/);
+  assert.match(scriptSource, /service telegram set-setting --key/);
+  assert.match(scriptSource, /set actionButtons to \{/);
   assert.match(scriptSource, /browseDispatchSections/);
   assert.match(scriptSource, /browseDispatchArtifacts/);
   assert.match(scriptSource, /dispatchSummaryText/);
@@ -456,7 +579,8 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /Active Main Threads:/);
   assert.match(scriptSource, /Active Child Threads:/);
   assert.match(scriptSource, /Child Sessions:/);
-  assert.match(scriptSource, /Threads: main active/);
+  assert.match(scriptSource, /localizedText\(statusText, "Threads", "线程"\)/);
+  assert.match(scriptSource, /localizedText\(statusText, "main active", "主活跃"\)/);
   assert.match(scriptSource, /runningTaskCount/);
   assert.match(scriptSource, /totalChildCount/);
   assert.match(scriptSource, /service telegram send-status/);

@@ -1,10 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import os from 'node:os';
+import path from 'node:path';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import {
   appendWorkflowUserMessage,
   buildTelegramCtoMainThreadSystemPrompt,
   buildTelegramCtoPlannerPrompt,
   buildTelegramCtoWorkerExecutionPrompt,
+  loadCtoSoulDocument,
   isLikelyTelegramNonDirectiveMessage,
   normalizeTelegramCtoPlan,
   shouldPromoteWorkflowGoal
@@ -33,6 +37,24 @@ test('cto planner prompt keeps CEO context and main-thread rules', () => {
   assert.match(prompt, /The user is the CEO/i);
   assert.match(prompt, /main thread/i);
   assert.match(prompt, /Telegram message:/);
+});
+
+test('cto soul document loads from repo prompts and extends the main-thread prompt', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-cto-soul-'));
+  await mkdir(path.join(cwd, 'prompts'), { recursive: true });
+  await writeFile(path.join(cwd, 'prompts', 'cto-soul.md'), '# Soul\n\n- Stay opinionated.\n- Keep Codex CLI as the engine.\n', 'utf8');
+
+  const soul = await loadCtoSoulDocument(cwd);
+  const prompt = buildTelegramCtoMainThreadSystemPrompt({
+    soulText: soul.text,
+    soulPath: soul.display_path
+  });
+
+  assert.equal(soul.display_path, 'prompts/cto-soul.md');
+  assert.equal(soul.builtin, false);
+  assert.match(prompt, /Active CTO soul document \(prompts\/cto-soul\.md\):/);
+  assert.match(prompt, /Stay opinionated\./);
+  assert.match(prompt, /Keep Codex CLI as the engine\./);
 });
 
 test('cto worker execution prompt wraps child work under the main thread', () => {
