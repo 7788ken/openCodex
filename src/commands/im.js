@@ -7,7 +7,6 @@ import { readJson, readTextIfExists, writeJson, toIsoString } from '../lib/fs.js
 import {
   appendPlanTasksToWorkflow,
   appendWorkflowUserMessage,
-  buildTelegramCtoDirectReplyPrompt,
   buildTelegramCtoFinalText,
   buildTelegramCtoPlanText,
   buildTelegramCtoPlannerPrompt,
@@ -24,7 +23,9 @@ import {
   findPendingWorkflowForChat,
   getReadyWorkflowTasks,
   injectHistoricalCtoRepairTask,
+  classifyTelegramCtoMessageIntent,
   isLikelyTelegramCtoCasualChatMessage,
+  shouldKeepTelegramCtoInConversationMode,
   markWorkflowTaskRunning,
   normalizeTelegramCtoPlan,
   applyWorkflowTaskResult,
@@ -157,6 +158,7 @@ async function runTelegramListen(args) {
   let lastMessage = null;
   let finalized = false;
   const workflowRuntimes = new Map();
+  const chatStates = new Map();
   await rehydratePendingTelegramCtoWorkflows(cwd, workflowRuntimes);
 
   const writeListenerState = async () => {
@@ -166,7 +168,8 @@ async function runTelegramListen(args) {
       allowedChatId,
       delegateMode,
       delegateProfile,
-      workflows: workflowRuntimes.values()
+      workflows: workflowRuntimes.values(),
+      chatStates: chatStates.values()
     }));
   };
 
@@ -298,6 +301,9 @@ async function runTelegramListen(args) {
 
         updateCount += 1;
         lastMessage = normalizedMessage;
+        const chatState = delegateMode === 'cto'
+          ? noteTelegramChatInbound(chatStates, normalizedMessage)
+          : null;
         await appendFile(updatesPath, `${JSON.stringify(normalizedMessage)}\n`, 'utf8');
         await appendFile(logPath, `[${normalizedMessage.created_at}] update ${normalizedMessage.update_id} chat ${normalizedMessage.chat_id}\n`, 'utf8');
         process.stdout.write(`Message ${normalizedMessage.update_id} from chat ${normalizedMessage.chat_id}: ${normalizedMessage.text}\n`);
@@ -364,12 +370,18 @@ async function runTelegramListen(args) {
           continue;
         }
 
+        const pendingWorkflow = delegateMode === 'cto'
+          ? findPendingWorkflowForChat(workflowRuntimes.values(), normalizedMessage.chat_id)
+          : null;
+
         const workflowDirectReply = delegateMode === 'cto'
           ? await resolveTelegramCtoDirectReply({
             cwd,
             parentSession: session,
             message: normalizedMessage,
+            pendingWorkflow,
             workflowRuntimes,
+            chatState,
             runsPath,
             logPath
           })
@@ -392,13 +404,12 @@ async function runTelegramListen(args) {
             await appendFile(logPath, `[${toIsoString()}] workflow direct reply error for update ${normalizedMessage.update_id}: ${errorMessage}\n`, 'utf8');
             process.stdout.write(`Workflow direct reply failed for update ${normalizedMessage.update_id}: ${errorMessage}\n`);
           }
+          if (chatState) {
+            noteTelegramChatDirectReply(chatState, normalizedMessage, workflowDirectReply.replyMode || 'casual');
+          }
           await persistListenerSession();
           continue;
         }
-
-        const pendingWorkflow = delegateMode === 'cto'
-          ? findPendingWorkflowForChat(workflowRuntimes.values(), normalizedMessage.chat_id)
-          : null;
 
         try {
           const acknowledgement = await sendTelegramAutoReply({
@@ -427,7 +438,7 @@ async function runTelegramListen(args) {
             cwd,
             profile: delegateProfile,
             parentSession: session,
-            message: normalizedMessage,
+            message: { ...normalizedMessage, chat_state: chatState },
             pendingWorkflow,
             apiBaseUrl,
             botToken,
@@ -672,8 +683,12 @@ async function handleTelegramCtoMessage({
   });
   await persistListenerSession();
 
+  if (message.chat_state && typeof message.chat_state === 'object') {
+    noteTelegramChatWorkflowStart(message.chat_state, runtime.session.session_id, message);
+  }
+
   await appendFile(logPath, `[${toIsoString()}] started workflow ${runtime.session.session_id} for update ${message.update_id}\n`, 'utf8');
-  process.stdout.write(`CTO workflow ${runtime.session.session_id} started for update ${message.update_id}\n`);
+  process.stdout.write(`started workflow ${runtime.session.session_id} for update ${message.update_id}\n`);
 
   await processTelegramCtoWorkflow({
     cwd,
@@ -1358,7 +1373,7 @@ function buildTelegramFinalSummary({ me, pollTimeout, allowedChatId, updateCount
   };
 }
 
-function createTelegramListenerStatePayload({ me, lastOffset, allowedChatId, delegateMode, delegateProfile, workflows }) {
+function createTelegramListenerStatePayload({ me, lastOffset, allowedChatId, delegateMode, delegateProfile, workflows, chatStates }) {
   const workflowItems = Array.from(workflows || [])
     .map((runtime) => ({
       workflow_session_id: runtime.session.session_id,
@@ -1372,6 +1387,18 @@ function createTelegramListenerStatePayload({ me, lastOffset, allowedChatId, del
   const activeWorkflowCount = workflowItems.filter((item) => item.status === 'planning' || item.status === 'running').length;
   const waitingWorkflowCount = workflowItems.filter((item) => item.status === 'waiting_for_user').length;
 
+  const chatItems = Array.from(chatStates || [])
+    .map((state) => ({
+      chat_id: state.chat_id,
+      message_count: state.message_count || 0,
+      direct_reply_count: state.direct_reply_count || 0,
+      workflow_start_count: state.workflow_start_count || 0,
+      last_mode: state.last_mode || '',
+      last_intent: state.last_intent || '',
+      last_updated_at: state.last_updated_at || ''
+    }))
+    .sort((left, right) => String(right.last_updated_at || '').localeCompare(String(left.last_updated_at || '')));
+
   return {
     provider: 'telegram',
     bot_username: me.username || '',
@@ -1381,10 +1408,58 @@ function createTelegramListenerStatePayload({ me, lastOffset, allowedChatId, del
     profile: delegateMode === 'cto' ? delegateProfile : '',
     active_workflow_count: activeWorkflowCount,
     waiting_workflow_count: waitingWorkflowCount,
+    conversation_chat_count: chatItems.filter((item) => item.last_mode === 'conversation').length,
+    chat_states: chatItems,
     workflows: workflowItems
   };
 }
 
+function getOrCreateTelegramChatState(chatStates, chatId) {
+  if (!chatStates.has(chatId)) {
+    chatStates.set(chatId, {
+      chat_id: chatId,
+      message_count: 0,
+      direct_reply_count: 0,
+      workflow_start_count: 0,
+      last_mode: '',
+      last_intent: '',
+      last_user_message: '',
+      last_workflow_session_id: '',
+      last_updated_at: ''
+    });
+  }
+  return chatStates.get(chatId);
+}
+
+function noteTelegramChatInbound(chatStates, message) {
+  const chatState = getOrCreateTelegramChatState(chatStates, message.chat_id);
+  chatState.message_count = Number(chatState.message_count || 0) + 1;
+  chatState.last_intent = classifyTelegramCtoMessageIntent(message.text).kind;
+  chatState.last_user_message = message.text;
+  chatState.last_updated_at = message.created_at || toIsoString();
+  return chatState;
+}
+
+function noteTelegramChatDirectReply(chatState, message, mode = 'casual') {
+  if (!chatState) {
+    return;
+  }
+  chatState.direct_reply_count = Number(chatState.direct_reply_count || 0) + 1;
+  chatState.last_mode = mode === 'conversation' ? 'conversation' : 'casual';
+  chatState.last_user_message = message.text;
+  chatState.last_updated_at = message.created_at || toIsoString();
+}
+
+function noteTelegramChatWorkflowStart(chatState, workflowSessionId, message) {
+  if (!chatState) {
+    return;
+  }
+  chatState.workflow_start_count = Number(chatState.workflow_start_count || 0) + 1;
+  chatState.last_mode = 'workflow';
+  chatState.last_workflow_session_id = workflowSessionId || '';
+  chatState.last_user_message = message.text;
+  chatState.last_updated_at = message.created_at || toIsoString();
+}
 
 async function resolveTelegramCtoControlReply({ cwd, message, workflowRuntimes, persistWorkflowRuntime }) {
   const intent = parseTelegramCtoControlIntent(message.text);
@@ -1557,103 +1632,61 @@ async function resolveTelegramCtoStatusReply({ cwd, message, workflowRuntimes })
   };
 }
 
-async function resolveTelegramCtoDirectReply({ cwd, parentSession, message, workflowRuntimes, runsPath, logPath }) {
-  if (!isLikelyTelegramCtoCasualChatMessage(message.text)) {
+async function resolveTelegramCtoDirectReply({ message, pendingWorkflow, chatState, logPath }) {
+  const replyMode = determineTelegramCtoReplyMode({
+    text: message.text,
+    pendingWorkflow,
+    chatState
+  });
+  if (!replyMode) {
     return null;
   }
 
-  const pendingWorkflow = findPendingWorkflowForChat(workflowRuntimes.values(), message.chat_id);
-  const ctoSoul = await loadCtoSoulDocument(cwd);
-  const outputPath = path.join(
-    getSessionDir(cwd, parentSession.session_id),
-    'artifacts',
-    `telegram-direct-reply-${sanitizeFileComponent(`${message.update_id}-${message.message_id}`)}.json`
-  );
+  await appendFile(logPath, `[${toIsoString()}] local direct reply ${replyMode} for update ${message.update_id}\n`, 'utf8');
 
-  try {
-    const result = await spawnCliCapture([
-      'run',
-      '--cwd',
-      cwd,
-      '--profile',
-      'safe',
-      '--output',
-      outputPath,
-      buildTelegramCtoDirectReplyPrompt({
-        message,
-        pendingWorkflowState: pendingWorkflow?.state || null,
-        soulText: ctoSoul.text,
-        soulPath: ctoSoul.display_path
-      })
-    ], cwd, {
-      OPENCODEX_PARENT_SESSION_ID: parentSession.session_id,
-      OPENCODEX_IM_SOURCE: 'telegram',
-      OPENCODEX_IM_UPDATE_ID: String(message.update_id),
-      OPENCODEX_CTO_STAGE: 'direct-reply'
-    });
+  return {
+    workflowId: pendingWorkflow?.session?.session_id || '',
+    replyMode,
+    text: buildTelegramCtoDirectReplyFallbackText(pendingWorkflow, replyMode)
+  };
+}
 
-    let outputPayload = null;
-    try {
-      outputPayload = await readJson(outputPath);
-    } catch {
-      outputPayload = null;
-    }
-
-    const sessionId = outputPayload?.session_id || extractSessionId(result.stdout);
-    let childSession = null;
-    if (sessionId) {
-      try {
-        childSession = await loadSession(cwd, sessionId);
-      } catch {
-        childSession = null;
-      }
-      await recordTelegramChildSession(parentSession, cwd, {
-        sessionId,
-        updateId: message.update_id,
-        label: `Direct reply ${message.update_id}`
-      });
-    }
-
-    const runResult = {
-      code: result.code,
-      stdout: result.stdout,
-      stderr: result.stderr,
-      sessionId,
-      childStatus: childSession?.status || '',
-      summary: outputPayload?.summary || childSession?.summary || null
-    };
-
-    await appendFile(runsPath, `${JSON.stringify(buildTelegramRunRecord(message, runResult, { stage: 'direct-reply' }))}\n`, 'utf8');
-    await appendFile(logPath, `[${toIsoString()}] direct reply ${sessionId || 'no-session'} for update ${message.update_id}\n`, 'utf8');
-
-    return {
-      workflowId: pendingWorkflow?.session?.session_id || '',
-      text: pickTelegramCtoDirectReplyText(runResult.summary?.result, pendingWorkflow)
-    };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    await appendFile(logPath, `[${toIsoString()}] direct reply error for update ${message.update_id}: ${errorMessage}\n`, 'utf8');
-    return {
-      workflowId: pendingWorkflow?.session?.session_id || '',
-      text: buildTelegramCtoDirectReplyFallbackText(pendingWorkflow)
-    };
+function determineTelegramCtoReplyMode({ text, pendingWorkflow, chatState }) {
+  if (shouldKeepTelegramCtoInConversationMode({
+    text,
+    chatState,
+    hasPendingWorkflow: Boolean(pendingWorkflow)
+  })) {
+    return 'conversation';
   }
+  if (isLikelyTelegramCtoCasualChatMessage(text)) {
+    return 'casual';
+  }
+  return '';
 }
 
-function pickTelegramCtoDirectReplyText(resultText, pendingWorkflow) {
+function pickTelegramCtoDirectReplyText(resultText, pendingWorkflow, replyMode = 'casual') {
   const value = String(resultText || '').trim();
-  return value || buildTelegramCtoDirectReplyFallbackText(pendingWorkflow);
+  return value || buildTelegramCtoDirectReplyFallbackText(pendingWorkflow, replyMode);
 }
 
-function buildTelegramCtoDirectReplyFallbackText(pendingWorkflow) {
+function buildTelegramCtoDirectReplyFallbackText(pendingWorkflow, replyMode = 'casual') {
   const workflowId = pendingWorkflow?.session?.session_id || '';
   const pendingQuestion = truncateInline(pendingWorkflow?.state?.pending_question_zh || '请直接回复当前待确认问题。', 120);
 
   if (workflowId) {
     return [
       '可以，我在。',
-      `当前 Workflow: ${workflowId} 仍保持等待中；待确认：${pendingQuestion}`,
+      `当前 Workflow 仍保持等待中。Workflow: ${workflowId}；待确认：${pendingQuestion}`,
       '如果要继续，请直接回答这个问题。'
+    ].join('\n');
+  }
+
+  if (replyMode === 'conversation') {
+    return [
+      '我在，先不急着进入员工编排。',
+      '你可以先告诉我想聊聊方向，或者直接给一个具体目标。',
+      '等意图明确后，我再切到编排模式并持续汇报进度。'
     ].join('\n');
   }
 

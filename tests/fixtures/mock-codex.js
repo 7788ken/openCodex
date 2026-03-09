@@ -224,6 +224,20 @@ function buildRunPayload(prompt) {
     };
   }
 
+  if (prompt.includes('Conversation gate mode: Telegram CTO pre-orchestration reply.')) {
+    return {
+      title: 'Telegram CTO direct reply',
+      result: '我在，先不急着进入员工编排。\n你可以先告诉我想聊聊方向，或者直接给一个具体目标。\n等意图明确后，我再切到编排模式并持续汇报进度。',
+      status: 'completed',
+      highlights: [],
+      next_steps: [],
+      risks: [],
+      validation: [],
+      changed_files: [],
+      findings: []
+    };
+  }
+
   if (prompt.includes('Direct mode: Telegram CTO direct reply.')) {
     const hasPendingWorkflow = prompt.includes('There is already a waiting CTO workflow for this chat.');
     return {

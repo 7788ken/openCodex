@@ -18,7 +18,9 @@ import {
   isLikelyTelegramCtoCasualChatMessage,
   isLikelyTelegramNonDirectiveMessage,
   classifyTelegramCtoMessageIntent,
+  isStrongTelegramCtoDirectiveMessage,
   normalizeTelegramCtoPlan,
+  shouldKeepTelegramCtoInConversationMode,
   shouldPromoteWorkflowGoal
 } from '../src/lib/cto-workflow.js';
 
@@ -160,6 +162,45 @@ test('cto intent classifier still treats explicit execution requests as directiv
   assert.equal(classified.kind, 'directive');
 });
 
+test('cto intent classifier treats location-style greeting as casual chat', () => {
+  const classified = classifyTelegramCtoMessageIntent('嘿，你在哪？');
+  assert.equal(classified.kind, 'casual_chat');
+});
+
+test('cto conversation gate keeps the first vague task-like turn in chat mode', () => {
+  assert.equal(shouldKeepTelegramCtoInConversationMode({
+    text: '帮我看看',
+    chatState: { direct_reply_count: 0 },
+    hasPendingWorkflow: false
+  }), true);
+});
+
+test('cto conversation gate allows strong directives to enter orchestration', () => {
+  assert.equal(isStrongTelegramCtoDirectiveMessage('继续推进 Telegram CTO 续跑修复并补测试'), true);
+  assert.equal(shouldKeepTelegramCtoInConversationMode({
+    text: '继续推进 Telegram CTO 续跑修复并补测试',
+    chatState: { direct_reply_count: 0 },
+    hasPendingWorkflow: false
+  }), false);
+});
+
+
+
+test('cto conversation gate keeps planner-confirm triggers in orchestration', () => {
+  assert.equal(shouldKeepTelegramCtoInConversationMode({
+    text: 'need confirm',
+    chatState: { direct_reply_count: 0 },
+    hasPendingWorkflow: false
+  }), false);
+});
+
+test('cto conversation gate keeps concrete inspection requests in orchestration', () => {
+  assert.equal(shouldKeepTelegramCtoInConversationMode({
+    text: 'CTO 检查你的思考深度是不是最高',
+    chatState: { direct_reply_count: 0 },
+    hasPendingWorkflow: false
+  }), false);
+});
 
 
 test('cto workflow identifies stale historical workflows and injects a default repair task', () => {

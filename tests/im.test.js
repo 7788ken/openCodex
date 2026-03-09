@@ -507,6 +507,138 @@ test('im telegram listen --cto handles casual chat inline without resuming the c
   assert.equal(stderr, '');
 });
 
+test('im telegram listen --cto keeps the first vague greeting in conversation mode instead of opening a workflow', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-conversation-gate-'));
+  const telegram = await startTelegramMockServer({
+    updates: [
+      {
+        update_id: 501,
+        message: {
+          message_id: 901,
+          date: 1741435600,
+          text: '嘿，你在哪？',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      }
+    ]
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const child = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 901 && /我在，先不急着进入员工编排/.test(message.text)), 'conversation gate reply');
+  assert.equal(telegram.state.reactions.length, 0);
+  assert.doesNotMatch(stdout, /started workflow .* for update 501/);
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+
+  const sessionIds = await readdir(path.join(cwd, '.opencodex', 'sessions'));
+  assert.equal(sessionIds.length, 1);
+});
+
+test('im telegram listen --cto enters orchestration after a follow-up concrete request', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-conversation-escalate-'));
+  const telegram = await startTelegramMockServer({
+    updates: [
+      {
+        update_id: 601,
+        message: {
+          message_id: 1001,
+          date: 1741435600,
+          text: '嘿，你在哪？',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      },
+      {
+        update_id: 602,
+        message: {
+          message_id: 1002,
+          date: 1741435601,
+          text: '那你先检查一下 repo',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      }
+    ]
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const child = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 1001 && /我在，先不急着进入员工编排/.test(message.text)), 'first conversation reply');
+  await waitForCondition(() => telegram.state.reactions.length >= 1, 'workflow acknowledgement after follow-up');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 1002 && /已完成任务拆解/.test(message.text)), 'workflow plan reply after follow-up');
+
+  assert.match(stdout, /started workflow .* for update 602/);
+  assert.doesNotMatch(stdout, /started workflow .* for update 601/);
+
+  child.kill('SIGTERM');
+  await waitForExit(child);
+});
+
 test('im telegram listen --cto does not dispatch a new workflow when no cancellable workflow exists', async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-cancel-missing-'));
   const telegram = await startTelegramMockServer({

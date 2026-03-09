@@ -34,9 +34,11 @@ const TELEGRAM_EXECUTION_HINT_PATTERN = /(继续|推进|安排|检查|修复|处
 const TELEGRAM_ANALYSIS_INTENT_PATTERN = /(检查|审查|review|inspect|audit|分析|评估|evaluate|analyze|看看|诊断|研究|拆解)/i;
 const TELEGRAM_REASONING_TARGET_PATTERN = /(思考|思维|推理|reasoning|深度|质量|判断|决策)/i;
 const TELEGRAM_ARCHITECTURE_TARGET_PATTERN = /(架构|workflow|工作流|主线程|子线程|调度|planner|prompt|session|任务栏|telegram|cto)/i;
-const TELEGRAM_CTO_CASUAL_CHAT_PATTERN = /(陪我聊聊天|陪聊|聊聊天|聊会儿|聊天吗|可以聊天吗|能聊天吗|陪我说说话|随便聊聊)/i;
+const TELEGRAM_CTO_CASUAL_CHAT_PATTERN = /(陪我聊聊天|陪聊|聊聊天|聊会儿|聊天吗|可以聊天吗|能聊天吗|陪我说说话|随便聊聊|你在哪|人呢|在干嘛|忙吗)/i;
 const TELEGRAM_CTO_GREETING_PATTERN = /^(?:(?:cto|open\s*codex|opencodex)[,，:：\s]*)?(?:嘿|嗨|哈喽|哈啰|你在吗|在吗|在不|在嘛|你好|hello|hi|hey|yo|早上好|晚上好|午安|辛苦了)(?:[!！?？~～\s]*)$/i;
 const TELEGRAM_CTO_STATUS_HINT_PATTERN = /(状态|进度|历史|最近任务|任务历史|workflow|工作流|task\s*history|workflow\s*status|task\s*status|安排了哪些任务)/i;
+const TELEGRAM_FORCE_EXECUTION_PATTERN = /(直接推进|直接开始|马上开始|立刻处理|现在就做|安排员工|进入编排|开始执行|马上执行|立即执行|go\s*ahead|execute\s*now|start\s*working|ship\s*it)/i;
+const TELEGRAM_WORK_OBJECT_PATTERN = /(repo|code|bug|issue|test|ui|workflow|telegram|wechat|tray|session|service|prompt|agent|review|fix|build|docs?|readme|todo|roadmap|代码|仓库|任务|工作流|文档|架构|测试|修复|实现|功能|界面|命令|续跑|手机|微信)/i;
 const TELEGRAM_SHORT_CASUAL_TEXTS = new Set([
   '嘿', '嗨', '哈喽', '哈啰', 'hello', 'hi', 'hey', 'yo',
   '在吗', '你在吗', '在不', '在嘛', '你好', '辛苦了', '早', '早安', '午安', '晚安'
@@ -193,16 +195,74 @@ export function classifyTelegramCtoMessageIntent(text) {
   };
 }
 
+export function isStrongTelegramCtoDirectiveMessage(text) {
+  const rawText = String(text || '').trim();
+  if (!rawText) {
+    return false;
+  }
+
+  if (!TELEGRAM_EXECUTION_HINT_PATTERN.test(rawText)) {
+    return false;
+  }
+
+  if (TELEGRAM_FORCE_EXECUTION_PATTERN.test(rawText)) {
+    return true;
+  }
+
+  return rawText.length >= 12 && TELEGRAM_WORK_OBJECT_PATTERN.test(rawText);
+}
+
+function isVagueTelegramCtoDirectiveMessage(text) {
+  const rawText = String(text || '').trim();
+  if (!rawText) {
+    return false;
+  }
+
+  const compactText = normalizeTelegramIntentText(rawText);
+  if (compactText.length > 6) {
+    return false;
+  }
+
+  return /(帮我看看|帮我看下|看一下|看下|看看|瞅瞅|想想|过目)/i.test(rawText);
+}
+
+export function shouldKeepTelegramCtoInConversationMode({ text, chatState = null, hasPendingWorkflow = false }) {
+  if (hasPendingWorkflow) {
+    return false;
+  }
+
+  const intent = classifyTelegramCtoMessageIntent(text);
+  if (intent.kind === 'empty') {
+    return true;
+  }
+  if (intent.kind === 'status_query') {
+    return false;
+  }
+  if (intent.kind === 'casual_chat') {
+    return Number(chatState?.direct_reply_count || 0) < 1;
+  }
+  if (isStrongTelegramCtoDirectiveMessage(text)) {
+    return false;
+  }
+
+  return Number(chatState?.direct_reply_count || 0) < 1
+    && isVagueTelegramCtoDirectiveMessage(text);
+}
+
 export function isLikelyTelegramCtoCasualChatMessage(text) {
   return classifyTelegramCtoMessageIntent(text).kind === 'casual_chat';
 }
 
-export function buildTelegramCtoDirectReplyPrompt({ message, pendingWorkflowState = null, soulText = '', soulPath = '' }) {
+export function buildTelegramCtoDirectReplyPrompt({ message, pendingWorkflowState = null, soulText = '', soulPath = '', replyMode = 'casual', chatState = null }) {
   const lines = [
     buildTelegramCtoMainThreadSystemPrompt({ soulText, soulPath }),
     '',
-    'Direct mode: Telegram CTO direct reply.',
-    'This Telegram message is casual chat, not a workflow-planning request.',
+    replyMode === 'conversation'
+      ? 'Conversation gate mode: Telegram CTO pre-orchestration reply.'
+      : 'Direct mode: Telegram CTO direct reply.',
+    replyMode === 'conversation'
+      ? 'This Telegram message is not yet clear enough to justify spawning a workflow on the first turn.'
+      : 'This Telegram message is casual chat, not a workflow-planning request.',
     'Do not create tasks, plans, workflows, TODO lists, or execution steps.',
     'Reply in Simplified Chinese.',
     'Be warm, grounded, and concise.',
@@ -213,6 +273,17 @@ export function buildTelegramCtoDirectReplyPrompt({ message, pendingWorkflowStat
     'Put the exact Telegram reply text in `result`.',
     'Leave `highlights`, `next_steps`, `risks`, `validation`, `changed_files`, and `findings` empty arrays.'
   ];
+
+  if (replyMode === 'conversation') {
+    lines.push(
+      '',
+      'This is the first-stage conversation gate for the CTO main thread.',
+      'Do not start orchestration yet. Help the CEO clarify intent naturally.',
+      'If the CEO only greets you, respond naturally and say you can switch into execution once they give a concrete goal.',
+      'If the message hints at work but is still vague, ask one short clarifying question about which lane to start with.',
+      `Direct-reply turns so far in this listener session: ${Number(chatState?.direct_reply_count || 0)}`
+    );
+  }
 
   if (pendingWorkflowState?.workflow_session_id) {
     lines.push(
