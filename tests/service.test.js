@@ -112,6 +112,8 @@ test('service telegram status includes workflow counts and latest workflow detai
   assert.equal(payload.refresh_interval_seconds, 15);
   assert.equal(payload.show_workflow_ids, true);
   assert.equal(payload.show_paths, true);
+  assert.equal(payload.cto_soul_source, 'builtin');
+  assert.match(payload.cto_soul_path, /prompts\/cto-soul\.md$/);
   assert.equal(payload.latest_workflow_session_id, 'cto-20260309-100500-waiting');
   assert.equal(payload.latest_workflow_status, 'waiting');
   assert.equal(payload.latest_workflow_goal, 'Deploy change after confirmation');
@@ -345,6 +347,53 @@ test('service telegram set-profile updates the wrapper and restarts a loaded ser
   assert.equal(uninstallPayload.installed, false);
 });
 
+test('service telegram reset-cto-soul restores the default Codex-CLI-based template', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-reset-cto-soul-'));
+  const cwd = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+  const launchctlState = path.join(root, 'launchctl-state.json');
+  const launchctl = await writeMockLaunchctl(path.join(root, 'mock-launchctl.js'), launchctlState);
+
+  await mkdir(path.join(cwd, 'prompts'), { recursive: true });
+  await writeFile(path.join(cwd, 'prompts', 'cto-soul.md'), '# custom\n\n- old content\n', 'utf8');
+
+  await runCli([
+    'service', 'telegram', 'install',
+    '--cwd', cwd,
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  const result = await runCli([
+    'service', 'telegram', 'reset-cto-soul',
+    '--state-dir', stateDir,
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.action, 'reset-cto-soul');
+  assert.equal(payload.cto_soul_source, 'file');
+  assert.match(payload.cto_soul_path, /prompts\/cto-soul\.md$/);
+
+  const soulText = await readFile(path.join(cwd, 'prompts', 'cto-soul.md'), 'utf8');
+  assert.match(soulText, /general-purpose Codex CLI personal assistant persona/);
+  assert.match(soulText, /CTO-style orchestrator/);
+  assert.doesNotMatch(soulText, /old content/);
+});
+
 test('service telegram set-setting persists tray settings and exposes them in status', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-settings-'));
   const cwd = path.join(root, 'repo');
@@ -546,9 +595,13 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /Use Full Access Mode/);
   assert.match(scriptSource, /Open Latest Workflow/);
   assert.match(scriptSource, /Edit CTO Soul/);
+  assert.match(scriptSource, /Restore Default CTO Soul/);
   assert.match(scriptSource, /openCtoSoul_/);
+  assert.match(scriptSource, /resetCtoSoul_/);
   assert.match(scriptSource, /ctoSoulPath/);
   assert.match(scriptSource, /open " & quoted form of ctoSoulPath/);
+  assert.match(scriptSource, /runServiceCommand\("reset-cto-soul"\)/);
+  assert.match(scriptSource, /Restore the default Codex-CLI-based CTO soul template/);
   assert.match(scriptSource, /Send Status Reply/);
   assert.match(scriptSource, /Running Workflows:/);
   assert.match(scriptSource, /Running Tasks:/);

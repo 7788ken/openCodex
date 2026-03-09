@@ -19,6 +19,7 @@
 - `opencodex service telegram send-status`
 - `opencodex service telegram task-history`
 - `opencodex service telegram dispatch-detail`
+- `opencodex service telegram reset-cto-soul`
 - `opencodex service telegram uninstall`
 
 ## `install` 会做什么
@@ -76,6 +77,10 @@
 - `show_workflow_ids` → `on` 或 `off`
 - `show_paths` → `on` 或 `off`
 
+### `telegram reset-cto-soul`
+
+- `--json`
+
 ### `telegram uninstall`
 
 - `--remove-menubar`
@@ -92,6 +97,7 @@
 - 从菜单栏进入完整的 `Task History` 浏览列表，再对选中的任务继续查看详情
 - 直接在 UI 中修改任务栏设置，包括语言、角标模式、刷新间隔、工作流 ID 显示与路径快捷入口
 - 需要时可一键打开任务记录、原始事件日志、最后消息文件、仓库目录、服务日志、最近工作流，以及可编辑的 CTO 灵魂文档
+- 需要时也可以直接从任务栏恢复基于 Codex CLI 的默认 CTO 灵魂模板
 - 把当前状态回执发回配置好的 CEO Telegram chat
 
 ## 安全说明

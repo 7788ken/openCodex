@@ -5,6 +5,7 @@
 ## 作用
 
 - 定义长期稳定的 CTO 身份
+- 让默认模板建立在 Codex CLI 通用个人助理的人格底座之上
 - 固定 Telegram CTO 工作流的编排风格
 - 明确以 Codex CLI 作为本地执行引擎，openCodex 只做薄编排层
 - 约束 CTO 如何理解 CEO 意图、如何派发任务、何时需要回头确认
@@ -16,6 +17,7 @@
 - 子代理提示词依旧由 CTO 主线程生成，而不是由子代理自行发挥
 - 如果文件缺失，openCodex 会回退到内置默认灵魂模板
 - 任务栏 app 可以通过 `Edit CTO Soul` 直接打开这个文件
+- 任务栏 app 也可以通过 `Restore Default CTO Soul` 恢复默认模板
 
 ## 编辑建议
 

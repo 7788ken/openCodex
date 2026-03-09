@@ -9,6 +9,7 @@ import {
   buildTelegramCtoPlannerPrompt,
   buildTelegramCtoWorkerExecutionPrompt,
   loadCtoSoulDocument,
+  buildDefaultCtoSoulDocument,
   isLikelyTelegramNonDirectiveMessage,
   normalizeTelegramCtoPlan,
   shouldPromoteWorkflowGoal
@@ -55,6 +56,19 @@ test('cto soul document loads from repo prompts and extends the main-thread prom
   assert.match(prompt, /Active CTO soul document \(prompts\/cto-soul\.md\):/);
   assert.match(prompt, /Stay opinionated\./);
   assert.match(prompt, /Keep Codex CLI as the engine\./);
+});
+
+test('cto default soul template is based on the Codex CLI personal assistant persona', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-cto-soul-default-'));
+  const soul = await loadCtoSoulDocument(cwd);
+  const template = buildDefaultCtoSoulDocument();
+
+  assert.equal(soul.builtin, true);
+  assert.equal(soul.display_path, 'prompts/cto-soul.md');
+  assert.equal(soul.text, template);
+  assert.match(template, /general-purpose Codex CLI personal assistant persona/);
+  assert.match(template, /primary local execution engine/);
+  assert.match(template, /CTO-style orchestrator/);
 });
 
 test('cto worker execution prompt wraps child work under the main thread', () => {

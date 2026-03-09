@@ -6,7 +6,7 @@ import { parseOptions } from '../lib/args.js';
 import { ensureDir, pathExists, readJson, readTextIfExists, writeJson } from '../lib/fs.js';
 import { getCodexBin, runCommandCapture } from '../lib/codex.js';
 import { resolveCodexProfile } from '../lib/profile.js';
-import { DEFAULT_CTO_SOUL_RELATIVE_PATH } from '../lib/cto-workflow.js';
+import { DEFAULT_CTO_SOUL_RELATIVE_PATH, buildDefaultCtoSoulDocument, loadCtoSoulDocument } from '../lib/cto-workflow.js';
 import { getSessionDir, listSessions } from '../lib/session-store.js';
 
 const CLI_PATH = fileURLToPath(new URL('../../bin/opencodex.js', import.meta.url));
@@ -96,6 +96,7 @@ export async function runServiceCommand(args) {
       '  opencodex service telegram send-status [--json]\n' +
       '  opencodex service telegram task-history [--limit <n>] [--json]\n' +
       '  opencodex service telegram dispatch-detail --index <n> [--json]\n' +
+      '  opencodex service telegram reset-cto-soul [--json]\n' +
       '  opencodex service telegram uninstall [--remove-menubar] [--json]\n'
     );
     return;
@@ -152,6 +153,11 @@ export async function runServiceCommand(args) {
 
   if (subcommand === 'dispatch-detail') {
     await runTelegramServiceDispatchDetail(rest);
+    return;
+  }
+
+  if (subcommand === 'reset-cto-soul') {
+    await runTelegramServiceResetCtoSoul(rest);
     return;
   }
 
@@ -414,6 +420,25 @@ async function runTelegramServiceDispatchDetail(args) {
 
   const detailPayload = await buildDispatchDetailPayload(service.cwd, dispatch, index);
   renderDispatchDetailOutput(detailPayload, options.json, `Telegram CTO dispatch detail #${index}`);
+}
+
+async function runTelegramServiceResetCtoSoul(args) {
+  const { options, positionals } = parseOptions(args, TELEGRAM_SERVICE_OPTION_SPEC);
+  if (positionals.length) {
+    throw new Error('`opencodex service telegram reset-cto-soul` does not accept positional arguments');
+  }
+
+  const service = await loadInstalledService(options);
+  const soulPath = path.join(service.cwd, DEFAULT_CTO_SOUL_RELATIVE_PATH);
+  await ensureDir(path.dirname(soulPath));
+  await writeFile(soulPath, `${buildDefaultCtoSoulDocument()}\n`, 'utf8');
+
+  const payload = await inspectService(service);
+  renderServiceOutput({
+    ...payload,
+    action: 'reset-cto-soul',
+    cto_soul_reset: true
+  }, options.json, 'Telegram CTO soul template restored');
 }
 
 async function runTelegramServiceUninstall(args) {
@@ -686,6 +711,7 @@ function formatPermissionMode(profileName) {
 async function inspectService(service) {
   const installed = await pathExists(service.plistPath);
   const menubarInstalled = await pathExists(service.menubarAppPath);
+  const ctoSoul = await loadCtoSoulDocument(service.cwd);
   const workflowStats = await collectWorkflowStats(service);
   if (!installed) {
     return {
@@ -705,6 +731,8 @@ async function inspectService(service) {
       chat_id: service.chatId,
       profile: service.profile,
       permission_mode: service.profile,
+      cto_soul_path: ctoSoul.path,
+      cto_soul_source: ctoSoul.builtin ? 'builtin' : 'file',
       ...flattenServiceSettings(service.settings),
       ...workflowStats
     };
@@ -734,6 +762,8 @@ async function inspectService(service) {
     chat_id: service.chatId,
     profile: service.profile,
     permission_mode: service.profile,
+    cto_soul_path: ctoSoul.path,
+    cto_soul_source: ctoSoul.builtin ? 'builtin' : 'file',
     ...flattenServiceSettings(service.settings),
     launchctl_output: rawOutput.trim(),
     ...workflowStats
@@ -1054,6 +1084,12 @@ function renderServiceOutput(payload, json, title) {
   lines.push(`Refresh Interval: ${payload.refresh_interval_seconds || DEFAULT_SERVICE_SETTINGS.refresh_interval_seconds}`);
   lines.push(`Show Workflow IDs: ${payload.show_workflow_ids === false ? 'off' : 'on'}`);
   lines.push(`Show Paths: ${payload.show_paths === false ? 'off' : 'on'}`);
+  if (payload.cto_soul_source) {
+    lines.push(`CTO Soul Source: ${payload.cto_soul_source}`);
+  }
+  if (payload.cto_soul_path) {
+    lines.push(`CTO Soul Path: ${payload.cto_soul_path}`);
+  }
   lines.push(`Running Workflows: ${payload.running_workflow_count ?? 0}`);
   lines.push(`Waiting Workflows: ${payload.waiting_workflow_count ?? 0}`);
   lines.push(`Running Tasks: ${payload.running_task_count ?? 0}`);
@@ -1581,6 +1617,7 @@ on rebuildMenu(statusText)
 	my addMenuItem(my localizedText(statusText, "Open Logs", "打开日志"), "openLogs:")
 	my addMenuItem(my localizedText(statusText, "Open Latest Workflow", "打开最近工作流"), "openLatestWorkflow:")
 	my addMenuItem(my localizedText(statusText, "Edit CTO Soul", "编辑 CTO 灵魂文档"), "openCtoSoul:")
+	my addMenuItem(my localizedText(statusText, "Restore Default CTO Soul", "恢复默认 CTO 灵魂模板"), "resetCtoSoul:")
 	my addMenuItem(my localizedText(statusText, "Send Status Reply", "发送状态回执"), "sendStatusReply:")
 	my addSeparator()
 	my addMenuItem(my localizedText(statusText, "Quit", "退出"), "quitApp:")
@@ -1895,6 +1932,17 @@ on openCtoSoul_(sender)
 		display notification errorMessage with title appTitle
 	end try
 end openCtoSoul_
+
+on resetCtoSoul_(sender)
+	set statusText to my runStatusCommand(false)
+	try
+		set dialogResult to display dialog (my localizedText(statusText, "Restore the default Codex-CLI-based CTO soul template? This will overwrite the current file.", "恢复基于 Codex CLI 的默认 CTO 灵魂模板？这会覆盖当前文件。")) buttons {(my localizedText(statusText, "Cancel", "取消")), (my localizedText(statusText, "Restore", "恢复"))} default button (my localizedText(statusText, "Restore", "恢复")) with title appTitle
+	on error number -128
+		return
+	end try
+	if button returned of dialogResult is not (my localizedText(statusText, "Restore", "恢复")) then return
+	my runServiceCommand("reset-cto-soul")
+end resetCtoSoul_
 
 on openDispatch1_(sender)
 	my openDispatchRecord(1)

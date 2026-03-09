@@ -19,6 +19,7 @@ The first version supports Telegram CTO service management only:
 - `opencodex service telegram send-status`
 - `opencodex service telegram task-history`
 - `opencodex service telegram dispatch-detail`
+- `opencodex service telegram reset-cto-soul`
 - `opencodex service telegram uninstall`
 
 ## What `install` Does
@@ -76,6 +77,10 @@ Supported keys in the first version:
 - `show_workflow_ids` → `on` or `off`
 - `show_paths` → `on` or `off`
 
+### `telegram reset-cto-soul`
+
+- `--json`
+
 ### `telegram uninstall`
 
 - `--remove-menubar`
@@ -92,6 +97,7 @@ The app can:
 - browse the full task history from the menu bar, then inspect a selected task without leaving the tray workflow
 - change tray settings directly in the UI, including language, badge mode, refresh interval, workflow-id visibility, and path shortcuts
 - reveal the task record, raw events, latest task message, repository, service log, latest workflow session, and the editable CTO soul file when needed
+- restore the default Codex-CLI-based CTO soul template from the tray when needed
 - send a Telegram status reply back to the configured CEO chat
 
 ## Security Notes
