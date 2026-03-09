@@ -139,9 +139,7 @@ async function repairSessions(cwd, staleMinutes) {
       continue;
     }
 
-    session.status = repair.status;
-    session.updated_at = new Date().toISOString();
-    session.summary = repair.summary || {
+    const nextSummary = repair.summary || {
       title: repair.title || 'Session repaired as stale',
       result: repair.reason,
       status: repair.status,
@@ -149,6 +147,21 @@ async function repairSessions(cwd, staleMinutes) {
       next_steps: repair.next_steps,
       findings: []
     };
+    const statusChanged = session.status !== repair.status;
+    const summaryChanged = JSON.stringify(session.summary || null) !== JSON.stringify(nextSummary);
+    const childSessionsChanged = Array.isArray(repair.child_sessions)
+      && JSON.stringify(session.child_sessions || []) !== JSON.stringify(repair.child_sessions);
+    const iterationChanged = Number.isInteger(repair.iteration_count)
+      && repair.iteration_count !== session.iteration_count;
+    const workflowChanged = Boolean(repair.workflow_state && repair.workflow_state_path);
+
+    if (!statusChanged && !summaryChanged && !childSessionsChanged && !iterationChanged && !workflowChanged) {
+      continue;
+    }
+
+    session.status = repair.status;
+    session.updated_at = new Date().toISOString();
+    session.summary = nextSummary;
     if (Array.isArray(repair.child_sessions)) {
       session.child_sessions = repair.child_sessions;
     }
@@ -324,7 +337,10 @@ function shouldRepairStaleSession(session) {
   if (['queued', 'running'].includes(session?.status)) {
     return true;
   }
-  return session?.command === 'cto' && session?.status === 'partial';
+  if (session?.command === 'cto' && ['partial', 'failed'].includes(session?.status)) {
+    return true;
+  }
+  return session?.command === 'run' && session?.status === 'failed';
 }
 
 async function deriveCtoRepair(cwd, session, lineage) {
@@ -838,7 +854,7 @@ async function collectAutoChildSessions(cwd, session, lineage) {
 }
 
 async function resolveRepairSnapshot(cwd, session, lineage) {
-  if (!['queued', 'running'].includes(session.status)) {
+  if (!shouldRepairStaleSession(session)) {
     return session;
   }
 
@@ -857,7 +873,9 @@ async function resolveRepairSnapshot(cwd, session, lineage) {
       highlights: repair.highlights,
       next_steps: repair.next_steps,
       findings: []
-    }
+    },
+    child_sessions: Array.isArray(repair.child_sessions) ? repair.child_sessions : session.child_sessions,
+    iteration_count: Number.isInteger(repair.iteration_count) ? repair.iteration_count : session.iteration_count
   };
 }
 

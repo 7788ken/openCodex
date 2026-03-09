@@ -138,24 +138,37 @@ export async function runRunCommand(args) {
   const fallbackStatus = result.code === 0 ? 'completed' : 'failed';
   const eventError = pickUsefulEventError(result.stdout);
   const fallbackMessage = rawLastMessage || eventError || pickUsefulError(result.stderr);
-  const detectedHostSandboxMode = detectHostSandboxMode({ env: process.env, stderr: result.stderr, stdout: result.stdout, message: rawLastMessage });
-  const summary = isLikelySandboxRestriction({
-    requestedSandboxMode: profile.sandboxMode,
-    hostSandboxMode: detectedHostSandboxMode || initialHostSandboxMode,
-    stderr: result.stderr,
-    stdout: result.stdout,
-    message: fallbackMessage
-  })
-    ? buildHostSandboxFailureSummary({
-      profileName: profile.name,
+  const baseSummary = buildSummaryFromMessage(fallbackMessage, fallbackStatus, codexCliVersion);
+
+  let detectedHostSandboxMode = initialHostSandboxMode || '';
+  let summary = baseSummary;
+
+  if (baseSummary.status === 'failed') {
+    detectedHostSandboxMode = detectHostSandboxMode({
+      env: process.env,
+      stderr: result.stderr,
+      stdout: result.stdout,
+      message: fallbackMessage
+    }) || initialHostSandboxMode || '';
+
+    if (isLikelySandboxRestriction({
       requestedSandboxMode: profile.sandboxMode,
       hostSandboxMode: detectedHostSandboxMode || initialHostSandboxMode,
-      codexCliVersion,
-      detectionSource: detectedHostSandboxMode ? 'output' : 'heuristic'
-    })
-    : buildSummaryFromMessage(fallbackMessage, fallbackStatus, codexCliVersion);
+      stderr: result.stderr,
+      stdout: result.stdout,
+      message: fallbackMessage
+    })) {
+      summary = buildHostSandboxFailureSummary({
+        profileName: profile.name,
+        requestedSandboxMode: profile.sandboxMode,
+        hostSandboxMode: detectedHostSandboxMode || initialHostSandboxMode,
+        codexCliVersion,
+        detectionSource: detectedHostSandboxMode ? 'output' : 'heuristic'
+      });
+    }
+  }
 
-  session.input.arguments.effective_sandbox_mode = detectedHostSandboxMode || initialHostSandboxMode || '';
+  session.input.arguments.effective_sandbox_mode = detectedHostSandboxMode || '';
 
   session.status = summary.status || fallbackStatus;
   session.updated_at = new Date().toISOString();

@@ -48,6 +48,27 @@ test('run fails fast with a precise host sandbox diagnostic when the host is str
   assert.equal(session.input.arguments.requested_sandbox_mode, 'danger-full-access');
   assert.equal(session.input.arguments.host_sandbox_mode, 'read-only');
 });
+
+test('run keeps a completed structured summary even when the assistant mentions sandbox modes in analysis', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-run-sandbox-analysis-'));
+  const successFixture = await writeSandboxMentioningSuccessFixture(path.join(cwd, 'mock-codex-sandbox-success.js'));
+  const result = await runCli(['run', '--cwd', cwd, '--profile', 'full-access', 'audit', 'permissions'], {
+    OPENCODEX_CODEX_BIN: successFixture
+  });
+
+  assert.equal(result.code, 0);
+  assert.doesNotMatch(result.stdout, /Run blocked by host sandbox/);
+
+  const sessionsRoot = path.join(cwd, '.opencodex', 'sessions');
+  const sessionIds = await readdir(sessionsRoot);
+  assert.equal(sessionIds.length, 1);
+
+  const session = JSON.parse(await readFile(path.join(sessionsRoot, sessionIds[0], 'session.json'), 'utf8'));
+  assert.equal(session.summary.status, 'completed');
+  assert.equal(session.summary.title, 'Permission audit completed');
+  assert.match(session.summary.result, /sandbox: workspace-write/i);
+  assert.equal(session.input.arguments.effective_sandbox_mode, '');
+});
 test('run preserves structured event errors when codex fails before writing last-message', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-run-error-'));
   const failingFixture = await writeEventFailingFixture(path.join(cwd, 'mock-codex-event-fail.js'));
@@ -88,6 +109,60 @@ function runCli(args, extraEnv = {}) {
     child.on('error', reject);
     child.on('close', (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+
+async function writeSandboxMentioningSuccessFixture(filePath) {
+  const source = `#!/usr/bin/env node
+import { writeFileSync } from 'node:fs';
+
+const rawArgs = process.argv.slice(2);
+const args = stripGlobalArgs(rawArgs);
+
+if (rawArgs[0] === '--version') {
+  console.log('codex-cli 0.112.0');
+  process.exit(0);
+}
+
+if (args[0] === 'exec') {
+  const lastMessageIndex = args.indexOf('--output-last-message');
+  const lastMessagePath = lastMessageIndex >= 0 ? args[lastMessageIndex + 1] : null;
+  if (lastMessagePath) {
+    writeFileSync(lastMessagePath, JSON.stringify({
+      title: 'Permission audit completed',
+      result: 'Permission audit completed successfully. Observed sandbox: workspace-write. The policy still maps full-access to danger-full-access.',
+      status: 'completed',
+      highlights: ['Captured the current sandbox profile mapping.'],
+      next_steps: [],
+      risks: [],
+      validation: [],
+      changed_files: [],
+      findings: []
+    }, null, 2));
+  }
+
+  console.log(JSON.stringify({ type: 'event', message: 'mock execution event' }));
+  process.exit(0);
+}
+
+console.error('Unsupported mock codex invocation');
+process.exit(1);
+
+function stripGlobalArgs(argv) {
+  const result = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (token === '-a' || token === '-s' || token === '-c') {
+      index += 1;
+      continue;
+    }
+    result.push(token);
+  }
+  return result;
+}
+`;
+  await writeFile(filePath, source, { mode: 0o755 });
+  return filePath;
 }
 
 async function writeEventFailingFixture(filePath) {

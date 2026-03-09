@@ -37,6 +37,167 @@ test('session repair skips stale sessions without terminal evidence', async () =
   assert.equal(repaired.summary.title, 'Run running');
 });
 
+test('session repair restores failed run sessions from completed turn evidence when wrapper misclassified sandbox diagnostics', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-repair-run-false-sandbox-'));
+  const sessionId = 'run-20260308-false-sandbox';
+  const sessionDir = path.join(cwd, '.opencodex', 'sessions', sessionId);
+  const lastMessage = {
+    title: 'Permission audit completed',
+    result: 'Permission audit completed successfully. Observed sandbox: workspace-write.',
+    status: 'completed',
+    highlights: ['Recovered completed result from last-message.txt'],
+    next_steps: [],
+    risks: [],
+    validation: [],
+    changed_files: [],
+    findings: []
+  };
+
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(path.join(sessionDir, 'session.json'), `${JSON.stringify({
+    session_id: sessionId,
+    command: 'run',
+    status: 'failed',
+    created_at: '2026-03-08T00:00:00.000Z',
+    updated_at: '2026-03-08T00:00:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'codex-cli 0.112.0',
+    input: { prompt: 'audit permissions', arguments: {} },
+    summary: {
+      title: 'Run blocked by host sandbox',
+      result: 'wrapper misclassified the completed run as sandbox-blocked',
+      status: 'failed',
+      highlights: [],
+      next_steps: []
+    },
+    artifacts: []
+  }, null, 2)}
+`, 'utf8');
+  await writeFile(path.join(sessionDir, 'events.jsonl'), [
+    JSON.stringify({ type: 'thread.started' }),
+    JSON.stringify({ type: 'turn.started' }),
+    JSON.stringify({ type: 'turn.completed' })
+  ].join('\n'), 'utf8');
+  await writeFile(path.join(sessionDir, 'last-message.txt'), `${JSON.stringify(lastMessage)}\n`, 'utf8');
+
+  const result = await runCli(['session', 'repair', '--json', '--cwd', cwd, '--stale-minutes', '1']);
+  assert.equal(result.code, 0);
+
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.repaired_count, 1);
+  assert.equal(payload.repaired[0].session_id, sessionId);
+  assert.equal(payload.repaired[0].to, 'completed');
+
+  const repaired = JSON.parse(await readFile(path.join(sessionDir, 'session.json'), 'utf8'));
+  assert.equal(repaired.status, 'completed');
+  assert.equal(repaired.summary.title, lastMessage.title);
+  assert.equal(repaired.summary.result, lastMessage.result);
+});
+
+test('session repair restores failed cto workflows when child runs can be recovered from disk', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-repair-cto-false-sandbox-'));
+  const ctoSessionId = 'cto-20260308-failed-false-sandbox';
+  const childSessionId = 'run-20260308-child-false-sandbox';
+  const ctoSessionDir = path.join(cwd, '.opencodex', 'sessions', ctoSessionId);
+  const childSessionDir = path.join(cwd, '.opencodex', 'sessions', childSessionId);
+  const workflowStatePath = path.join(ctoSessionDir, 'artifacts', 'cto-workflow.json');
+
+  await mkdir(path.join(ctoSessionDir, 'artifacts'), { recursive: true });
+  await mkdir(childSessionDir, { recursive: true });
+
+  await writeFile(path.join(childSessionDir, 'session.json'), `${JSON.stringify({
+    session_id: childSessionId,
+    command: 'run',
+    status: 'failed',
+    created_at: '2026-03-08T00:00:10.000Z',
+    updated_at: '2026-03-08T00:00:10.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'codex-cli 0.112.0',
+    input: { prompt: 'audit permissions', arguments: {} },
+    summary: { title: 'Run blocked by host sandbox', result: 'false negative', status: 'failed', highlights: [], next_steps: [] },
+    artifacts: []
+  }, null, 2)}
+`, 'utf8');
+  await writeFile(path.join(childSessionDir, 'events.jsonl'), [
+    JSON.stringify({ type: 'thread.started' }),
+    JSON.stringify({ type: 'turn.started' }),
+    JSON.stringify({ type: 'turn.completed' })
+  ].join('\n'), 'utf8');
+  await writeFile(path.join(childSessionDir, 'last-message.txt'), `${JSON.stringify({
+    title: 'Permission audit completed',
+    result: 'Recovered completed audit.',
+    status: 'completed',
+    highlights: [],
+    next_steps: [],
+    risks: [],
+    validation: [],
+    changed_files: [],
+    findings: []
+  })}\n`, 'utf8');
+
+  await writeFile(path.join(ctoSessionDir, 'session.json'), `${JSON.stringify({
+    session_id: ctoSessionId,
+    command: 'cto',
+    status: 'failed',
+    created_at: '2026-03-08T00:00:00.000Z',
+    updated_at: '2026-03-08T00:00:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'telegram-bot-api',
+    input: { prompt: 'Recover workflow', arguments: { provider: 'telegram' } },
+    summary: { title: 'CTO workflow failed', result: 'Workflow failed after 1 failed task(s).', status: 'failed', highlights: [], next_steps: [] },
+    artifacts: [
+      { type: 'cto_workflow', path: workflowStatePath, description: 'Telegram CTO workflow state and task graph.' }
+    ],
+    child_sessions: [
+      { label: 'Task audit-permissions', command: 'run', session_id: childSessionId, status: 'failed' }
+    ]
+  }, null, 2)}
+`, 'utf8');
+  await writeFile(workflowStatePath, `${JSON.stringify({
+    workflow_session_id: ctoSessionId,
+    provider: 'telegram',
+    chat_id: '123456',
+    source_update_id: 1,
+    source_message_id: 1,
+    sender_display: 'CEO',
+    goal_text: 'Recover workflow',
+    latest_user_message: 'Recover workflow',
+    created_at: '2026-03-08T00:00:00.000Z',
+    updated_at: '2026-03-08T00:00:00.000Z',
+    status: 'failed',
+    pending_question_zh: '',
+    tasks: [
+      {
+        id: 'audit-permissions',
+        title: 'Audit permissions',
+        status: 'failed',
+        session_id: childSessionId,
+        summary_status: 'failed',
+        result: 'Run blocked by host sandbox',
+        next_steps: [],
+        changed_files: [],
+        updated_at: '2026-03-08T00:00:10.000Z'
+      }
+    ]
+  }, null, 2)}\n`, 'utf8');
+
+  const result = await runCli(['session', 'repair', '--json', '--cwd', cwd, '--stale-minutes', '1']);
+  assert.equal(result.code, 0);
+
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.repaired_count, 2);
+
+  const repairedChild = JSON.parse(await readFile(path.join(childSessionDir, 'session.json'), 'utf8'));
+  assert.equal(repairedChild.status, 'completed');
+
+  const repairedCto = JSON.parse(await readFile(path.join(ctoSessionDir, 'session.json'), 'utf8'));
+  assert.equal(repairedCto.status, 'completed');
+
+  const repairedWorkflowState = JSON.parse(await readFile(workflowStatePath, 'utf8'));
+  assert.equal(repairedWorkflowState.status, 'completed');
+  assert.equal(repairedWorkflowState.tasks[0].status, 'completed');
+});
+
 test('session repair restores summary from last-message when turn completed', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-repair-'));
   const sessionId = 'run-20260308-completed';
