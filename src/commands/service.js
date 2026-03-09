@@ -1556,11 +1556,9 @@ on openDispatchRecord(dispatchIndex)
 
 	set recordPath to my lineValue(detailText, "Record Path: ", "")
 	set eventsPath to my lineValue(detailText, "Events Path: ", "")
-	set messagePath to my lineValue(detailText, "Last Message Path: ", "")
 	set actionButtons to {"Close"}
 	if recordPath is not "" then set end of actionButtons to "Open Record"
 	if eventsPath is not "" then set end of actionButtons to "Open Events"
-	if messagePath is not "" then set end of actionButtons to "Open Message"
 
 	try
 		set dialogResult to display dialog detailText buttons actionButtons default button "Close" with title appTitle
@@ -1573,8 +1571,6 @@ on openDispatchRecord(dispatchIndex)
 		do shell script "open -R " & quoted form of recordPath
 	else if selectedButton is "Open Events" then
 		do shell script "open -R " & quoted form of eventsPath
-	else if selectedButton is "Open Message" then
-		do shell script "open -R " & quoted form of messagePath
 	end if
 end openDispatchRecord
 

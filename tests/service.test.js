@@ -440,6 +440,7 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /choose from list historyItems/);
   assert.match(scriptSource, /Open Record/);
   assert.match(scriptSource, /Open Events/);
+  assert.doesNotMatch(scriptSource, /Open Message/);
   assert.match(scriptSource, /display dialog detailText buttons actionButtons/);
   assert.match(scriptSource, /Main Threads:/);
   assert.match(scriptSource, /runningTaskCount/);
