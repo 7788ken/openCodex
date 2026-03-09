@@ -49,6 +49,8 @@ test('service telegram install writes launchd files with full-access as the defa
   assert.equal(config.profile, 'full-access');
   assert.equal(config.permission_mode, 'full-access');
   assert.match(envFile, /OPENCODEX_TELEGRAM_BOT_TOKEN='test-token'/);
+  assert.ok(envFile.includes(`export OPENCODEX_SERVICE_STATE_DIR='${stateDir}'`));
+  assert.match(envFile, /OPENCODEX_HOST_EXECUTOR_ENABLED='1'/);
   assert.match(wrapper, /im telegram listen/);
   assert.match(wrapper, /--cto/);
   assert.match(wrapper, /--profile 'full-access'/);
@@ -95,6 +97,7 @@ test('service telegram status includes workflow counts and latest workflow detai
   assert.equal(payload.running_workflow_count, 1);
   assert.equal(payload.waiting_workflow_count, 1);
   assert.equal(payload.running_task_count, 1);
+  assert.equal(payload.rerouted_task_count, 0);
   assert.equal(payload.queued_task_count, 2);
   assert.equal(payload.tracked_task_count, 5);
   assert.equal(payload.workflow_history_count, 3);
@@ -291,6 +294,87 @@ test('service telegram dispatch-detail returns task execution details for UI vie
   assert.match(payload.last_message_path, /run-task-2\/last-message\.txt$/);
   assert.ok(payload.recent_activity.some((item) => item.includes('Checklist updated')));
   assert.match(payload.last_message, /Waiting for CEO confirmation/);
+});
+
+
+test('service telegram surfaces rerouted host-executor tasks in status, history, and detail views', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-rerouted-'));
+  const cwd = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+  const launchctlState = path.join(root, 'launchctl-state.json');
+  const launchctl = await writeMockLaunchctl(path.join(root, 'mock-launchctl.js'), launchctlState);
+
+  await mkdir(cwd, { recursive: true });
+  await seedWorkflowSessions(cwd);
+  const { jobPath } = await seedReroutedWorkflowFixture(cwd, stateDir);
+
+  await runCli([
+    'service', 'telegram', 'install',
+    '--cwd', cwd,
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  const status = await runCli([
+    'service', 'telegram', 'status',
+    '--state-dir', stateDir,
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(status.code, 0);
+  const statusPayload = JSON.parse(status.stdout);
+  assert.equal(statusPayload.rerouted_task_count, 1);
+  const reroutedIndex = statusPayload.recent_dispatches.findIndex((item) => item.task_id === 'reroute-docs');
+  assert.notEqual(reroutedIndex, -1);
+  assert.equal(statusPayload.recent_dispatches[reroutedIndex].status, 'rerouted');
+  assert.equal(statusPayload.recent_dispatches[reroutedIndex].path, jobPath);
+  assert.match(statusPayload.recent_dispatches[reroutedIndex].label, /^\[rerouted\]/);
+
+  const workflowDetail = await runCli([
+    'service', 'telegram', 'workflow-detail',
+    '--state-dir', stateDir,
+    '--index', '1',
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(workflowDetail.code, 0);
+  const workflowPayload = JSON.parse(workflowDetail.stdout);
+  assert.equal(workflowPayload.workflow_session_id, 'cto-20260309-101000-rerouted');
+  assert.equal(workflowPayload.task_counts.rerouted, 1);
+  assert.match(workflowPayload.tasks[0].label, /^\[rerouted\]/);
+
+  const detail = await runCli([
+    'service', 'telegram', 'dispatch-detail',
+    '--state-dir', stateDir,
+    '--index', String(reroutedIndex + 1),
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(detail.code, 0);
+  const detailPayload = JSON.parse(detail.stdout);
+  assert.equal(detailPayload.task_id, 'reroute-docs');
+  assert.equal(detailPayload.status, 'rerouted');
+  assert.equal(detailPayload.record_path, jobPath);
+  assert.equal(detailPayload.session_id, 'run-task-7-source');
+  assert.match(detailPayload.result, /host executor queue/);
 });
 
 test('service telegram task-history returns the full task history for UI browsing', async () => {
@@ -648,7 +732,7 @@ test('service telegram send-status sends the current workflow snapshot back to T
   assert.equal(telegram.state.sentMessages[0].chat_id, '1379564094');
   assert.match(telegram.state.sentMessages[0].text, /openCodex CTO 状态回执/);
   assert.match(telegram.state.sentMessages[0].text, /工作流：running 1 \/ waiting 1/);
-  assert.match(telegram.state.sentMessages[0].text, /任务：running 1 \/ queued 2/);
+  assert.match(telegram.state.sentMessages[0].text, /任务：running 1 \/ rerouted 0 \/ queued 2/);
   assert.match(telegram.state.sentMessages[0].text, /线程：主活跃 1 \/ 子活跃 1 \/ 子累计 5/);
   assert.match(telegram.state.sentMessages[0].text, /Deploy change after confirmation/);
 
@@ -707,6 +791,7 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /Send Status Reply/);
   assert.match(scriptSource, /Running Workflows:/);
   assert.match(scriptSource, /Running Tasks:/);
+  assert.match(scriptSource, /Rerouted Tasks:/);
   assert.match(scriptSource, /Recent Dispatches/);
   assert.match(scriptSource, /openDispatch1_/);
   assert.match(scriptSource, /dispatch-detail --index/);
@@ -778,6 +863,122 @@ function runCli(args, extraEnv = {}) {
     child.on('error', reject);
     child.on('close', (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+
+async function seedReroutedWorkflowFixture(cwd, stateDir) {
+  const hostJobsDir = path.join(stateDir, 'host-executor', 'jobs');
+  const jobPath = path.join(hostJobsDir, 'host-20260309-reroute.json');
+  await mkdir(hostJobsDir, { recursive: true });
+
+  await writeSessionFixture(cwd, {
+    session_id: 'run-task-7-source',
+    command: 'run',
+    status: 'failed',
+    updated_at: '2026-03-09T10:09:58.000Z',
+    created_at: '2026-03-09T10:09:50.000Z',
+    input: {
+      prompt: 'Reroute docs audit',
+      arguments: {
+        profile: 'full-access'
+      }
+    },
+    summary: {
+      title: 'Run blocked by host sandbox',
+      result: 'Requested full-access, but the effective host sandbox stayed read-only.',
+      status: 'failed',
+      highlights: ['Host sandbox mismatch detected.'],
+      next_steps: [],
+      validation: ['sandbox_detection:env'],
+      changed_files: [],
+      findings: []
+    },
+    events: [
+      JSON.stringify({ type: 'turn.started', message: 'Started reroute docs audit.' }),
+      JSON.stringify({ type: 'turn.completed', message: 'Run blocked by host sandbox.' })
+    ],
+    last_message: 'Run blocked by host sandbox.'
+  });
+
+  await writeSessionFixture(cwd, {
+    session_id: 'cto-20260309-101000-rerouted',
+    command: 'cto',
+    status: 'running',
+    updated_at: '2026-03-09T10:10:00.000Z',
+    created_at: '2026-03-09T10:10:00.000Z',
+    input: {
+      prompt: 'Handle sandbox reroute',
+      arguments: {
+        provider: 'telegram'
+      }
+    },
+    child_sessions: [
+      { session_id: 'run-task-7-source' }
+    ],
+    summary: {
+      title: 'CTO workflow running',
+      result: 'Workflow is running with 0 active task(s) and 1 rerouted host-executor task(s).',
+      status: 'running',
+      highlights: [],
+      next_steps: []
+    },
+    workflow_state: {
+      status: 'running',
+      goal_text: 'Handle sandbox reroute',
+      pending_question_zh: '',
+      updated_at: '2026-03-09T10:10:00.000Z',
+      tasks: [
+        {
+          id: 'reroute-docs',
+          title: 'Reroute docs audit',
+          status: 'running',
+          session_id: 'run-task-7-source',
+          summary_status: 'rerouted',
+          result: '已检测到当前 worker 所在环境的宿主沙箱更严格，任务已自动转入 host executor queue，CTO 主线程会继续跟踪并在完成后主动汇报。',
+          next_steps: [],
+          changed_files: [],
+          reroute_job_id: 'host-20260309-reroute',
+          reroute_record_path: jobPath,
+          updated_at: '2026-03-09T10:10:00.000Z'
+        }
+      ]
+    }
+  });
+
+  await writeFile(jobPath, JSON.stringify({
+    job_id: 'host-20260309-reroute',
+    kind: 'telegram_cto_task',
+    status: 'pending',
+    created_at: '2026-03-09T10:09:59.000Z',
+    updated_at: '2026-03-09T10:10:00.000Z',
+    cwd,
+    workflow_session_id: 'cto-20260309-101000-rerouted',
+    parent_session_id: 'cto-20260309-101000-rerouted',
+    task_id: 'reroute-docs',
+    task_title: 'Reroute docs audit',
+    profile: 'full-access',
+    prompt: 'MOCK_WORKER inspect-repo',
+    output_path: path.join(cwd, '.opencodex', 'sessions', 'run-task-7-source', 'artifacts', 'telegram-task-reroute-docs.json'),
+    source_session_id: 'run-task-7-source',
+    source_summary: {
+      title: 'Run blocked by host sandbox',
+      result: 'Requested full-access, but the effective host sandbox stayed read-only.',
+      status: 'failed',
+      highlights: ['Host sandbox mismatch detected.'],
+      next_steps: [],
+      validation: ['sandbox_detection:env'],
+      changed_files: [],
+      findings: []
+    },
+    host_session_id: '',
+    host_session_path: '',
+    result_summary: null,
+    error_message: '',
+    attempt_count: 1,
+    record_path: jobPath
+  }, null, 2) + '\n', 'utf8');
+
+  return { jobPath };
 }
 
 async function seedWorkflowSessions(cwd) {

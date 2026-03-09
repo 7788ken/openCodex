@@ -13,6 +13,7 @@ import {
   cancelTelegramWorkflowState,
   finalizeWorkflowStatus,
   loadCtoSoulDocument,
+  summarizeWorkflowCounts,
   buildDefaultCtoSoulDocument,
   collectHistoricalStuckCtoWorkflowCandidates,
   injectHistoricalCtoRepairTask,
@@ -339,6 +340,33 @@ test('cto session summary describes partial workflows without calling them runni
   assert.equal(summary.status, 'partial');
   assert.match(summary.result, /needs follow-up/i);
   assert.doesNotMatch(summary.result, /running with 0 active/i);
+});
+
+
+test('cto rerouted tasks stay active without inflating local running counts', () => {
+  const workflowState = {
+    chat_id: '123456',
+    status: 'running',
+    pending_question_zh: '',
+    tasks: [
+      {
+        id: 'reroute-docs',
+        title: 'Reroute docs audit',
+        status: 'running',
+        summary_status: 'rerouted',
+        result: 'Task was rerouted to the host executor queue.'
+      }
+    ]
+  };
+
+  const counts = summarizeWorkflowCounts(workflowState);
+  assert.equal(counts.running, 0);
+  assert.equal(counts.rerouted, 1);
+  assert.equal(finalizeWorkflowStatus(workflowState), 'running');
+
+  const summary = buildTelegramCtoSessionSummary(workflowState);
+  assert.equal(summary.status, 'running');
+  assert.match(summary.result, /1 rerouted host-executor task/i);
 });
 
 test('cto planner auto-infers a safe execute plan from an abstract inspection request', () => {

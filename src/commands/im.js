@@ -32,6 +32,16 @@ import {
   loadCtoSoulDocument
 } from '../lib/cto-workflow.js';
 import { createSession, getSessionDir, listSessions, loadSession, saveSession } from '../lib/session-store.js';
+import {
+  buildHostExecutorEnv,
+  claimNextPendingHostExecutorJob,
+  enqueueHostExecutorJob,
+  ensureHostExecutorState,
+  isHostExecutorEnabled,
+  loadHostExecutorJob,
+  resolveHostExecutorRoot,
+  updateHostExecutorJob
+} from '../lib/host-executor.js';
 
 const CLI_PATH = fileURLToPath(new URL('../../bin/opencodex.js', import.meta.url));
 const TELEGRAM_MAX_TEXT_LENGTH = 3900;
@@ -159,6 +169,9 @@ async function runTelegramListen(args) {
   let finalized = false;
   const workflowRuntimes = new Map();
   const chatStates = new Map();
+  const hostExecutor = delegateMode === 'cto' && isHostExecutorEnabled()
+    ? await ensureHostExecutorState(resolveHostExecutorRoot({ cwd }))
+    : null;
   await rehydratePendingTelegramCtoWorkflows(cwd, workflowRuntimes);
 
   const writeListenerState = async () => {
@@ -277,6 +290,21 @@ async function runTelegramListen(args) {
 
   try {
     while (!stopRequested) {
+      if (delegateMode === 'cto' && hostExecutor) {
+        await processTelegramHostExecutorQueue({
+          cwd,
+          profile: delegateProfile,
+          hostExecutor,
+          workflowRuntimes,
+          repliesPath,
+          runsPath,
+          logPath,
+          apiBaseUrl,
+          botToken,
+          persistListenerSession
+        });
+      }
+
       const updates = await callTelegramApi(apiBaseUrl, botToken, 'getUpdates', {
         offset: lastOffset > 0 ? lastOffset : undefined,
         timeout: pollTimeout,
@@ -446,7 +474,8 @@ async function runTelegramListen(args) {
             runsPath,
             logPath,
             workflowRuntimes,
-            persistListenerSession
+            persistListenerSession,
+            hostExecutor
           });
           trackWorkflowPromise(workflowPromise);
         }
@@ -648,7 +677,8 @@ async function handleTelegramCtoMessage({
   runsPath,
   logPath,
   workflowRuntimes,
-  persistListenerSession
+  persistListenerSession,
+  hostExecutor
 }) {
   if (pendingWorkflow) {
     await appendFile(logPath, `[${toIsoString()}] continue workflow ${pendingWorkflow.session.session_id} from update ${message.update_id}\n`, 'utf8');
@@ -664,7 +694,8 @@ async function handleTelegramCtoMessage({
       runsPath,
       logPath,
       workflowRuntimes,
-      persistListenerSession
+      persistListenerSession,
+      hostExecutor
     });
     return;
   }
@@ -703,6 +734,7 @@ async function handleTelegramCtoMessage({
     logPath,
     workflowRuntimes,
     persistListenerSession,
+    hostExecutor,
     continuationMessage: null
   });
 }
@@ -718,7 +750,8 @@ async function continueTelegramCtoWorkflow({
   runsPath,
   logPath,
   workflowRuntimes,
-  persistListenerSession
+  persistListenerSession,
+  hostExecutor
 }) {
   appendWorkflowUserMessage(runtime.state, message);
   runtime.state.status = 'planning';
@@ -739,6 +772,7 @@ async function continueTelegramCtoWorkflow({
     logPath,
     workflowRuntimes,
     persistListenerSession,
+    hostExecutor,
     continuationMessage: message
   });
 }
@@ -808,6 +842,7 @@ async function processTelegramCtoWorkflow({
   logPath,
   workflowRuntimes,
   persistListenerSession,
+  hostExecutor,
   continuationMessage
 }) {
   try {
@@ -871,7 +906,8 @@ async function processTelegramCtoWorkflow({
       message: rootMessage,
       runtime,
       runsPath,
-      logPath
+      logPath,
+      hostExecutor
     });
 
     if (runtime.state.status === 'cancelled') {
@@ -886,6 +922,22 @@ async function processTelegramCtoWorkflow({
     finalizeWorkflowStatus(runtime.state);
     await persistTelegramWorkflowRuntime(cwd, runtime);
     await persistListenerSession();
+
+    if (hasReroutedWorkflowTasks(runtime.state)) {
+      const rerouteReply = await sendTelegramTextMessage({
+        apiBaseUrl,
+        botToken,
+        chatId: triggerMessage.chat_id,
+        text: buildTelegramCtoRerouteText(runtime.state),
+        replyToMessageId: triggerMessage.message_id
+      });
+      await appendTelegramReply(repliesPath, rerouteReply);
+      await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} rerouted work to the host executor
+`, 'utf8');
+      process.stdout.write(`CTO workflow ${runtime.session.session_id} rerouted work to the host executor
+`);
+      return;
+    }
 
     if (runtime.state.status === 'waiting_for_user') {
       const questionReply = await sendTelegramTextMessage({
@@ -1013,7 +1065,7 @@ async function planTelegramCtoWorkflow({ cwd, message, triggerMessage, continuat
   return { plan, sessionId };
 }
 
-async function executeTelegramCtoTasks({ cwd, profile, message, runtime, runsPath, logPath }) {
+async function executeTelegramCtoTasks({ cwd, profile, message, runtime, runsPath, logPath, hostExecutor }) {
   const runningTasks = new Map();
   let schedulingEnabled = true;
 
@@ -1028,8 +1080,17 @@ async function executeTelegramCtoTasks({ cwd, profile, message, runtime, runsPat
       sessionDir: runtime.sessionDir,
       message,
       task,
-      workflowState: runtime.state
+      workflowState: runtime.state,
+      hostExecutor
     });
+
+    if (runResult.rerouteRecordPath) {
+      maybeAddArtifact(runtime.session, {
+        type: 'host_executor_job',
+        path: runResult.rerouteRecordPath,
+        description: `Host executor queue record for task ${task.id}.`
+      });
+    }
 
     if (runResult.sessionId) {
       await recordTelegramChildSession(runtime.session, cwd, {
@@ -1079,8 +1140,13 @@ async function executeTelegramCtoTasks({ cwd, profile, message, runtime, runsPat
   }
 }
 
-async function runTelegramCtoTask({ cwd, profile, parentSessionId, sessionDir, message, task, workflowState }) {
+async function runTelegramCtoTask({ cwd, profile, parentSessionId, sessionDir, message, task, workflowState, hostExecutor }) {
   const outputPath = path.join(sessionDir, 'artifacts', `telegram-task-${sanitizeFileComponent(task.id)}.json`);
+  const workerPrompt = buildTelegramCtoWorkerExecutionPrompt({
+    workflowState,
+    task,
+    fallbackMessageText: message.text
+  });
   const result = await spawnCliCapture([
     'run',
     '--cwd',
@@ -1089,11 +1155,7 @@ async function runTelegramCtoTask({ cwd, profile, parentSessionId, sessionDir, m
     profile,
     '--output',
     outputPath,
-    buildTelegramCtoWorkerExecutionPrompt({
-      workflowState,
-      task,
-      fallbackMessageText: message.text
-    })
+    workerPrompt
   ], cwd, {
     OPENCODEX_PARENT_SESSION_ID: parentSessionId,
     OPENCODEX_IM_SOURCE: 'telegram',
@@ -1119,7 +1181,7 @@ async function runTelegramCtoTask({ cwd, profile, parentSessionId, sessionDir, m
     }
   }
 
-  return {
+  const runResult = {
     code: result.code,
     stdout: result.stdout,
     stderr: result.stderr,
@@ -1128,8 +1190,252 @@ async function runTelegramCtoTask({ cwd, profile, parentSessionId, sessionDir, m
     childStatus: childSession?.status || '',
     summary: outputPayload?.summary || childSession?.summary || null
   };
+
+  if (hostExecutor?.root && isHostExecutorRerouteCandidate(runResult) && !process.env.OPENCODEX_HOST_EXECUTOR_JOB_ID) {
+    const queuedJob = await enqueueHostExecutorJob({
+      rootDir: hostExecutor.root,
+      cwd,
+      workflowSessionId: parentSessionId,
+      parentSessionId,
+      task,
+      message,
+      profile,
+      prompt: workerPrompt,
+      outputPath,
+      sourceSessionId: sessionId,
+      sourceSummary: runResult.summary
+    });
+
+    return {
+      ...runResult,
+      code: 0,
+      rerouteJobId: queuedJob.job.job_id,
+      rerouteRecordPath: queuedJob.jobPath,
+      summary: buildHostExecutorRerouteSummary({
+        task,
+        queuedJob: queuedJob.job,
+        sourceSummary: runResult.summary
+      })
+    };
+  }
+
+  return runResult;
 }
 
+function isHostExecutorRerouteCandidate(runResult) {
+  const summary = runResult?.summary && typeof runResult.summary === 'object'
+    ? runResult.summary
+    : null;
+  if (!summary || summary.status !== 'failed') {
+    return false;
+  }
+
+  if (summary.title === 'Run blocked by host sandbox') {
+    return true;
+  }
+
+  const validation = Array.isArray(summary.validation) ? summary.validation : [];
+  if (validation.some((item) => String(item || '').startsWith('sandbox_detection:'))) {
+    return true;
+  }
+
+  return /更严格的外层沙箱|host sandbox/i.test(String(summary.result || ''));
+}
+
+function hasReroutedWorkflowTasks(workflowState) {
+  return Array.isArray(workflowState?.tasks)
+    && workflowState.tasks.some((task) => String(task?.summary_status || '') === 'rerouted');
+}
+
+function buildHostExecutorRerouteSummary({ task, queuedJob, sourceSummary }) {
+  const blockedReason = typeof sourceSummary?.result === 'string' && sourceSummary.result.trim()
+    ? sourceSummary.result.trim()
+    : 'Worker execution was blocked by the stricter host sandbox.';
+  return {
+    title: 'Task rerouted to host executor',
+    result: `已检测到当前 worker 所在环境的宿主沙箱更严格，任务已自动转入 host executor queue，CTO 主线程会继续跟踪并在完成后主动汇报。\n原始原因：${blockedReason}`,
+    status: 'rerouted',
+    highlights: [
+      `Queue Job: ${queuedJob.job_id}.`,
+      `Task: ${typeof task?.id === 'string' ? task.id : 'unknown'}.`
+    ],
+    next_steps: [],
+    risks: [],
+    validation: ['host_executor:queued'],
+    changed_files: [],
+    findings: [],
+    reroute_job_id: queuedJob.job_id,
+    reroute_record_path: queuedJob.record_path || ''
+  };
+}
+
+function buildTelegramCtoRerouteText(workflowState) {
+  return truncateTelegramText([
+    'openCodex CTO 已转交宿主执行器继续处理',
+    `目标：${truncateInline(workflowState.goal_text, 160)}`,
+    `进度：已有任务进入 host executor queue，我会继续跟踪并在完成后主动回报。`,
+    `Workflow: ${workflowState.workflow_session_id}`
+  ].join('\n'));
+}
+
+async function processTelegramHostExecutorQueue({
+  cwd,
+  profile,
+  hostExecutor,
+  workflowRuntimes,
+  repliesPath,
+  runsPath,
+  logPath,
+  apiBaseUrl,
+  botToken,
+  persistListenerSession
+}) {
+  while (true) {
+    const claimed = await claimNextPendingHostExecutorJob(hostExecutor.root);
+    if (!claimed) {
+      return;
+    }
+
+    const { job, jobPath } = claimed;
+    const runtime = workflowRuntimes.get(job.workflow_session_id);
+    if (!runtime) {
+      await updateHostExecutorJob(jobPath, {
+        status: 'failed',
+        error_message: 'Workflow runtime is no longer active for this queued host job.'
+      });
+      continue;
+    }
+
+    const task = Array.isArray(runtime.state?.tasks)
+      ? runtime.state.tasks.find((item) => item?.id === job.task_id)
+      : null;
+    if (!task) {
+      await updateHostExecutorJob(jobPath, {
+        status: 'failed',
+        error_message: 'Workflow task could not be found for this queued host job.'
+      });
+      continue;
+    }
+
+    await appendFile(logPath, `[${toIsoString()}] host executor claimed ${job.job_id} for workflow ${job.workflow_session_id} task ${job.task_id}\n`, 'utf8');
+    process.stdout.write(`Host executor claimed ${job.job_id} for workflow ${job.workflow_session_id} task ${job.task_id}\n`);
+
+    const result = await spawnCliCapture([
+      'run',
+      '--cwd',
+      job.cwd,
+      '--profile',
+      job.profile || profile,
+      '--output',
+      job.output_path,
+      job.prompt
+    ], job.cwd || cwd, buildHostExecutorEnv({
+      OPENCODEX_PARENT_SESSION_ID: job.parent_session_id || runtime.session.session_id,
+      OPENCODEX_IM_SOURCE: 'telegram',
+      OPENCODEX_IM_UPDATE_ID: String(job.update_id || runtime.rootMessage.update_id || 0),
+      OPENCODEX_CTO_STAGE: 'host-executor',
+      OPENCODEX_CTO_TASK_ID: job.task_id || '',
+      OPENCODEX_HOST_EXECUTOR_JOB_ID: job.job_id
+    }));
+
+    let outputPayload = null;
+    try {
+      outputPayload = await readJson(job.output_path);
+    } catch {
+      outputPayload = null;
+    }
+
+    const sessionId = outputPayload?.session_id || extractSessionId(result.stdout);
+    let childSession = null;
+    if (sessionId) {
+      try {
+        childSession = await loadSession(job.cwd || cwd, sessionId);
+      } catch {
+        childSession = null;
+      }
+    }
+
+    const runResult = {
+      code: result.code,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      sessionId,
+      outputPath: job.output_path,
+      childStatus: childSession?.status || '',
+      summary: outputPayload?.summary || childSession?.summary || null
+    };
+
+    await updateHostExecutorJob(jobPath, {
+      status: runResult.summary?.status || runResult.childStatus || (runResult.code === 0 ? 'completed' : 'failed'),
+      host_session_id: sessionId || '',
+      host_session_path: sessionId ? path.join(getSessionDir(job.cwd || cwd, sessionId), 'session.json') : '',
+      result_summary: runResult.summary || childSession?.summary || null,
+      error_message: typeof runResult.summary?.result === 'string' ? runResult.summary.result : ''
+    });
+
+    if (runResult.sessionId) {
+      await recordTelegramChildSession(runtime.session, job.cwd || cwd, {
+        sessionId: runResult.sessionId,
+        updateId: job.update_id || runtime.rootMessage.update_id || 0,
+        label: `Host executor ${job.task_id}`
+      });
+    }
+
+    applyWorkflowTaskResult(runtime.state, task.id, runResult);
+    await appendFile(runsPath, `${JSON.stringify(buildTelegramRunRecord(runtime.rootMessage, runResult, {
+      workflowSessionId: runtime.session.session_id,
+      stage: 'host-executor',
+      taskId: task.id,
+      taskTitle: task.title
+    }))}\n`, 'utf8');
+    await appendFile(logPath, `[${toIsoString()}] host executor finished ${job.job_id} -> ${runResult.sessionId || 'no-session'} (${runResult.summary?.status || runResult.childStatus || runResult.code})\n`, 'utf8');
+
+    if (runtime.state.status !== 'cancelled') {
+      await executeTelegramCtoTasks({
+        cwd: job.cwd || cwd,
+        profile,
+        message: runtime.rootMessage,
+        runtime,
+        runsPath,
+        logPath,
+        hostExecutor
+      });
+    }
+
+    finalizeWorkflowStatus(runtime.state);
+    await persistTelegramWorkflowRuntime(job.cwd || cwd, runtime);
+    await persistListenerSession();
+
+    if (runtime.state.status === 'waiting_for_user') {
+      const questionReply = await sendTelegramTextMessage({
+        apiBaseUrl,
+        botToken,
+        chatId: runtime.rootMessage.chat_id,
+        text: buildTelegramCtoQuestionText(runtime.state),
+        replyToMessageId: runtime.rootMessage.message_id
+      });
+      await appendTelegramReply(repliesPath, questionReply);
+      await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} paused for confirmation after host executor processing\n`, 'utf8');
+      process.stdout.write(`CTO workflow ${runtime.session.session_id} paused for confirmation after host executor processing\n`);
+      workflowRuntimes.delete(runtime.session.session_id);
+      continue;
+    }
+
+    if (runtime.state.status !== 'running') {
+      const finalReply = await sendTelegramTextMessage({
+        apiBaseUrl,
+        botToken,
+        chatId: runtime.rootMessage.chat_id,
+        text: buildTelegramCtoFinalText(runtime.state),
+        replyToMessageId: runtime.rootMessage.message_id
+      });
+      await appendTelegramReply(repliesPath, finalReply);
+      await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} finished with status ${runtime.state.status} after host executor processing\n`, 'utf8');
+      process.stdout.write(`CTO workflow ${runtime.session.session_id} finished with status ${runtime.state.status} after host executor processing\n`);
+      workflowRuntimes.delete(runtime.session.session_id);
+    }
+  }
+}
 
 async function collectTelegramCtoHistoryRepairCandidates({ cwd, currentWorkflowSessionId }) {
   const sessions = await listSessions(cwd);
@@ -1969,7 +2275,7 @@ async function rehydratePendingTelegramCtoWorkflows(cwd, workflowRuntimes) {
   const sessions = await listSessions(cwd);
 
   for (const session of sessions) {
-    if (session.command !== 'cto' || session.status !== 'partial') {
+    if (session.command !== 'cto') {
       continue;
     }
 
@@ -1985,7 +2291,9 @@ async function rehydratePendingTelegramCtoWorkflows(cwd, workflowRuntimes) {
       workflowState = null;
     }
 
-    if (!workflowState || workflowState.status !== 'waiting_for_user') {
+    const shouldResumeWaiting = session.status === 'partial' && workflowState?.status === 'waiting_for_user';
+    const shouldResumeRerouted = workflowState?.status === 'running' && hasReroutedWorkflowTasks(workflowState);
+    if (!workflowState || (!shouldResumeWaiting && !shouldResumeRerouted)) {
       continue;
     }
 

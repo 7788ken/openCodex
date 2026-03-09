@@ -677,6 +677,9 @@ export function injectHistoricalCtoRepairTask(plan, options = {}) {
         result: '',
         next_steps: [],
         changed_files: [],
+        reroute_job_id: '',
+        reroute_record_path: '',
+        reroute_source_session_id: '',
         updated_at: ''
       },
       ...existingTasks
@@ -882,13 +885,13 @@ export function buildTelegramCtoStatusText(workflowState) {
     `目标：${truncateInline(workflowState.goal_text, 160)}`,
     `状态：${formatTelegramWorkflowStatus(workflowState.status)}`,
     `摘要：${truncateInline(summary, 220)}`,
-    `进度：queued ${counts.queued}, running ${counts.running}, completed ${counts.completed}, partial ${counts.partial}, failed ${counts.failed}, cancelled ${counts.cancelled}`
+    `进度：queued ${counts.queued}, running ${counts.running}, rerouted ${counts.rerouted}, completed ${counts.completed}, partial ${counts.partial}, failed ${counts.failed}, cancelled ${counts.cancelled}`
   ];
 
   if (latestTasks.length) {
     lines.push('任务：');
     for (const task of latestTasks) {
-      lines.push(`- [${task.status}] ${task.id} ${truncateInline(task.title, 80)}`);
+      lines.push(`- [${getTaskDisplayStatus(task)}] ${task.id} ${truncateInline(task.title, 80)}`);
     }
   } else {
     lines.push('任务：暂无');
@@ -915,7 +918,7 @@ export function buildTelegramCtoFinalText(workflowState) {
   const lines = [
     statusTitle,
     `目标：${truncateInline(workflowState.goal_text, 160)}`,
-    `进度：completed ${counts.completed}, partial ${counts.partial}, failed ${counts.failed}, cancelled ${counts.cancelled}, queued ${counts.queued}`
+    `进度：completed ${counts.completed}, rerouted ${counts.rerouted}, partial ${counts.partial}, failed ${counts.failed}, cancelled ${counts.cancelled}, queued ${counts.queued}`
   ];
 
   const highlights = collectWorkflowHighlights(workflowState).slice(0, 4);
@@ -953,6 +956,7 @@ export function buildTelegramCtoSessionSummary(workflowState) {
     `Chat: ${workflowState.chat_id}`,
     `Tasks: ${counts.total}`,
     `Completed: ${counts.completed}`,
+    `Rerouted: ${counts.rerouted}`,
     `Partial: ${counts.partial}`,
     `Failed: ${counts.failed}`,
     `Cancelled: ${counts.cancelled}`
@@ -960,7 +964,9 @@ export function buildTelegramCtoSessionSummary(workflowState) {
 
   const nextSteps = collectWorkflowNextSteps(workflowState).slice(0, 4);
   if (!nextSteps.length && status === 'running') {
-    nextSteps.push('Wait for the running workflow tasks to finish.');
+    nextSteps.push(counts.rerouted > 0
+      ? 'Wait for the rerouted host-executor tasks to finish.'
+      : 'Wait for the running workflow tasks to finish.');
   }
   if (!nextSteps.length && status === 'partial') {
     nextSteps.push(counts.failed > 0
@@ -987,6 +993,13 @@ export function buildTelegramCtoSessionSummary(workflowState) {
     changed_files: collectWorkflowChangedFiles(workflowState).slice(0, 8),
     findings: []
   };
+}
+
+function getTaskDisplayStatus(task) {
+  if (asTrimmedString(task?.summary_status) === 'rerouted') {
+    return 'rerouted';
+  }
+  return asTrimmedString(task?.status) || 'unknown';
 }
 
 export function findPendingWorkflowForChat(workflows, chatId) {
@@ -1047,6 +1060,23 @@ export function applyWorkflowTaskResult(workflowState, taskId, runResult) {
     workflowState.updated_at = task.updated_at;
     return task;
   }
+  if (summaryStatus === 'rerouted') {
+    task.status = 'running';
+    task.session_id = runResult?.sessionId || task.session_id || '';
+    task.summary_status = summaryStatus;
+    task.result = asTrimmedString(runResult?.summary?.result) || '';
+    task.next_steps = asStringList(runResult?.summary?.next_steps);
+    task.changed_files = asStringList(runResult?.summary?.changed_files);
+    task.reroute_job_id = asTrimmedString(runResult?.rerouteJobId || runResult?.summary?.reroute_job_id) || task.reroute_job_id || '';
+    task.reroute_record_path = asTrimmedString(runResult?.rerouteRecordPath || runResult?.summary?.reroute_record_path) || task.reroute_record_path || '';
+    task.reroute_source_session_id = asTrimmedString(runResult?.sessionId) || task.reroute_source_session_id || '';
+    task.updated_at = new Date().toISOString();
+    workflowState.updated_at = task.updated_at;
+    workflowState.status = 'running';
+    workflowState.pending_question_zh = '';
+    return task;
+  }
+
   task.status = ['completed', 'failed', 'partial'].includes(summaryStatus)
     ? summaryStatus
     : (runResult?.code === 0 ? 'completed' : 'failed');
@@ -1077,7 +1107,7 @@ export function finalizeWorkflowStatus(workflowState) {
     return workflowState.status;
   }
 
-  if (counts.running > 0) {
+  if (counts.running > 0 || counts.rerouted > 0) {
     workflowState.status = 'running';
     return workflowState.status;
   }
@@ -1118,6 +1148,7 @@ export function summarizeWorkflowCounts(workflowState) {
     total: 0,
     queued: 0,
     running: 0,
+    rerouted: 0,
     completed: 0,
     partial: 0,
     failed: 0,
@@ -1126,7 +1157,11 @@ export function summarizeWorkflowCounts(workflowState) {
 
   for (const task of workflowState.tasks || []) {
     counts.total += 1;
-    if (Object.hasOwn(counts, task.status)) {
+    if (asTrimmedString(task?.summary_status) === 'rerouted') {
+      counts.rerouted += 1;
+      continue;
+    }
+    if (Object.hasOwn(counts, task?.status)) {
       counts[task.status] += 1;
     }
   }
@@ -1223,6 +1258,10 @@ function buildWorkflowResultLine(workflowState, counts) {
     return 'Workflow needs follow-up before it can be marked completed.';
   }
 
+  if (counts.rerouted > 0) {
+    return `Workflow is running with ${counts.running} active task(s) and ${counts.rerouted} rerouted host-executor task(s).`;
+  }
+
   return `Workflow is running with ${counts.running} active task(s).`;
 }
 
@@ -1260,7 +1299,7 @@ function formatTelegramWorkflowStatus(status) {
 function summarizeTasksForPrompt(tasks) {
   return (tasks || []).map((task) => {
     const result = task.result ? ` — ${truncateInline(task.result, 140)}` : '';
-    return `- ${task.id} [${task.status}] ${task.title}${result}`;
+    return `- ${task.id} [${getTaskDisplayStatus(task)}] ${task.title}${result}`;
   }).join('\n');
 }
 

@@ -218,7 +218,7 @@ async function runTelegramServiceInstall(args) {
 
   const botToken = resolveTelegramBotToken(options['bot-token']);
   const service = resolveTelegramServiceSettings({ ...options, cwd });
-  const envAssignments = collectServiceEnvironment(botToken);
+  const envAssignments = collectServiceEnvironment(botToken, service);
 
   await ensureDir(service.stateDir);
   await ensureDir(service.launchAgentDir);
@@ -891,14 +891,15 @@ async function collectWorkflowStats(service) {
   const taskTotals = trackedWorkflowStates.reduce((sum, workflowState) => {
     const counts = summarizeWorkflowTaskCounts(workflowState);
     sum.running += counts.running;
+    sum.rerouted += counts.rerouted;
     sum.queued += counts.queued;
     sum.total += counts.total;
     return sum;
-  }, { running: 0, queued: 0, total: 0 });
+  }, { running: 0, rerouted: 0, queued: 0, total: 0 });
   const childSessionStats = collectChildSessionStats({
     sessions,
     trackedSessions,
-    fallbackActiveChildCount: taskTotals.running
+    fallbackActiveChildCount: countActiveWorkflowTasks(taskTotals)
   });
   const dispatchHistory = collectRecentDispatchRecords(service.cwd, workflowInfos);
   const recentDispatches = dispatchHistory.slice(0, 5);
@@ -907,6 +908,7 @@ async function collectWorkflowStats(service) {
     running_workflow_count: runningWorkflowInfos.length,
     waiting_workflow_count: waitingWorkflowInfos.length,
     running_task_count: taskTotals.running,
+    rerouted_task_count: taskTotals.rerouted,
     queued_task_count: taskTotals.queued,
     tracked_task_count: taskTotals.total,
     workflow_history_count: workflowHistory.length,
@@ -1024,6 +1026,7 @@ function summarizeWorkflowTaskCounts(workflowState) {
     total: 0,
     queued: 0,
     running: 0,
+    rerouted: 0,
     completed: 0,
     partial: 0,
     failed: 0
@@ -1035,24 +1038,28 @@ function summarizeWorkflowTaskCounts(workflowState) {
 
   for (const task of workflowState.tasks) {
     counts.total += 1;
-    if (task?.status === 'queued') {
-      counts.queued += 1;
+    const displayStatus = getWorkflowTaskDisplayStatus(task);
+    if (displayStatus === 'rerouted') {
+      counts.rerouted += 1;
+      continue;
     }
-    if (task?.status === 'running') {
-      counts.running += 1;
-    }
-    if (task?.status === 'completed') {
-      counts.completed += 1;
-    }
-    if (task?.status === 'partial') {
-      counts.partial += 1;
-    }
-    if (task?.status === 'failed') {
-      counts.failed += 1;
+    if (Object.hasOwn(counts, displayStatus)) {
+      counts[displayStatus] += 1;
     }
   }
 
   return counts;
+}
+
+function getWorkflowTaskDisplayStatus(task) {
+  if (typeof task?.summary_status === 'string' && task.summary_status.trim() === 'rerouted') {
+    return 'rerouted';
+  }
+  return normalizeDispatchStatus(task?.status);
+}
+
+function countActiveWorkflowTasks(taskCounts) {
+  return Number(taskCounts?.running || 0) + Number(taskCounts?.rerouted || 0);
 }
 
 function buildWorkflowHistoryRecords(workflowInfos) {
@@ -1093,6 +1100,7 @@ function buildWorkflowHistoryRecord(workflowInfo) {
     child_thread_count: childThreadCount,
     task_total_count: counts.total,
     running_task_count: counts.running,
+    rerouted_task_count: counts.rerouted,
     queued_task_count: counts.queued,
     completed_task_count: counts.completed,
     partial_task_count: counts.partial,
@@ -1132,16 +1140,19 @@ function buildDispatchRecordsFromWorkflowInfo(cwd, workflowInfo) {
       const sessionId = typeof task?.session_id === 'string' ? task.session_id : '';
       const childSessionPath = sessionId ? path.join(getSessionDir(cwd, sessionId), 'session.json') : '';
       const fallbackPath = workflowStatePath || sessionPath;
-      const status = normalizeDispatchStatus(task?.status);
+      const status = getWorkflowTaskDisplayStatus(task);
       const taskId = typeof task?.id === 'string' ? task.id : '';
       const title = typeof task?.title === 'string' ? task.title : '';
+      const rerouteRecordPath = typeof task?.reroute_record_path === 'string' ? task.reroute_record_path : '';
       return {
         workflow_session_id: session.session_id,
         task_id: taskId,
         title,
         status,
         session_id: sessionId,
-        path: childSessionPath || fallbackPath,
+        path: rerouteRecordPath || childSessionPath || fallbackPath,
+        reroute_job_id: typeof task?.reroute_job_id === 'string' ? task.reroute_job_id : '',
+        reroute_record_path: rerouteRecordPath,
         updated_at: typeof task?.updated_at === 'string' && task.updated_at ? task.updated_at : (workflowState?.updated_at || session.updated_at || ''),
         label: `[${status}] ${truncateInline(taskId || title || 'task', 32)} — ${truncateInline(title || taskId || 'Untitled task', 72)}`
       };
@@ -1241,6 +1252,7 @@ function renderServiceOutput(payload, json, title) {
   lines.push(`Running Workflows: ${payload.running_workflow_count ?? 0}`);
   lines.push(`Waiting Workflows: ${payload.waiting_workflow_count ?? 0}`);
   lines.push(`Running Tasks: ${payload.running_task_count ?? 0}`);
+  lines.push(`Rerouted Tasks: ${payload.rerouted_task_count ?? 0}`);
   lines.push(`Queued Tasks: ${payload.queued_task_count ?? 0}`);
   lines.push(`Workflow History: ${payload.workflow_history_count ?? 0}`);
   lines.push(`Task History: ${payload.dispatch_history_count ?? 0}`);
@@ -1303,7 +1315,7 @@ function renderWorkflowHistoryOutput(payload, json, title) {
       if (item.updated_at) {
         lines.push(`Workflow ${index + 1} Updated: ${item.updated_at}`);
       }
-      lines.push(`Workflow ${index + 1} Tasks: total ${item.task_total_count ?? 0} • running ${item.running_task_count ?? 0} • queued ${item.queued_task_count ?? 0} • completed ${item.completed_task_count ?? 0} • partial ${item.partial_task_count ?? 0} • failed ${item.failed_task_count ?? 0}`);
+      lines.push(`Workflow ${index + 1} Tasks: total ${item.task_total_count ?? 0} • running ${item.running_task_count ?? 0} • rerouted ${item.rerouted_task_count ?? 0} • queued ${item.queued_task_count ?? 0} • completed ${item.completed_task_count ?? 0} • partial ${item.partial_task_count ?? 0} • failed ${item.failed_task_count ?? 0}`);
       if (item.workflow_session_id) {
         lines.push(`Workflow ${index + 1} Session: ${item.workflow_session_id}`);
       }
@@ -1350,13 +1362,16 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
         const childSessionPath = sessionId ? path.join(getSessionDir(cwd, sessionId), 'session.json') : '';
         const taskId = typeof task?.id === 'string' ? task.id : '';
         const title = typeof task?.title === 'string' && task.title ? task.title : (taskId || 'Untitled task');
-        const status = normalizeDispatchStatus(task?.status);
+        const status = getWorkflowTaskDisplayStatus(task);
+        const rerouteRecordPath = typeof task?.reroute_record_path === 'string' ? task.reroute_record_path : '';
         return {
           task_id: taskId,
           title,
           status,
           session_id: sessionId,
-          path: childSessionPath,
+          path: rerouteRecordPath || childSessionPath,
+          reroute_job_id: typeof task?.reroute_job_id === 'string' ? task.reroute_job_id : '',
+          reroute_record_path: rerouteRecordPath,
           updated_at: typeof task?.updated_at === 'string' && task.updated_at ? task.updated_at : '',
           label: `[${status}] ${truncateInline(taskId || title || 'task', 32)} — ${truncateInline(title || taskId || 'Untitled task', 72)}`
         };
@@ -1448,7 +1463,7 @@ function renderWorkflowDetailOutput(payload, json, title) {
   }
   lines.push(`Child Threads: ${payload.child_thread_count ?? 0}`);
   const counts = payload.task_counts || {};
-  lines.push(`Tasks: total ${counts.total ?? 0} • running ${counts.running ?? 0} • queued ${counts.queued ?? 0} • completed ${counts.completed ?? 0} • partial ${counts.partial ?? 0} • failed ${counts.failed ?? 0}`);
+  lines.push(`Tasks: total ${counts.total ?? 0} • running ${counts.running ?? 0} • rerouted ${counts.rerouted ?? 0} • queued ${counts.queued ?? 0} • completed ${counts.completed ?? 0} • partial ${counts.partial ?? 0} • failed ${counts.failed ?? 0}`);
   if (payload.result) {
     lines.push(`Result: ${truncateInline(payload.result, 220)}`);
   }
@@ -1518,16 +1533,41 @@ async function buildDispatchDetailPayload(cwd, dispatch, index) {
   const workflowInfo = workflowSession
     ? await resolveWorkflowStateInfo(cwd, workflowSession)
     : { sessionPath: workflowSessionPath, workflowStatePath: '', workflowState: null };
+  const workflowState = workflowInfo.workflowState && typeof workflowInfo.workflowState === 'object'
+    ? workflowInfo.workflowState
+    : null;
+  const workflowTask = Array.isArray(workflowState?.tasks)
+    ? workflowState.tasks.find((task) => task?.id === dispatch?.task_id)
+    : null;
 
   let sessionId = typeof dispatch?.session_id === 'string' ? dispatch.session_id : '';
   let sessionPath = sessionId ? path.join(getSessionDir(cwd, sessionId), 'session.json') : '';
   let session = await loadJsonIfExists(sessionPath);
+
+  const rerouteRecordPath = typeof dispatch?.reroute_record_path === 'string' && dispatch.reroute_record_path
+    ? dispatch.reroute_record_path
+    : (typeof workflowTask?.reroute_record_path === 'string' ? workflowTask.reroute_record_path : '');
+  const rerouteRecord = rerouteRecordPath ? await loadJsonIfExists(rerouteRecordPath) : null;
 
   if (!session && typeof dispatch?.path === 'string' && dispatch.path.endsWith('session.json')) {
     sessionPath = dispatch.path;
     session = await loadJsonIfExists(sessionPath);
     if (!sessionId) {
       sessionId = typeof session?.session_id === 'string' ? session.session_id : '';
+    }
+  }
+
+  if ((!session || !sessionId) && rerouteRecord && typeof rerouteRecord === 'object') {
+    if (typeof rerouteRecord.host_session_path === 'string' && rerouteRecord.host_session_path) {
+      sessionPath = rerouteRecord.host_session_path;
+      session = await loadJsonIfExists(sessionPath);
+      sessionId = typeof rerouteRecord.host_session_id === 'string' && rerouteRecord.host_session_id
+        ? rerouteRecord.host_session_id
+        : (typeof session?.session_id === 'string' ? session.session_id : sessionId);
+    } else if (typeof rerouteRecord.host_session_id === 'string' && rerouteRecord.host_session_id) {
+      sessionId = rerouteRecord.host_session_id;
+      sessionPath = path.join(getSessionDir(cwd, sessionId), 'session.json');
+      session = await loadJsonIfExists(sessionPath);
     }
   }
 
@@ -1546,20 +1586,21 @@ async function buildDispatchDetailPayload(cwd, dispatch, index) {
     lastMessageArtifactPath,
     sessionDir ? path.join(sessionDir, 'last-message.txt') : ''
   ]);
-  const workflowState = workflowInfo.workflowState && typeof workflowInfo.workflowState === 'object'
-    ? workflowInfo.workflowState
-    : null;
-  const summary = session?.summary && typeof session.summary === 'object'
-    ? session.summary
-    : {};
+  const summary = rerouteRecord?.result_summary && typeof rerouteRecord.result_summary === 'object'
+    ? rerouteRecord.result_summary
+    : (rerouteRecord?.source_summary && typeof rerouteRecord.source_summary === 'object'
+      ? rerouteRecord.source_summary
+      : (session?.summary && typeof session.summary === 'object' ? session.summary : {}));
   const lastMessage = (await readTextIfExists(lastMessagePath)) || '';
   const recentActivity = summarizeRecentEvents((await readTextIfExists(eventsPath)) || '');
   const recordPath = await resolveFirstExistingPath([
+    rerouteRecordPath,
     typeof dispatch?.path === 'string' ? dispatch.path : '',
     sessionPath,
     workflowInfo.workflowStatePath,
     workflowInfo.sessionPath
   ]);
+  const displayStatus = getWorkflowTaskDisplayStatus(workflowTask || dispatch);
 
   return {
     ok: true,
@@ -1572,10 +1613,13 @@ async function buildDispatchDetailPayload(cwd, dispatch, index) {
     pending_question: workflowState?.pending_question_zh || '',
     task_id: typeof dispatch?.task_id === 'string' ? dispatch.task_id : '',
     title: typeof dispatch?.title === 'string' && dispatch.title ? dispatch.title : (summary.title || ''),
-    status: typeof dispatch?.status === 'string' && dispatch.status ? dispatch.status : (summary.status || session?.status || 'unknown'),
+    status: displayStatus || (typeof dispatch?.status === 'string' && dispatch.status ? dispatch.status : (summary.status || session?.status || 'unknown')),
     session_id: sessionId,
+    reroute_job_id: typeof dispatch?.reroute_job_id === 'string' && dispatch.reroute_job_id
+      ? dispatch.reroute_job_id
+      : (typeof workflowTask?.reroute_job_id === 'string' ? workflowTask.reroute_job_id : ''),
     updated_at: typeof dispatch?.updated_at === 'string' && dispatch.updated_at ? dispatch.updated_at : (session?.updated_at || workflowState?.updated_at || workflowSession?.updated_at || ''),
-    result: typeof summary.result === 'string' ? summary.result : '',
+    result: typeof workflowTask?.result === 'string' && workflowTask.result ? workflowTask.result : (typeof summary.result === 'string' ? summary.result : ''),
     highlights: Array.isArray(summary.highlights) ? summary.highlights : [],
     validation: Array.isArray(summary.validation) ? summary.validation : [],
     changed_files: Array.isArray(summary.changed_files) ? summary.changed_files : [],
@@ -1792,14 +1836,16 @@ function truncateMultiline(value, maxLength = 360, maxLines = 5) {
   return text;
 }
 
-function collectServiceEnvironment(botToken) {
+function collectServiceEnvironment(botToken, service) {
 
   const environment = new Map();
   environment.set('PATH', process.env.PATH || '');
   environment.set('OPENCODEX_TELEGRAM_BOT_TOKEN', botToken);
+  environment.set('OPENCODEX_SERVICE_STATE_DIR', service.stateDir);
+  environment.set('OPENCODEX_HOST_EXECUTOR_ENABLED', '1');
   environment.set('NODE_USE_ENV_PROXY', process.env.NODE_USE_ENV_PROXY || '1');
 
-  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'OPENCODEX_CODEX_BIN']) {
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'OPENCODEX_CODEX_BIN', 'OPENCODEX_HOST_EXECUTOR_SANDBOX_MODE']) {
     if (typeof process.env[key] === 'string' && process.env[key].trim()) {
       environment.set(key, process.env[key]);
     }
@@ -1920,7 +1966,7 @@ on rebuildMenu(statusText)
 	statusMenu's removeAllItems()
 	my addInfoItem(my localizedText(statusText, "Service", "服务") & ": " & my lineValue(statusText, "State: ", "unknown") & " • " & my detectMode(statusText))
 	my addInfoItem(my localizedText(statusText, "Workflows", "工作流") & ": running " & my lineValue(statusText, "Running Workflows: ", "0") & " • waiting " & my lineValue(statusText, "Waiting Workflows: ", "0"))
-	my addInfoItem(my localizedText(statusText, "Tasks", "任务") & ": running " & my lineValue(statusText, "Running Tasks: ", "0") & " • queued " & my lineValue(statusText, "Queued Tasks: ", "0"))
+	my addInfoItem(my localizedText(statusText, "Tasks", "任务") & ": running " & my lineValue(statusText, "Running Tasks: ", "0") & " • rerouted " & my lineValue(statusText, "Rerouted Tasks: ", "0") & " • queued " & my lineValue(statusText, "Queued Tasks: ", "0"))
 	my addInfoItem(my localizedText(statusText, "History", "历史") & ": " & my localizedText(statusText, "workflow", "工作流") & " " & my lineValue(statusText, "Workflow History: ", "0") & " • " & my localizedText(statusText, "task", "任务") & " " & my lineValue(statusText, "Task History: ", "0"))
 	my addInfoItem(my localizedText(statusText, "Threads", "线程") & ": " & my localizedText(statusText, "main active", "主活跃") & " " & my lineValue(statusText, "Active Main Threads: ", "0") & " • " & my localizedText(statusText, "child active", "子活跃") & " " & my lineValue(statusText, "Active Child Threads: ", "0") & " • " & my localizedText(statusText, "child total", "子累计") & " " & my lineValue(statusText, "Child Sessions: ", "0"))
 	set latestWorkflowId to my lineValue(statusText, "Latest Workflow: ", "")
@@ -2044,12 +2090,14 @@ on refreshStatus()
 	set runningCount to my lineValue(statusText, "Running Workflows: ", "0")
 	set waitingCount to my lineValue(statusText, "Waiting Workflows: ", "0")
 	set runningTaskCount to my lineValue(statusText, "Running Tasks: ", "0")
+	set reroutedTaskCount to my lineValue(statusText, "Rerouted Tasks: ", "0")
 	set queuedTaskCount to my lineValue(statusText, "Queued Tasks: ", "0")
 	set mainCount to my lineValue(statusText, "Active Main Threads: ", "0")
 	set childCount to my lineValue(statusText, "Active Child Threads: ", "0")
 	set totalChildCount to my lineValue(statusText, "Child Sessions: ", "0")
 	set badgeMode to my lineValue(statusText, "Badge Mode: ", "tasks")
 	set refreshIntervalValue to my lineValue(statusText, "Refresh Interval: ", "15")
+	set activeTaskCount to my integerValue(runningTaskCount) + my integerValue(reroutedTaskCount)
 	if serviceState is "running" then
 		set titlePrefix to "OC●"
 		if modeLabel is "full-access" then
@@ -2065,15 +2113,15 @@ on refreshStatus()
 			end if
 		else if badgeMode is "none" then
 			button's setTitle_(titlePrefix)
-		else if runningTaskCount is not "0" then
-			button's setTitle_(titlePrefix & runningTaskCount)
+		else if activeTaskCount is not 0 then
+			button's setTitle_(titlePrefix & (activeTaskCount as string))
 		else
 			button's setTitle_(titlePrefix)
 		end if
 	else
 		button's setTitle_("OC○")
 	end if
-	button's setToolTip_("openCodex CTO • " & serviceState & " • wf " & runningCount & "/" & waitingCount & " • task " & runningTaskCount & "/" & queuedTaskCount & " • main active " & mainCount & " • child active " & childCount & " • child total " & totalChildCount & " • " & modeLabel)
+	button's setToolTip_("openCodex CTO • " & serviceState & " • wf " & runningCount & "/" & waitingCount & " • task " & runningTaskCount & "/" & reroutedTaskCount & "/" & queuedTaskCount & " • main active " & mainCount & " • child active " & childCount & " • child total " & totalChildCount & " • " & modeLabel)
 	try
 		return refreshIntervalValue as integer
 	on error
@@ -2786,6 +2834,14 @@ on lineValue(statusText, prefixText, fallbackText)
 	return fallbackText
 end lineValue
 
+on integerValue(rawText)
+	try
+		return rawText as integer
+	on error
+		return 0
+	end try
+end integerValue
+
 on truncateText(inputText, maxLength)
 	if (length of inputText) ≤ maxLength then return inputText
 	return text 1 thru (maxLength - 1) of inputText & "…"
@@ -2828,8 +2884,8 @@ function buildTelegramServiceStatusReply(payload) {
     `服务：${payload.loaded ? (payload.state || 'running') : 'stopped'}`,
     `权限：${payload.profile || payload.permission_mode || 'unknown'}`,
     `工作流：running ${payload.running_workflow_count ?? 0} / waiting ${payload.waiting_workflow_count ?? 0}`,
-    `任务：running ${payload.running_task_count ?? 0} / queued ${payload.queued_task_count ?? 0}`,
-    `线程：主活跃 ${payload.active_main_thread_count ?? payload.running_workflow_count ?? 0} / 子活跃 ${payload.active_child_thread_count ?? payload.running_task_count ?? 0} / 子累计 ${payload.child_session_count ?? payload.child_thread_count ?? 0}`
+    `任务：running ${payload.running_task_count ?? 0} / rerouted ${payload.rerouted_task_count ?? 0} / queued ${payload.queued_task_count ?? 0}`,
+    `线程：主活跃 ${payload.active_main_thread_count ?? payload.running_workflow_count ?? 0} / 子活跃 ${payload.active_child_thread_count ?? countActiveWorkflowTasks(payload) ?? 0} / 子累计 ${payload.child_session_count ?? payload.child_thread_count ?? 0}`
   ];
 
   if (payload.latest_workflow_session_id) {

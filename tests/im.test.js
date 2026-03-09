@@ -1374,6 +1374,101 @@ test('im telegram listen --cto fails closed on stricter host sandbox without lea
   assert.equal(stderr, '');
 });
 
+
+test('im telegram listen --cto reroutes host-sandbox-blocked work into the host executor queue and finishes automatically', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-reroute-'));
+  const serviceStateDir = path.join(cwd, '.service-state');
+  const telegram = await startTelegramMockServer({
+    updates: [
+      {
+        update_id: 452,
+        message: {
+          message_id: 852,
+          date: 1741435511,
+          text: 'please inspect the repo',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      }
+    ]
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const child = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture,
+      OPENCODEX_HOST_SANDBOX_MODE: 'read-only',
+      OPENCODEX_HOST_EXECUTOR_ENABLED: '1',
+      OPENCODEX_SERVICE_STATE_DIR: serviceStateDir,
+      OPENCODEX_HOST_EXECUTOR_SANDBOX_MODE: 'danger-full-access'
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  await waitForCondition(() => telegram.state.reactions.length >= 1, 'reroute acknowledgement');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 852 && /已完成任务拆解/.test(message.text)), 'reroute plan reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 852 && /已转交宿主执行器继续处理/.test(message.text)), 'reroute interim reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 852 && /工作流已完成/.test(message.text)), 'reroute final reply');
+
+  const planReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 852 && /Workflow: cto-/.test(message.text));
+  assert.ok(planReply);
+  const workflowIdMatch = planReply.text.match(/Workflow:\s+(cto-[^\s]+)/);
+  assert.ok(workflowIdMatch);
+
+  assert.match(stdout, /rerouted work to the host executor/);
+  assert.match(stdout, /Host executor claimed/);
+  assert.match(stdout, /after host executor processing/);
+
+  const workflowState = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'sessions', workflowIdMatch[1], 'artifacts', 'cto-workflow.json'), 'utf8'));
+  assert.equal(workflowState.status, 'completed');
+  assert.ok(workflowState.tasks.every((task) => task.status === 'completed'));
+
+  const jobsDir = path.join(serviceStateDir, 'host-executor', 'jobs');
+  await waitForCondition(async () => {
+    try {
+      const entries = await readdir(jobsDir);
+      return entries.length >= 2;
+    } catch {
+      return false;
+    }
+  }, 'host executor job files');
+  const jobFiles = await readdir(jobsDir);
+  assert.equal(jobFiles.length, 2);
+  const jobPayloads = await Promise.all(jobFiles.map((entry) => readFile(path.join(jobsDir, entry), 'utf8').then((content) => JSON.parse(content))));
+  assert.ok(jobPayloads.every((job) => job.status === 'completed'));
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+});
+
 test('im telegram listen --cto asks for confirmation before execution when planner requires it', async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-confirm-'));
   const telegram = await startTelegramMockServer({
