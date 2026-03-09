@@ -67,6 +67,14 @@ console.error(`Unsupported mock codex invocation: ${rawArgs.join(' ')}`);
 process.exit(1);
 
 function buildPlannerPayload(prompt) {
+  if (prompt.includes('思考深度')) {
+    return {
+      mode: 'confirm',
+      summary_zh: '当前还缺少更具体的执行对象。',
+      question_zh: '请直接给本轮要推进的具体目标。',
+      tasks: []
+    };
+  }
   if (prompt.includes('need confirm') || prompt.includes('ask before editing')) {
     return {
       mode: 'confirm',

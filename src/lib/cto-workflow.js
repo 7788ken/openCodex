@@ -26,6 +26,9 @@ const TELEGRAM_GENERIC_ACK_TOKENS = new Set([
   '谢谢'
 ]);
 const TELEGRAM_EXECUTION_HINT_PATTERN = /(继续|推进|安排|检查|修复|处理|分析|实现|开发|发布|上线|review|fix|inspect|check|continue|ship|deploy|implement|build|plan|task)/i;
+const TELEGRAM_ANALYSIS_INTENT_PATTERN = /(检查|审查|review|inspect|audit|分析|评估|evaluate|analyze|看看|诊断|研究|拆解)/i;
+const TELEGRAM_REASONING_TARGET_PATTERN = /(思考|思维|推理|reasoning|深度|质量|判断|决策)/i;
+const TELEGRAM_ARCHITECTURE_TARGET_PATTERN = /(架构|workflow|工作流|主线程|子线程|调度|planner|prompt|session|任务栏|telegram|cto)/i;
 
 export function isLikelyTelegramNonDirectiveMessage(text) {
   const rawText = String(text || '').trim();
@@ -137,9 +140,11 @@ export function buildTelegramCtoMainThreadSystemPrompt({ continuation = false } 
     'You must personally generate and edit every worker prompt. Do not ask workers to invent their own mission.',
     'Each worker prompt must be self-contained, minimal, reversible, and executable by a child agent without extra clarification.',
     'Workers reply in Simplified Chinese. Project artifacts stay in English, and docs remain bilingual under docs/en and docs/zh.',
+    'Infer the CEO intent from context when the request is broad but still actionable; do not ask for clarification if a safe, high-leverage default path is obvious.',
+    'For requests to inspect, review, analyze, audit, prioritize, or improve, start with the most likely safe analysis task instead of bouncing the request back.',
     continuation
       ? 'Do not recreate finished tasks. Only create the next executable tasks needed after the CEO response.'
-      : 'If information is insufficient or the next action is high-risk, set mode to "confirm" and ask one concise Chinese question.'
+      : 'Ask one concise Chinese question only when ambiguity would materially change the execution path or create a meaningful external risk.'
   ].join('\n');
 }
 
@@ -178,9 +183,85 @@ export function buildTelegramCtoPlannerPrompt({ message, workflowState, continua
   ].join('\n');
 }
 
+function buildInferredTelegramCtoPlan({ fallbackMessageText, workflowState }) {
+  const messageText = String(fallbackMessageText || '').trim();
+  if (!messageText || isLikelyTelegramNonDirectiveMessage(messageText)) {
+    return null;
+  }
+
+  if (!TELEGRAM_ANALYSIS_INTENT_PATTERN.test(messageText)) {
+    return null;
+  }
+
+  if (TELEGRAM_REASONING_TARGET_PATTERN.test(messageText)) {
+    return {
+      mode: 'execute',
+      summary_zh: '已将你的问题自动推断为一次 CTO 推理深度与决策策略审查，并先执行安全的分析任务。',
+      question_zh: '',
+      tasks: [
+        {
+          id: 'audit-cto-reasoning',
+          title: 'Audit CTO reasoning depth',
+          worker_prompt: [
+            `Interpret the CEO message as a request to audit the depth and quality of the openCodex CTO reasoning: ${messageText}`,
+            'Inspect at minimum `src/lib/cto-workflow.js`, `src/commands/im.js`, and the related CTO workflow tests.',
+            'Judge whether the current intent inference, confirmation threshold, delegation policy, and task planning depth are strong enough.',
+            'Produce a concise Simplified Chinese report with: 1) strengths, 2) weaknesses, 3) the single highest-leverage safe improvement to make next.',
+            'If one improvement is clearly safe, local, and high leverage, implement it with focused tests before finishing.'
+          ].join('\n'),
+          depends_on: []
+        }
+      ]
+    };
+  }
+
+  if (TELEGRAM_ARCHITECTURE_TARGET_PATTERN.test(messageText)) {
+    return {
+      mode: 'execute',
+      summary_zh: '已根据你的抽象指令自动推断为一次 CTO 工作流与架构检查，并先从安全分析切入。',
+      question_zh: '',
+      tasks: [
+        {
+          id: 'audit-cto-workflow',
+          title: 'Audit CTO workflow architecture',
+          worker_prompt: [
+            `Interpret the CEO message using the current repository context: ${messageText}`,
+            'Inspect the openCodex CTO workflow, orchestration, and implementation surface related to this request.',
+            'Review at minimum `src/lib/cto-workflow.js`, `src/commands/im.js`, and the most relevant related tests.',
+            'Start with analysis. If one safe, highest-leverage improvement is obvious, implement it with focused tests; otherwise stop after the audit with a concrete recommendation.'
+          ].join('\n'),
+          depends_on: []
+        }
+      ]
+    };
+  }
+
+  return {
+    mode: 'execute',
+    summary_zh: '已根据你的抽象指令自动推断出可执行检查任务，并先从安全分析切入。',
+    question_zh: '',
+    tasks: [
+      {
+        id: 'inspect-inferred-intent',
+        title: 'Inspect inferred CEO intent',
+        worker_prompt: [
+          `Recover the most likely actionable CTO intent from the CEO message: ${messageText}`,
+          `Use the current workflow goal as context when helpful: ${truncateInline(workflowState?.goal_text || messageText, 160) || messageText}`,
+          'Start with a safe analysis task, inspect the most relevant repository area, and avoid asking the CEO for more detail unless execution would be materially risky.',
+          'If one safe, high-leverage improvement is obvious, implement it with focused tests before finishing.'
+        ].join('\n'),
+        depends_on: []
+      }
+    ]
+  };
+}
+
 export function normalizeTelegramCtoPlan(rawPlan, fallbackMessageText, workflowState) {
+  const effectiveRawPlan = rawPlan?.mode === 'confirm'
+    ? (buildInferredTelegramCtoPlan({ fallbackMessageText, workflowState }) || rawPlan)
+    : rawPlan;
   const nextTaskCounter = Number.isInteger(workflowState?.task_counter) ? workflowState.task_counter : 0;
-  const rawTasks = Array.isArray(rawPlan?.tasks) ? rawPlan.tasks : [];
+  const rawTasks = Array.isArray(effectiveRawPlan?.tasks) ? effectiveRawPlan.tasks : [];
   const seenIds = new Set((workflowState?.tasks || []).map((task) => task.id));
   const normalizedTasks = [];
   let counter = nextTaskCounter;
@@ -239,9 +320,9 @@ export function normalizeTelegramCtoPlan(rawPlan, fallbackMessageText, workflowS
     task.depends_on = task.depends_on.filter((item) => validIds.has(item));
   }
 
-  const mode = rawPlan?.mode === 'confirm' ? 'confirm' : 'execute';
-  const question = asTrimmedString(rawPlan?.question_zh);
-  const summary = asTrimmedString(rawPlan?.summary_zh)
+  const mode = effectiveRawPlan?.mode === 'confirm' ? 'confirm' : 'execute';
+  const question = asTrimmedString(effectiveRawPlan?.question_zh);
+  const summary = asTrimmedString(effectiveRawPlan?.summary_zh)
     || (mode === 'confirm'
       ? '当前步骤需要你先确认下一步。'
       : `已拆分 ${normalizedTasks.length} 个可执行任务。`);

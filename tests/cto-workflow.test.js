@@ -6,6 +6,7 @@ import {
   buildTelegramCtoPlannerPrompt,
   buildTelegramCtoWorkerExecutionPrompt,
   isLikelyTelegramNonDirectiveMessage,
+  normalizeTelegramCtoPlan,
   shouldPromoteWorkflowGoal
 } from '../src/lib/cto-workflow.js';
 
@@ -14,6 +15,7 @@ test('cto main thread prompt declares central orchestration ownership', () => {
   assert.match(prompt, /dedicated openCodex CTO main thread/i);
   assert.match(prompt, /central orchestrator for many worker agents/i);
   assert.match(prompt, /personally generate and edit every worker prompt/i);
+  assert.match(prompt, /infer the CEO intent from context/i);
   assert.match(prompt, /openclaw/i);
 });
 
@@ -102,4 +104,25 @@ test('cto workflow keeps the original goal when the later Telegram reply is only
   assert.equal(workflowState.goal_text, '修复 Telegram CTO 续跑逻辑');
   assert.equal(workflowState.latest_user_message, '好的，加油');
   assert.equal(workflowState.user_messages.length, 1);
+});
+
+
+test('cto planner auto-infers a safe execute plan from an abstract inspection request', () => {
+  const plan = normalizeTelegramCtoPlan({
+    mode: 'confirm',
+    summary_zh: '当前还缺少更具体的执行对象。',
+    question_zh: '请直接给本轮要推进的具体目标。',
+    tasks: []
+  }, 'CTO 检查你的思考深度是不是最高', {
+    task_counter: 0,
+    tasks: [],
+    goal_text: 'CTO 检查你的思考深度是不是最高'
+  });
+
+  assert.equal(plan.mode, 'execute');
+  assert.match(plan.summary_zh, /自动推断/);
+  assert.equal(plan.tasks.length, 1);
+  assert.equal(plan.tasks[0].id, 'audit-cto-reasoning');
+  assert.match(plan.tasks[0].title, /Audit CTO reasoning depth/);
+  assert.match(plan.tasks[0].worker_prompt, /src\/lib\/cto-workflow\.js/);
 });

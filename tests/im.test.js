@@ -695,6 +695,90 @@ test('im telegram listen --cto can report recent task history without dispatchin
   assert.equal(stderr, '');
 });
 
+test('im telegram listen --cto can infer an actionable audit from an abstract inspection request', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-infer-'));
+  const telegram = await startTelegramMockServer({
+    updates: [
+      {
+        update_id: 402,
+        message: {
+          message_id: 802,
+          date: 1741435501,
+          text: 'CTO 检查你的思考深度是不是最高',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      }
+    ]
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const child = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  const imSessionId = await waitForValue(() => extractSessionId(stdout), 'telegram inferred-audit session id');
+  await waitForCondition(() => telegram.state.reactions.length >= 1, 'inferred-audit acknowledgement');
+  await waitForCondition(() => telegram.state.sentMessages.length >= 2, 'inferred-audit replies');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 802 && /已完成任务拆解/.test(message.text)), 'inferred-audit plan reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 802 && /工作流已完成/.test(message.text)), 'inferred-audit final reply');
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+
+  assert.deepEqual(telegram.state.reactions[0], {
+    chat_id: '123456',
+    message_id: 802,
+    reaction: [{ type: 'emoji', emoji: '👍' }],
+    is_big: false
+  });
+  assert.match(telegram.state.sentMessages[0].text, /Audit CTO reasoning depth/);
+  assert.doesNotMatch(telegram.state.sentMessages[0].text, /需要你确认下一步/);
+  assert.match(telegram.state.sentMessages.at(-1).text, /工作流已完成/);
+
+  const sessionsRoot = path.join(cwd, '.opencodex', 'sessions');
+  const imSession = JSON.parse(await readFile(path.join(sessionsRoot, imSessionId, 'session.json'), 'utf8'));
+  const ctoSessionId = imSession.child_sessions.find((entry) => entry.command === 'cto')?.session_id;
+  assert.ok(ctoSessionId);
+
+  const workflowState = JSON.parse(await readFile(path.join(sessionsRoot, ctoSessionId, 'artifacts', 'cto-workflow.json'), 'utf8'));
+  assert.equal(workflowState.status, 'completed');
+  assert.equal(workflowState.tasks.length, 1);
+  assert.equal(workflowState.tasks[0].id, 'audit-cto-reasoning');
+  assert.equal(workflowState.tasks[0].status, 'completed');
+});
+
 test('im telegram listen --cto asks for confirmation before execution when planner requires it', async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-confirm-'));
   const telegram = await startTelegramMockServer({
