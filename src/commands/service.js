@@ -1,12 +1,25 @@
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { parseOptions } from '../lib/args.js';
 import { ensureDir, pathExists, readJson, readTextIfExists, writeJson } from '../lib/fs.js';
 import { getCodexBin, runCommandCapture } from '../lib/codex.js';
+import { describeOpenCodexLauncher, describeOpenCodexPath, normalizeCliLauncherPath, normalizeNodeLauncherPath } from '../lib/launcher.js';
 import { resolveCodexProfile } from '../lib/profile.js';
-import { DEFAULT_CTO_SOUL_RELATIVE_PATH, buildDefaultCtoSoulDocument, classifyTelegramCtoMessageIntent, loadCtoSoulDocument } from '../lib/cto-workflow.js';
+import {
+  buildDefaultCtoChatSoulDocument,
+  buildDefaultCtoPlannerAgentSoulDocument,
+  buildDefaultCtoReplyAgentSoulDocument,
+  buildDefaultCtoSoulDocument,
+  buildDefaultCtoWorkflowSoulDocument,
+  buildDefaultCtoWorkerAgentSoulDocument,
+  classifyTelegramCtoMessageIntent,
+  loadCtoSoulDocument,
+  loadCtoSubagentSoulDocument,
+  resolveCtoSubagentSoulPath,
+  resolveCtoSoulVariantPath
+} from '../lib/cto-workflow.js';
 import { getSessionDir, listSessions } from '../lib/session-store.js';
 
 const CLI_PATH = fileURLToPath(new URL('../../bin/opencodex.js', import.meta.url));
@@ -15,24 +28,29 @@ const DEFAULT_MENU_BAR_APP_NAME = 'OpenCodex Tray.app';
 const SERVICE_CONFIG_FILE = 'service.json';
 const DEFAULT_POLL_TIMEOUT = 30;
 const DEFAULT_PROFILE = 'full-access';
+const DEFAULT_SERVICE_WORKSPACE_RELATIVE_PATH = path.join('.opencodex', 'workspaces', 'telegram-cto');
+const DEFAULT_SERVICE_CTO_SOUL_FILE = 'cto-soul.md';
 const DEFAULT_SERVICE_SETTINGS = Object.freeze({
   ui_language: 'en',
   badge_mode: 'tasks',
   refresh_interval_seconds: 15,
-  show_workflow_ids: true,
-  show_paths: true
+  show_workflow_ids: false,
+  show_paths: false
 });
 
 const TELEGRAM_INSTALL_OPTION_SPEC = {
   cwd: { type: 'string' },
   'chat-id': { type: 'string' },
   'bot-token': { type: 'string' },
+  'cli-path': { type: 'string' },
+  'cto-soul-path': { type: 'string' },
   'poll-timeout': { type: 'string' },
   profile: { type: 'string' },
   label: { type: 'string' },
   'launch-agent-dir': { type: 'string' },
   'state-dir': { type: 'string' },
   'applications-dir': { type: 'string' },
+  'allow-project-cli': { type: 'boolean' },
   'install-menubar': { type: 'boolean' },
   'open-menubar': { type: 'boolean' },
   'no-load': { type: 'boolean' },
@@ -46,6 +64,28 @@ const TELEGRAM_SERVICE_OPTION_SPEC = {
   'state-dir': { type: 'string' },
   'applications-dir': { type: 'string' },
   'remove-menubar': { type: 'boolean' },
+  json: { type: 'boolean' }
+};
+
+const TELEGRAM_RELINK_OPTION_SPEC = {
+  label: { type: 'string' },
+  profile: { type: 'string' },
+  'launch-agent-dir': { type: 'string' },
+  'state-dir': { type: 'string' },
+  'applications-dir': { type: 'string' },
+  'cli-path': { type: 'string' },
+  'allow-project-cli': { type: 'boolean' },
+  json: { type: 'boolean' }
+};
+
+const TELEGRAM_SET_WORKSPACE_OPTION_SPEC = {
+  cwd: { type: 'string' },
+  label: { type: 'string' },
+  profile: { type: 'string' },
+  'launch-agent-dir': { type: 'string' },
+  'state-dir': { type: 'string' },
+  'applications-dir': { type: 'string' },
+  'cto-soul-path': { type: 'string' },
   json: { type: 'boolean' }
 };
 
@@ -106,12 +146,14 @@ export async function runServiceCommand(args) {
   if (!provider || provider === '--help' || provider === '-h') {
     process.stdout.write(
       'Usage:\n' +
-      '  opencodex service telegram install --cwd <dir> --chat-id <id> [--bot-token <token>] [--poll-timeout <seconds>] [--profile <name>] [--install-menubar] [--open-menubar]\n' +
+      '  opencodex service telegram install [--cwd <dir>] --chat-id <id> [--bot-token <token>] [--cli-path <path>] [--cto-soul-path <path>] [--poll-timeout <seconds>] [--profile <name>] [--allow-project-cli] [--install-menubar] [--open-menubar]\n' +
       '  opencodex service telegram status [--json]\n' +
       '  opencodex service telegram start [--json]\n' +
       '  opencodex service telegram stop [--json]\n' +
       '  opencodex service telegram restart [--json]\n' +
       '  opencodex service telegram set-profile --profile <name> [--json]\n' +
+      '  opencodex service telegram set-workspace --cwd <dir> [--json]\n' +
+      '  opencodex service telegram relink --cli-path <path> [--json]\n' +
       '  opencodex service telegram set-setting --key <name> --value <value> [--json]\n' +
       '  opencodex service telegram send-status [--json]\n' +
       '  opencodex service telegram workflow-history [--limit <n>] [--json]\n' +
@@ -155,6 +197,16 @@ export async function runServiceCommand(args) {
 
   if (subcommand === 'set-profile') {
     await runTelegramServiceSetProfile(rest);
+    return;
+  }
+
+  if (subcommand === 'set-workspace') {
+    await runTelegramServiceSetWorkspace(rest);
+    return;
+  }
+
+  if (subcommand === 'relink') {
+    await runTelegramServiceRelink(rest);
     return;
   }
 
@@ -207,23 +259,27 @@ async function runTelegramServiceInstall(args) {
     throw new Error('`opencodex service telegram install` does not accept positional arguments');
   }
 
-  const cwd = path.resolve(options.cwd || process.cwd());
-  if (!(await pathExists(cwd))) {
-    throw new Error(`Working directory does not exist: ${cwd}`);
-  }
   const chatId = normalizeChatId(options['chat-id']);
   if (!chatId) {
     throw new Error('`opencodex service telegram install` requires `--chat-id <id>`');
   }
 
   const botToken = resolveTelegramBotToken(options['bot-token']);
-  const service = resolveTelegramServiceSettings({ ...options, cwd });
-  const envAssignments = collectServiceEnvironment(botToken, service);
+  const service = resolveTelegramServiceSettings(options);
+  const launcher = resolveServiceLauncher(options, { requireDetachedInstall: true });
+  if (!(await pathExists(launcher.cliPath))) {
+    throw new Error(`Configured openCodex CLI entry does not exist: ${launcher.cliPath}`);
+  }
+  service.nodePath = launcher.nodePath;
+  service.cliPath = launcher.cliPath;
+  service.launcherScope = launcher.launcherScope;
+  service.launcherWarning = launcher.launcherWarning;
 
   await ensureDir(service.stateDir);
   await ensureDir(service.launchAgentDir);
-  await writeFile(service.envPath, buildEnvironmentFile(envAssignments), 'utf8');
-  await chmod(service.envPath, 0o600);
+  await ensureServiceWorkspaceReady(service);
+  await materializeServiceCtoSoul(service);
+  await writeServiceEnvironment(service, botToken);
 
   await writeFile(service.wrapperPath, buildWrapperScript(service), 'utf8');
   await chmod(service.wrapperPath, 0o755);
@@ -258,8 +314,15 @@ async function runTelegramServiceInstall(args) {
     stdout_path: service.stdoutPath,
     stderr_path: service.stderrPath,
     cwd: service.cwd,
+    workspace_scope: service.workspaceScope,
+    workspace_warning: service.workspaceWarning,
     chat_id: service.chatId,
-    profile: service.profile
+    profile: service.profile,
+    node_path: service.nodePath,
+    cli_path: service.cliPath,
+    cto_soul_path: service.ctoSoulPath,
+    launcher_scope: service.launcherScope,
+    launcher_warning: service.launcherWarning
   };
 
   renderServiceOutput(payload, options.json, 'Telegram CTO service installed');
@@ -357,10 +420,14 @@ async function runTelegramServiceSetProfile(args) {
   const existingConfig = await readExistingServiceConfig(service);
   const nextProfile = normalizeProfileName(options.profile, service.cwd);
   const previousProfile = service.profile;
+  const existingEnvironment = await loadServiceEnvironment(service);
+  const botToken = resolveInstalledServiceBotToken(existingEnvironment);
 
   service.profile = nextProfile;
+  await writeServiceEnvironment(service, botToken, existingEnvironment);
   await writeFile(service.wrapperPath, buildWrapperScript(service), 'utf8');
   await chmod(service.wrapperPath, 0o755);
+  await writeFile(service.plistPath, buildLaunchAgentPlist(service), 'utf8');
   await writeJson(service.configPath, buildServiceConfig(service, {
     ...existingConfig,
     installed_at: existingConfig.installed_at || new Date().toISOString(),
@@ -383,6 +450,150 @@ async function runTelegramServiceSetProfile(args) {
   }, options.json, 'Telegram CTO permission mode updated');
 }
 
+async function runTelegramServiceSetWorkspace(args) {
+  const { options, positionals } = parseOptions(args, TELEGRAM_SET_WORKSPACE_OPTION_SPEC);
+  if (positionals.length) {
+    throw new Error('`opencodex service telegram set-workspace` does not accept positional arguments');
+  }
+  if (typeof options.cwd !== 'string' || !options.cwd.trim()) {
+    throw new Error('`opencodex service telegram set-workspace` requires `--cwd <dir>`');
+  }
+
+  const service = await loadInstalledService(options);
+  const existingConfig = await readExistingServiceConfig(service);
+  const previousWorkspace = {
+    cwd: service.cwd,
+    workspaceScope: service.workspaceScope
+  };
+  const nextWorkspace = resolveServiceWorkspaceDirectory({ cwd: options.cwd }, service.homeDir);
+  const currentSoul = await loadCtoSoulDocument(service.cwd, { path: existingConfig.cto_soul_path || service.ctoSoulPath });
+  const workspaceInfo = describeServiceWorkspace(nextWorkspace.cwd);
+
+  service.cwd = nextWorkspace.cwd;
+  service.workspaceScope = workspaceInfo.workspaceScope;
+  service.workspaceWarning = workspaceInfo.workspaceWarning;
+  if (typeof options['cto-soul-path'] === 'string' && options['cto-soul-path'].trim()) {
+    service.ctoSoulPath = resolveServiceCtoSoulPath(options, service.stateDir);
+    service.ctoChatSoulPath = resolveCtoSoulVariantPath(service.ctoSoulPath, 'chat');
+    service.ctoWorkflowSoulPath = resolveCtoSoulVariantPath(service.ctoSoulPath, 'workflow');
+    service.ctoReplyAgentSoulPath = resolveCtoSubagentSoulPath(service.ctoSoulPath, 'reply');
+    service.ctoPlannerAgentSoulPath = resolveCtoSubagentSoulPath(service.ctoSoulPath, 'planner');
+    service.ctoWorkerAgentSoulPath = resolveCtoSubagentSoulPath(service.ctoSoulPath, 'worker');
+  }
+
+  await ensureServiceWorkspaceReady(service, { allowCreateExplicit: true });
+  await materializeServiceCtoSoul(service, { seedSoul: currentSoul });
+  const sessionsMigrated = await migrateServiceWorkspaceSessions(previousWorkspace.cwd, service.cwd);
+  const existingEnvironment = await loadServiceEnvironment(service);
+  const botToken = resolveInstalledServiceBotToken(existingEnvironment);
+  await writeServiceEnvironment(service, botToken, existingEnvironment);
+
+  await writeFile(service.wrapperPath, buildWrapperScript(service), 'utf8');
+  await chmod(service.wrapperPath, 0o755);
+  await writeFile(service.plistPath, buildLaunchAgentPlist(service), 'utf8');
+  await writeJson(service.configPath, buildServiceConfig(service, {
+    ...existingConfig,
+    installed_at: existingConfig.installed_at || new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  }));
+
+  const shouldRefreshMenubar = await pathExists(service.menubarAppPath) || await pathExists(service.menubarSourcePath);
+  if (shouldRefreshMenubar) {
+    await compileMenuBarApp(service);
+  }
+
+  const wasLoaded = (await inspectService({
+    ...service,
+    cwd: previousWorkspace.cwd,
+    workspaceScope: previousWorkspace.workspaceScope
+  })).loaded;
+  let payload = await inspectService(service);
+  if (wasLoaded) {
+    await stopService({
+      ...service,
+      cwd: previousWorkspace.cwd,
+      workspaceScope: previousWorkspace.workspaceScope
+    }, { quietIfStopped: true });
+    payload = await startService(service);
+  }
+
+  renderServiceOutput({
+    ...payload,
+    action: 'set-workspace',
+    previous_cwd: previousWorkspace.cwd,
+    previous_workspace_scope: previousWorkspace.workspaceScope,
+    sessions_migrated: sessionsMigrated
+  }, options.json, 'Telegram CTO workspace updated');
+}
+
+async function runTelegramServiceRelink(args) {
+  const { options, positionals } = parseOptions(args, TELEGRAM_RELINK_OPTION_SPEC);
+  if (positionals.length) {
+    throw new Error('`opencodex service telegram relink` does not accept positional arguments');
+  }
+  if (typeof options['cli-path'] !== 'string' || !options['cli-path'].trim()) {
+    throw new Error('`opencodex service telegram relink` requires `--cli-path <path>`');
+  }
+
+  const service = await loadInstalledService(options);
+  const existingConfig = await readExistingServiceConfig(service);
+  const previousLauncher = {
+    nodePath: service.nodePath,
+    cliPath: service.cliPath,
+    launcherScope: service.launcherScope
+  };
+  const launcher = resolveServiceLauncher(options, { requireDetachedInstall: true });
+  if (!(await pathExists(launcher.cliPath))) {
+    throw new Error(`Configured openCodex CLI entry does not exist: ${launcher.cliPath}`);
+  }
+  const existingEnvironment = await loadServiceEnvironment(service);
+  const botToken = resolveInstalledServiceBotToken(existingEnvironment);
+
+  service.nodePath = launcher.nodePath;
+  service.cliPath = launcher.cliPath;
+  service.launcherScope = launcher.launcherScope;
+  service.launcherWarning = launcher.launcherWarning;
+
+  await materializeServiceCtoSoul(service);
+  await writeServiceEnvironment(service, botToken, existingEnvironment);
+  await writeFile(service.wrapperPath, buildWrapperScript(service), 'utf8');
+  await chmod(service.wrapperPath, 0o755);
+  await writeJson(service.configPath, buildServiceConfig(service, {
+    ...existingConfig,
+    installed_at: existingConfig.installed_at || new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  }));
+
+  const shouldRefreshMenubar = await pathExists(service.menubarAppPath) || await pathExists(service.menubarSourcePath);
+  if (shouldRefreshMenubar) {
+    await compileMenuBarApp(service);
+  }
+
+  const wasLoaded = (await inspectService({
+    ...service,
+    nodePath: previousLauncher.nodePath,
+    cliPath: previousLauncher.cliPath,
+    launcherScope: previousLauncher.launcherScope
+  })).loaded;
+  let payload = await inspectService(service);
+  if (wasLoaded) {
+    await stopService({
+      ...service,
+      nodePath: previousLauncher.nodePath,
+      cliPath: previousLauncher.cliPath,
+      launcherScope: previousLauncher.launcherScope
+    }, { quietIfStopped: true });
+    payload = await startService(service);
+  }
+
+  renderServiceOutput({
+    ...payload,
+    action: 'relink',
+    previous_cli_path: previousLauncher.cliPath,
+    previous_launcher_scope: previousLauncher.launcherScope
+  }, options.json, 'Telegram CTO launcher relinked');
+}
+
 async function runTelegramServiceSendStatus(args) {
   const { options, positionals } = parseOptions(args, TELEGRAM_SERVICE_OPTION_SPEC);
   if (positionals.length) {
@@ -397,8 +608,8 @@ async function runTelegramServiceSendStatus(args) {
     throw new Error('Telegram bot token is missing from the installed service environment file. Reinstall the service or update the token.');
   }
 
-  const result = await runCommandCapture(process.execPath, [
-    CLI_PATH,
+  const result = await runCommandCapture(service.nodePath, [
+    service.cliPath,
     'im', 'telegram', 'send',
     '--cwd', service.cwd,
     '--bot-token', botToken,
@@ -494,9 +705,13 @@ async function runTelegramServiceResetCtoSoul(args) {
   }
 
   const service = await loadInstalledService(options);
-  const soulPath = path.join(service.cwd, DEFAULT_CTO_SOUL_RELATIVE_PATH);
-  await ensureDir(path.dirname(soulPath));
-  await writeFile(soulPath, `${buildDefaultCtoSoulDocument()}\n`, 'utf8');
+  await ensureDir(path.dirname(service.ctoSoulPath));
+  await writeFile(service.ctoSoulPath, `${buildDefaultCtoSoulDocument()}\n`, 'utf8');
+  await writeFile(service.ctoChatSoulPath, `${buildDefaultCtoChatSoulDocument()}\n`, 'utf8');
+  await writeFile(service.ctoWorkflowSoulPath, `${buildDefaultCtoWorkflowSoulDocument()}\n`, 'utf8');
+  await writeFile(service.ctoReplyAgentSoulPath, `${buildDefaultCtoReplyAgentSoulDocument()}\n`, 'utf8');
+  await writeFile(service.ctoPlannerAgentSoulPath, `${buildDefaultCtoPlannerAgentSoulDocument()}\n`, 'utf8');
+  await writeFile(service.ctoWorkerAgentSoulPath, `${buildDefaultCtoWorkerAgentSoulDocument()}\n`, 'utf8');
 
   const payload = await inspectService(service);
   renderServiceOutput({
@@ -539,7 +754,9 @@ async function runTelegramServiceUninstall(args) {
 }
 
 function resolveTelegramServiceSettings(options) {
+  const launcher = resolveServiceLauncher(options);
   const homeDir = path.resolve(options['home-dir'] || os.homedir());
+  const workspace = resolveServiceWorkspaceDirectory(options, homeDir);
   const stateDir = path.resolve(options['state-dir'] || path.join(homeDir, '.opencodex', 'service', 'telegram'));
   const launchAgentDir = path.resolve(options['launch-agent-dir'] || path.join(homeDir, 'Library', 'LaunchAgents'));
   const applicationsDir = path.resolve(options['applications-dir'] || path.join(homeDir, 'Applications'));
@@ -547,11 +764,12 @@ function resolveTelegramServiceSettings(options) {
   const chatId = normalizeChatId(options['chat-id']);
   const pollTimeout = parseNonNegativeInteger(options['poll-timeout'] || DEFAULT_POLL_TIMEOUT, '--poll-timeout');
   const requestedProfile = typeof options.profile === 'string' && options.profile.trim() ? options.profile.trim() : DEFAULT_PROFILE;
-  const profile = normalizeProfileName(requestedProfile, options.cwd || process.cwd());
+  const profile = normalizeProfileName(requestedProfile, workspace.cwd);
+  const workspaceInfo = describeServiceWorkspace(workspace.cwd);
 
   return {
     homeDir,
-    cwd: path.resolve(options.cwd || process.cwd()),
+    cwd: workspace.cwd,
     label,
     chatId,
     pollTimeout,
@@ -567,7 +785,20 @@ function resolveTelegramServiceSettings(options) {
     stdoutPath: path.join(stateDir, 'service.stdout.log'),
     stderrPath: path.join(stateDir, 'service.stderr.log'),
     menubarAppPath: path.join(applicationsDir, DEFAULT_MENU_BAR_APP_NAME),
-    menubarSourcePath: path.join(stateDir, 'OpenCodexTray.applescript')
+    menubarSourcePath: path.join(stateDir, 'OpenCodexTray.applescript'),
+    ctoSoulPath: resolveServiceCtoSoulPath(options, stateDir),
+    ctoChatSoulPath: resolveCtoSoulVariantPath(resolveServiceCtoSoulPath(options, stateDir), 'chat'),
+    ctoWorkflowSoulPath: resolveCtoSoulVariantPath(resolveServiceCtoSoulPath(options, stateDir), 'workflow'),
+    ctoReplyAgentSoulPath: resolveCtoSubagentSoulPath(resolveServiceCtoSoulPath(options, stateDir), 'reply'),
+    ctoPlannerAgentSoulPath: resolveCtoSubagentSoulPath(resolveServiceCtoSoulPath(options, stateDir), 'planner'),
+    ctoWorkerAgentSoulPath: resolveCtoSubagentSoulPath(resolveServiceCtoSoulPath(options, stateDir), 'worker'),
+    workspaceScope: workspaceInfo.workspaceScope,
+    workspaceWarning: workspaceInfo.workspaceWarning,
+    workspaceWasExplicit: workspace.explicit,
+    nodePath: launcher.nodePath,
+    cliPath: launcher.cliPath,
+    launcherScope: launcher.launcherScope,
+    launcherWarning: launcher.launcherWarning
   };
 }
 
@@ -575,9 +806,13 @@ async function loadInstalledService(options) {
   const service = resolveTelegramServiceSettings(options);
   if (await pathExists(service.configPath)) {
     const config = await readJson(service.configPath);
-    return {
+    const cliPath = normalizeCliLauncherPath(config.cli_path || service.cliPath, CLI_PATH);
+    const launcher = describeServiceLauncher(cliPath);
+    const workspacePath = path.resolve(config.cwd || service.cwd);
+    const workspace = describeServiceWorkspace(workspacePath);
+    const installedService = {
       ...service,
-      cwd: config.cwd || service.cwd,
+      cwd: workspacePath,
       label: config.label || service.label,
       chatId: config.chat_id || service.chatId,
       pollTimeout: Number.isInteger(config.poll_timeout) ? config.poll_timeout : service.pollTimeout,
@@ -593,8 +828,22 @@ async function loadInstalledService(options) {
       stdoutPath: config.stdout_path || service.stdoutPath,
       stderrPath: config.stderr_path || service.stderrPath,
       menubarAppPath: config.menubar_app_path || service.menubarAppPath,
-      menubarSourcePath: config.menubar_source_path || service.menubarSourcePath
+      menubarSourcePath: config.menubar_source_path || service.menubarSourcePath,
+      ctoSoulPath: config.cto_soul_path || service.ctoSoulPath,
+      ctoChatSoulPath: config.cto_chat_soul_path || resolveCtoSoulVariantPath(config.cto_soul_path || service.ctoSoulPath, 'chat'),
+      ctoWorkflowSoulPath: config.cto_workflow_soul_path || resolveCtoSoulVariantPath(config.cto_soul_path || service.ctoSoulPath, 'workflow'),
+      ctoReplyAgentSoulPath: config.cto_reply_agent_soul_path || resolveCtoSubagentSoulPath(config.cto_soul_path || service.ctoSoulPath, 'reply'),
+      ctoPlannerAgentSoulPath: config.cto_planner_agent_soul_path || resolveCtoSubagentSoulPath(config.cto_soul_path || service.ctoSoulPath, 'planner'),
+      ctoWorkerAgentSoulPath: config.cto_worker_agent_soul_path || resolveCtoSubagentSoulPath(config.cto_soul_path || service.ctoSoulPath, 'worker'),
+      workspaceScope: workspace.workspaceScope,
+      workspaceWarning: workspace.workspaceWarning,
+      nodePath: normalizeNodeLauncherPath(config.node_path || service.nodePath),
+      cliPath,
+      launcherScope: launcher.launcherScope,
+      launcherWarning: launcher.launcherWarning
     };
+    await backfillInstalledServiceSoulState(installedService, config);
+    return installedService;
   }
 
   if (!(await pathExists(service.plistPath))) {
@@ -602,6 +851,130 @@ async function loadInstalledService(options) {
   }
 
   return service;
+}
+
+async function backfillInstalledServiceSoulState(service, config = {}) {
+  const trackedSoulPaths = {
+    cto_soul_path: service.ctoSoulPath,
+    cto_chat_soul_path: service.ctoChatSoulPath,
+    cto_workflow_soul_path: service.ctoWorkflowSoulPath,
+    cto_reply_agent_soul_path: service.ctoReplyAgentSoulPath,
+    cto_planner_agent_soul_path: service.ctoPlannerAgentSoulPath,
+    cto_worker_agent_soul_path: service.ctoWorkerAgentSoulPath
+  };
+
+  let shouldPersistConfig = false;
+  for (const [key, targetPath] of Object.entries(trackedSoulPaths)) {
+    if (!String(config[key] || '').trim()) {
+      shouldPersistConfig = true;
+    }
+    const text = (await readTextIfExists(targetPath))?.trim() || '';
+    if (!text) {
+      await materializeServiceCtoSoul(service);
+      shouldPersistConfig = true;
+      break;
+    }
+  }
+
+  if (!shouldPersistConfig) {
+    return;
+  }
+
+  await writeJson(service.configPath, buildServiceConfig(service, {
+    ...config,
+    installed_at: config.installed_at || new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  }));
+}
+
+function resolveServiceWorkspaceDirectory(options = {}, homeDir = os.homedir()) {
+  const explicit = typeof options.cwd === 'string' && options.cwd.trim();
+  return {
+    cwd: path.resolve(explicit ? options.cwd.trim() : path.join(homeDir, DEFAULT_SERVICE_WORKSPACE_RELATIVE_PATH)),
+    explicit: Boolean(explicit)
+  };
+}
+
+function resolveServiceCtoSoulPath(options = {}, stateDir = '') {
+  const explicit = typeof options['cto-soul-path'] === 'string' && options['cto-soul-path'].trim()
+    ? options['cto-soul-path'].trim()
+    : path.join(stateDir, DEFAULT_SERVICE_CTO_SOUL_FILE);
+  return path.resolve(explicit);
+}
+
+function describeServiceWorkspace(cwd) {
+  const workspace = describeOpenCodexPath(cwd, process.cwd());
+  return {
+    workspaceScope: workspace.pathScope === 'project_checkout' ? 'project_checkout' : 'workspace',
+    workspaceWarning: workspace.pathScope === 'project_checkout'
+      ? 'The installed service workspace still points at the openCodex development checkout. Use `service telegram set-workspace --cwd <dir>` if you want the installed product fully detached from this repo.'
+      : ''
+  };
+}
+
+async function ensureServiceWorkspaceReady(service, { allowCreateExplicit = false } = {}) {
+  if (service.workspaceWasExplicit) {
+    if (!(await pathExists(service.cwd))) {
+      if (!allowCreateExplicit) {
+        throw new Error(`Working directory does not exist: ${service.cwd}`);
+      }
+      await ensureDir(service.cwd);
+    }
+    return;
+  }
+  await ensureDir(service.cwd);
+}
+
+async function materializeServiceCtoSoul(service, { seedSoul = null } = {}) {
+  const existingText = (await readTextIfExists(service.ctoSoulPath))?.trim() || '';
+  if (!existingText) {
+    const effectiveSoul = seedSoul || await loadCtoSoulDocument(service.cwd, { path: service.ctoSoulPath });
+    if (effectiveSoul?.text && (!effectiveSoul.builtin || path.resolve(effectiveSoul.path) !== path.resolve(service.ctoSoulPath))) {
+      await ensureDir(path.dirname(service.ctoSoulPath));
+      await writeFile(service.ctoSoulPath, `${effectiveSoul.text.trimEnd()}\n`, 'utf8');
+    }
+  }
+
+  await ensureServiceSoulVariantFile(service.ctoSoulPath, buildDefaultCtoSoulDocument());
+  await ensureServiceSoulVariantFile(service.ctoChatSoulPath, buildDefaultCtoChatSoulDocument());
+  await ensureServiceSoulVariantFile(service.ctoWorkflowSoulPath, buildDefaultCtoWorkflowSoulDocument());
+  await ensureServiceSoulVariantFile(service.ctoReplyAgentSoulPath, buildDefaultCtoReplyAgentSoulDocument());
+  await ensureServiceSoulVariantFile(service.ctoPlannerAgentSoulPath, buildDefaultCtoPlannerAgentSoulDocument());
+  await ensureServiceSoulVariantFile(service.ctoWorkerAgentSoulPath, buildDefaultCtoWorkerAgentSoulDocument());
+
+  return {
+    path: service.ctoSoulPath,
+    text: ((await readTextIfExists(service.ctoSoulPath))?.trim() || buildDefaultCtoSoulDocument()),
+    builtin: false
+  };
+}
+
+async function ensureServiceSoulVariantFile(targetPath, defaultText) {
+  const existingText = (await readTextIfExists(targetPath))?.trim() || '';
+  if (existingText) {
+    return false;
+  }
+  await ensureDir(path.dirname(targetPath));
+  await writeFile(targetPath, `${String(defaultText || '').trimEnd()}\n`, 'utf8');
+  return true;
+}
+
+async function migrateServiceWorkspaceSessions(previousCwd, nextCwd) {
+  const previousStoreRoot = path.join(previousCwd, '.opencodex', 'sessions');
+  const nextStoreRoot = path.join(nextCwd, '.opencodex', 'sessions');
+  if (path.resolve(previousStoreRoot) === path.resolve(nextStoreRoot)) {
+    return false;
+  }
+  if (!(await pathExists(previousStoreRoot))) {
+    return false;
+  }
+  if (await pathExists(nextStoreRoot)) {
+    return false;
+  }
+
+  await ensureDir(path.dirname(nextStoreRoot));
+  await cp(previousStoreRoot, nextStoreRoot, { recursive: true });
+  return true;
 }
 
 async function readExistingServiceConfig(service) {
@@ -637,8 +1010,14 @@ function buildServiceConfig(service, overrides = {}) {
     stderr_path: service.stderrPath,
     menubar_app_path: service.menubarAppPath,
     menubar_source_path: service.menubarSourcePath,
-    node_path: process.execPath,
-    cli_path: CLI_PATH,
+    cto_soul_path: service.ctoSoulPath,
+    cto_chat_soul_path: service.ctoChatSoulPath,
+    cto_workflow_soul_path: service.ctoWorkflowSoulPath,
+    cto_reply_agent_soul_path: service.ctoReplyAgentSoulPath,
+    cto_planner_agent_soul_path: service.ctoPlannerAgentSoulPath,
+    cto_worker_agent_soul_path: service.ctoWorkerAgentSoulPath,
+    node_path: service.nodePath,
+    cli_path: service.cliPath,
     codex_bin: getCodexBin()
   };
 }
@@ -760,6 +1139,35 @@ function normalizeProfileName(profileName, cwd) {
   return resolveCodexProfile(profileName, 'run', cwd).name;
 }
 
+function describeServiceLauncher(cliPath) {
+  const normalizedCliPath = normalizeCliLauncherPath(cliPath, CLI_PATH);
+  const launcher = describeOpenCodexLauncher(normalizedCliPath, CLI_PATH);
+  return {
+    launcherScope: launcher.launcherScope,
+    launcherWarning: launcher.launcherScope === 'project_checkout'
+      ? 'The installed service is bound to the current openCodex development checkout. Reinstall it from an installed openCodex CLI, or pass --cli-path to a packaged launcher.'
+      : ''
+  };
+}
+
+function resolveServiceLauncher(options = {}, { requireDetachedInstall = false } = {}) {
+  const cliPath = normalizeCliLauncherPath(options['cli-path'], CLI_PATH);
+  const nodePath = normalizeNodeLauncherPath(process.execPath);
+  const { launcherScope, launcherWarning } = describeServiceLauncher(cliPath);
+  const allowProjectCli = options['allow-project-cli'] || process.env.OPENCODEX_ALLOW_PROJECT_CLI === '1';
+
+  if (requireDetachedInstall && launcherScope === 'project_checkout' && !allowProjectCli) {
+    throw new Error('`opencodex service telegram install` refuses to bind a long-lived service to the current project checkout. Install openCodex separately first, or rerun with `--allow-project-cli` only if you intentionally want this temporary coupling.');
+  }
+
+  return {
+    nodePath,
+    cliPath,
+    launcherScope,
+    launcherWarning
+  };
+}
+
 function formatPermissionMode(profileName) {
   if (profileName === 'full-access') {
     return 'Full Access';
@@ -776,7 +1184,12 @@ function formatPermissionMode(profileName) {
 async function inspectService(service) {
   const installed = await pathExists(service.plistPath);
   const menubarInstalled = await pathExists(service.menubarAppPath);
-  const ctoSoul = await loadCtoSoulDocument(service.cwd);
+  const ctoSoul = await loadCtoSoulDocument(service.cwd, { path: service.ctoSoulPath });
+  const ctoChatSoul = await loadCtoSoulDocument(service.cwd, { path: service.ctoSoulPath, variant: 'chat' });
+  const ctoWorkflowSoul = await loadCtoSoulDocument(service.cwd, { path: service.ctoSoulPath, variant: 'workflow' });
+  const ctoReplyAgentSoul = await loadCtoSubagentSoulDocument(service.cwd, { path: service.ctoSoulPath, kind: 'reply' });
+  const ctoPlannerAgentSoul = await loadCtoSubagentSoulDocument(service.cwd, { path: service.ctoSoulPath, kind: 'planner' });
+  const ctoWorkerAgentSoul = await loadCtoSubagentSoulDocument(service.cwd, { path: service.ctoSoulPath, kind: 'worker' });
   const workflowStats = await collectWorkflowStats(service);
   if (!installed) {
     return {
@@ -793,11 +1206,27 @@ async function inspectService(service) {
       menubar_installed: menubarInstalled,
       menubar_app_path: service.menubarAppPath,
       cwd: service.cwd,
+      workspace_scope: service.workspaceScope,
+      workspace_warning: service.workspaceWarning,
       chat_id: service.chatId,
       profile: service.profile,
       permission_mode: service.profile,
+      node_path: service.nodePath,
+      cli_path: service.cliPath,
+      launcher_scope: service.launcherScope,
+      launcher_warning: service.launcherWarning,
       cto_soul_path: ctoSoul.path,
       cto_soul_source: ctoSoul.builtin ? 'builtin' : 'file',
+      cto_chat_soul_path: ctoChatSoul.path,
+      cto_chat_soul_source: ctoChatSoul.builtin ? 'builtin' : 'file',
+      cto_workflow_soul_path: ctoWorkflowSoul.path,
+      cto_workflow_soul_source: ctoWorkflowSoul.builtin ? 'builtin' : 'file',
+      cto_reply_agent_soul_path: ctoReplyAgentSoul.path,
+      cto_reply_agent_soul_source: ctoReplyAgentSoul.builtin ? 'builtin' : 'file',
+      cto_planner_agent_soul_path: ctoPlannerAgentSoul.path,
+      cto_planner_agent_soul_source: ctoPlannerAgentSoul.builtin ? 'builtin' : 'file',
+      cto_worker_agent_soul_path: ctoWorkerAgentSoul.path,
+      cto_worker_agent_soul_source: ctoWorkerAgentSoul.builtin ? 'builtin' : 'file',
       ...flattenServiceSettings(service.settings),
       ...workflowStats
     };
@@ -824,11 +1253,27 @@ async function inspectService(service) {
     menubar_installed: menubarInstalled,
     menubar_app_path: service.menubarAppPath,
     cwd: service.cwd,
+    workspace_scope: service.workspaceScope,
+    workspace_warning: service.workspaceWarning,
     chat_id: service.chatId,
     profile: service.profile,
     permission_mode: service.profile,
+    node_path: service.nodePath,
+    cli_path: service.cliPath,
+    launcher_scope: service.launcherScope,
+    launcher_warning: service.launcherWarning,
     cto_soul_path: ctoSoul.path,
     cto_soul_source: ctoSoul.builtin ? 'builtin' : 'file',
+    cto_chat_soul_path: ctoChatSoul.path,
+    cto_chat_soul_source: ctoChatSoul.builtin ? 'builtin' : 'file',
+    cto_workflow_soul_path: ctoWorkflowSoul.path,
+    cto_workflow_soul_source: ctoWorkflowSoul.builtin ? 'builtin' : 'file',
+    cto_reply_agent_soul_path: ctoReplyAgentSoul.path,
+    cto_reply_agent_soul_source: ctoReplyAgentSoul.builtin ? 'builtin' : 'file',
+    cto_planner_agent_soul_path: ctoPlannerAgentSoul.path,
+    cto_planner_agent_soul_source: ctoPlannerAgentSoul.builtin ? 'builtin' : 'file',
+    cto_worker_agent_soul_path: ctoWorkerAgentSoul.path,
+    cto_worker_agent_soul_source: ctoWorkerAgentSoul.builtin ? 'builtin' : 'file',
     ...flattenServiceSettings(service.settings),
     launchctl_output: rawOutput.trim(),
     ...workflowStats
@@ -958,12 +1403,19 @@ async function resolveWorkflowStateInfo(cwd, session) {
   const workflowArtifact = Array.isArray(session.artifacts)
     ? session.artifacts.find((item) => item?.type === 'cto_workflow' && typeof item.path === 'string' && item.path)
     : null;
-  const workflowStatePath = workflowArtifact?.path || '';
+  const workflowStateCandidates = [
+    workflowArtifact?.path || '',
+    path.join(getSessionDir(cwd, session.session_id), 'artifacts', 'cto-workflow.json')
+  ];
+  const selectedWorkflowState = await resolvePreferredWorkflowStateFile(cwd, session, workflowStateCandidates);
+  const workflowStatePath = selectedWorkflowState.path || await resolveFirstExistingPath(workflowStateCandidates);
   let workflowState = session.workflow_state && typeof session.workflow_state === 'object'
     ? session.workflow_state
     : null;
 
-  if ((!workflowState || !Array.isArray(workflowState.tasks)) && workflowStatePath && await pathExists(workflowStatePath)) {
+  if ((!workflowState || !Array.isArray(workflowState.tasks)) && selectedWorkflowState.workflowState) {
+    workflowState = selectedWorkflowState.workflowState;
+  } else if ((!workflowState || !Array.isArray(workflowState.tasks)) && workflowStatePath && await pathExists(workflowStatePath)) {
     try {
       workflowState = await readJson(workflowStatePath);
     } catch {
@@ -1221,6 +1673,16 @@ function renderServiceOutput(payload, json, title) {
     return;
   }
 
+  const showWorkflowIds = payload.show_workflow_ids !== false;
+  const showPaths = payload.show_paths !== false;
+  const shouldShowSoulDetails = showPaths || [
+    payload.cto_soul_source,
+    payload.cto_chat_soul_source,
+    payload.cto_workflow_soul_source,
+    payload.cto_reply_agent_soul_source,
+    payload.cto_planner_agent_soul_source,
+    payload.cto_worker_agent_soul_source
+  ].some((value) => value && value !== 'file');
   const lines = [title, ''];
   lines.push(`Installed: ${payload.installed ? 'yes' : 'no'}`);
   lines.push(`Loaded: ${payload.loaded ? 'yes' : 'no'}`);
@@ -1238,16 +1700,64 @@ function renderServiceOutput(payload, json, title) {
     lines.push(`Permission Mode: ${formatPermissionMode(payload.permission_mode || payload.profile)}`);
     lines.push(`Profile: ${payload.profile || payload.permission_mode}`);
   }
+  if (payload.launcher_scope) {
+    lines.push(`Launcher Scope: ${payload.launcher_scope}`);
+  }
+  if (payload.workspace_scope) {
+    lines.push(`Workspace Scope: ${payload.workspace_scope}`);
+  }
+  if (showPaths && payload.cli_path) {
+    lines.push(`CLI Path: ${payload.cli_path}`);
+  }
+  if (showPaths && payload.node_path) {
+    lines.push(`Node Path: ${payload.node_path}`);
+  }
+  if (payload.launcher_warning) {
+    lines.push(`Launcher Warning: ${payload.launcher_warning}`);
+  }
+  if (payload.workspace_warning) {
+    lines.push(`Workspace Warning: ${payload.workspace_warning}`);
+  }
   lines.push(`UI Language: ${payload.ui_language || DEFAULT_SERVICE_SETTINGS.ui_language}`);
   lines.push(`Badge Mode: ${payload.badge_mode || DEFAULT_SERVICE_SETTINGS.badge_mode}`);
   lines.push(`Refresh Interval: ${payload.refresh_interval_seconds || DEFAULT_SERVICE_SETTINGS.refresh_interval_seconds}`);
   lines.push(`Show Workflow IDs: ${payload.show_workflow_ids === false ? 'off' : 'on'}`);
   lines.push(`Show Paths: ${payload.show_paths === false ? 'off' : 'on'}`);
-  if (payload.cto_soul_source) {
+  if (shouldShowSoulDetails && payload.cto_soul_source) {
     lines.push(`CTO Soul Source: ${payload.cto_soul_source}`);
   }
-  if (payload.cto_soul_path) {
+  if (showPaths && payload.cto_soul_path) {
     lines.push(`CTO Soul Path: ${payload.cto_soul_path}`);
+  }
+  if (shouldShowSoulDetails && payload.cto_chat_soul_source) {
+    lines.push(`CTO Chat Soul Source: ${payload.cto_chat_soul_source}`);
+  }
+  if (showPaths && payload.cto_chat_soul_path) {
+    lines.push(`CTO Chat Soul Path: ${payload.cto_chat_soul_path}`);
+  }
+  if (shouldShowSoulDetails && payload.cto_workflow_soul_source) {
+    lines.push(`CTO Workflow Soul Source: ${payload.cto_workflow_soul_source}`);
+  }
+  if (showPaths && payload.cto_workflow_soul_path) {
+    lines.push(`CTO Workflow Soul Path: ${payload.cto_workflow_soul_path}`);
+  }
+  if (shouldShowSoulDetails && payload.cto_reply_agent_soul_source) {
+    lines.push(`CTO Reply Agent Soul Source: ${payload.cto_reply_agent_soul_source}`);
+  }
+  if (showPaths && payload.cto_reply_agent_soul_path) {
+    lines.push(`CTO Reply Agent Soul Path: ${payload.cto_reply_agent_soul_path}`);
+  }
+  if (shouldShowSoulDetails && payload.cto_planner_agent_soul_source) {
+    lines.push(`CTO Planner Agent Soul Source: ${payload.cto_planner_agent_soul_source}`);
+  }
+  if (showPaths && payload.cto_planner_agent_soul_path) {
+    lines.push(`CTO Planner Agent Soul Path: ${payload.cto_planner_agent_soul_path}`);
+  }
+  if (shouldShowSoulDetails && payload.cto_worker_agent_soul_source) {
+    lines.push(`CTO Worker Agent Soul Source: ${payload.cto_worker_agent_soul_source}`);
+  }
+  if (showPaths && payload.cto_worker_agent_soul_path) {
+    lines.push(`CTO Worker Agent Soul Path: ${payload.cto_worker_agent_soul_path}`);
   }
   lines.push(`Running Workflows: ${payload.running_workflow_count ?? 0}`);
   lines.push(`Waiting Workflows: ${payload.waiting_workflow_count ?? 0}`);
@@ -1260,39 +1770,43 @@ function renderServiceOutput(payload, json, title) {
   lines.push(`Tracked Main Threads: ${payload.main_thread_count ?? 0}`);
   lines.push(`Active Child Threads: ${payload.active_child_thread_count ?? payload.running_task_count ?? 0}`);
   lines.push(`Child Sessions: ${payload.child_session_count ?? payload.child_thread_count ?? 0}`);
-  if (payload.latest_workflow_session_id) {
+  if (showWorkflowIds && payload.latest_workflow_session_id) {
     lines.push(`Latest Workflow: ${payload.latest_workflow_session_id}`);
-    lines.push(`Latest Workflow Status: ${payload.latest_workflow_status || 'unknown'}`);
-    if (payload.latest_workflow_goal) {
-      lines.push(`Latest Workflow Goal: ${truncateInline(payload.latest_workflow_goal, 160)}`);
-    }
-    if (payload.latest_workflow_pending_question) {
-      lines.push(`Latest Workflow Pending: ${truncateInline(payload.latest_workflow_pending_question, 160)}`);
-    }
-    if (payload.latest_workflow_updated_at) {
-      lines.push(`Latest Workflow Updated: ${payload.latest_workflow_updated_at}`);
-    }
-    if (payload.latest_workflow_path) {
-      lines.push(`Latest Workflow Path: ${payload.latest_workflow_path}`);
-    }
   }
-  if (payload.latest_listener_session_id) {
+  if (payload.latest_workflow_status) {
+    lines.push(`Latest Workflow Status: ${payload.latest_workflow_status || 'unknown'}`);
+  }
+  if (payload.latest_workflow_goal) {
+    lines.push(`Latest Workflow Goal: ${truncateInline(payload.latest_workflow_goal, 160)}`);
+  }
+  if (payload.latest_workflow_pending_question) {
+    lines.push(`Latest Workflow Pending: ${truncateInline(payload.latest_workflow_pending_question, 160)}`);
+  }
+  if (payload.latest_workflow_updated_at) {
+    lines.push(`Latest Workflow Updated: ${payload.latest_workflow_updated_at}`);
+  }
+  if (showPaths && payload.latest_workflow_path) {
+    lines.push(`Latest Workflow Path: ${payload.latest_workflow_path}`);
+  }
+  if (showWorkflowIds && payload.latest_listener_session_id) {
     lines.push(`Latest Listener Session: ${payload.latest_listener_session_id}`);
   }
   if (Array.isArray(payload.recent_dispatches)) {
     payload.recent_dispatches.slice(0, 5).forEach((dispatch, index) => {
       lines.push(`Dispatch ${index + 1}: ${dispatch.label}`);
-      if (dispatch.path) {
+      if (showPaths && dispatch.path) {
         lines.push(`Dispatch ${index + 1} Path: ${dispatch.path}`);
       }
     });
   }
-  lines.push(`Plist: ${payload.plist_path}`);
-  lines.push(`State Dir: ${payload.state_dir}`);
-  lines.push(`Stdout Log: ${payload.stdout_path}`);
-  lines.push(`Stderr Log: ${payload.stderr_path}`);
+  if (showPaths) {
+    lines.push(`Plist: ${payload.plist_path}`);
+    lines.push(`State Dir: ${payload.state_dir}`);
+    lines.push(`Stdout Log: ${payload.stdout_path}`);
+    lines.push(`Stderr Log: ${payload.stderr_path}`);
+  }
   lines.push(`Menu Bar App: ${payload.menubar_installed ? 'installed' : 'missing'}`);
-  if (payload.menubar_app_path) {
+  if (showPaths && payload.menubar_app_path) {
     lines.push(`Menu Bar Path: ${payload.menubar_app_path}`);
   }
   if (payload.action === 'send-status' && payload.sent) {
@@ -1329,6 +1843,8 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
   const workflowSessionId = typeof workflow?.workflow_session_id === 'string' ? workflow.workflow_session_id : '';
   const workflowSessionPath = workflowSessionId ? path.join(getSessionDir(cwd, workflowSessionId), 'session.json') : '';
   const workflowSession = await loadJsonIfExists(workflowSessionPath);
+  const mainThreadSessionId = typeof workflowSession?.parent_session_id === 'string' ? workflowSession.parent_session_id : '';
+  const mainThreadSessionPath = mainThreadSessionId ? path.join(getSessionDir(cwd, mainThreadSessionId), 'session.json') : '';
   const workflowInfo = workflowSession
     ? await resolveWorkflowStateInfo(cwd, workflowSession)
     : { sessionPath: workflowSessionPath, workflowStatePath: '', workflowState: null };
@@ -1346,12 +1862,12 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
     ? workflowSession.artifacts.find((item) => item?.type === 'last_message' && typeof item.path === 'string' && item.path)?.path || ''
     : '';
   const eventsPath = await resolveFirstExistingPath([
-    eventsArtifactPath,
-    workflowDir ? path.join(workflowDir, 'events.jsonl') : ''
+    workflowDir ? path.join(workflowDir, 'events.jsonl') : '',
+    eventsArtifactPath
   ]);
   const lastMessagePath = await resolveFirstExistingPath([
-    lastMessageArtifactPath,
-    workflowDir ? path.join(workflowDir, 'last-message.txt') : ''
+    workflowDir ? path.join(workflowDir, 'last-message.txt') : '',
+    lastMessageArtifactPath
   ]);
   const lastMessage = (await readTextIfExists(lastMessagePath)) || '';
   const recentActivity = summarizeRecentEvents((await readTextIfExists(eventsPath)) || '');
@@ -1393,6 +1909,8 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
     routing_hint_zh: buildWorkflowRoutingHintZh({ goal, status: normalizedStatus, inferredIntent }),
     pending_question: workflowState?.pending_question_zh || workflow?.pending_question || '',
     updated_at: workflow?.updated_at || workflowState?.updated_at || workflowSession?.updated_at || '',
+    main_thread_session_id: mainThreadSessionId,
+    main_thread_session_path: mainThreadSessionPath,
     child_thread_count: typeof workflow?.child_thread_count === 'number' ? workflow.child_thread_count : normalizeChildSessionRefs(workflowSession?.child_sessions).length,
     task_counts: taskCounts,
     result: typeof summary.result === 'string' ? summary.result : '',
@@ -1404,7 +1922,7 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
     tasks,
     recent_activity: recentActivity,
     last_message: truncateMultiline(lastMessage, 360, 5),
-    record_path: workflow?.path || workflowInfo.workflowStatePath || workflowInfo.sessionPath || '',
+    record_path: workflowInfo.workflowStatePath || workflowInfo.sessionPath || workflow?.path || '',
     session_path: workflowInfo.sessionPath || workflowSessionPath,
     workflow_state_path: workflowInfo.workflowStatePath || '',
     events_path: eventsPath,
@@ -1461,6 +1979,9 @@ function renderWorkflowDetailOutput(payload, json, title) {
   if (payload.updated_at) {
     lines.push(`Updated: ${payload.updated_at}`);
   }
+  if (payload.main_thread_session_id) {
+    lines.push(`Main Thread Session: ${payload.main_thread_session_id}`);
+  }
   lines.push(`Child Threads: ${payload.child_thread_count ?? 0}`);
   const counts = payload.task_counts || {};
   lines.push(`Tasks: total ${counts.total ?? 0} • running ${counts.running ?? 0} • rerouted ${counts.rerouted ?? 0} • queued ${counts.queued ?? 0} • completed ${counts.completed ?? 0} • partial ${counts.partial ?? 0} • failed ${counts.failed ?? 0}`);
@@ -1486,6 +2007,9 @@ function renderWorkflowDetailOutput(payload, json, title) {
   }
   if (payload.session_path) {
     lines.push(`Session Path: ${payload.session_path}`);
+  }
+  if (payload.main_thread_session_path) {
+    lines.push(`Main Thread Path: ${payload.main_thread_session_path}`);
   }
   if (payload.workflow_state_path) {
     lines.push(`Workflow State Path: ${payload.workflow_state_path}`);
@@ -1579,12 +2103,12 @@ async function buildDispatchDetailPayload(cwd, dispatch, index) {
     ? session.artifacts.find((item) => item?.type === 'last_message' && typeof item.path === 'string' && item.path)?.path || ''
     : '';
   const eventsPath = await resolveFirstExistingPath([
-    eventsArtifactPath,
-    sessionDir ? path.join(sessionDir, 'events.jsonl') : ''
+    sessionDir ? path.join(sessionDir, 'events.jsonl') : '',
+    eventsArtifactPath
   ]);
   const lastMessagePath = await resolveFirstExistingPath([
-    lastMessageArtifactPath,
-    sessionDir ? path.join(sessionDir, 'last-message.txt') : ''
+    sessionDir ? path.join(sessionDir, 'last-message.txt') : '',
+    lastMessageArtifactPath
   ]);
   const summary = rerouteRecord?.result_summary && typeof rerouteRecord.result_summary === 'object'
     ? rerouteRecord.result_summary
@@ -1595,10 +2119,10 @@ async function buildDispatchDetailPayload(cwd, dispatch, index) {
   const recentActivity = summarizeRecentEvents((await readTextIfExists(eventsPath)) || '');
   const recordPath = await resolveFirstExistingPath([
     rerouteRecordPath,
-    typeof dispatch?.path === 'string' ? dispatch.path : '',
     sessionPath,
     workflowInfo.workflowStatePath,
-    workflowInfo.sessionPath
+    workflowInfo.sessionPath,
+    typeof dispatch?.path === 'string' ? dispatch.path : ''
   ]);
   const displayStatus = getWorkflowTaskDisplayStatus(workflowTask || dispatch);
 
@@ -1739,6 +2263,63 @@ async function resolveFirstExistingPath(candidates) {
   return candidates.find((candidate) => typeof candidate === 'string' && candidate) || '';
 }
 
+async function resolvePreferredWorkflowStateFile(cwd, session, candidates) {
+  const existingCandidates = [];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || !candidate) {
+      continue;
+    }
+    if (!(await pathExists(candidate))) {
+      continue;
+    }
+    try {
+      existingCandidates.push({
+        path: candidate,
+        workflowState: await readJson(candidate)
+      });
+    } catch {
+      existingCandidates.push({
+        path: candidate,
+        workflowState: null
+      });
+    }
+  }
+
+  if (!existingCandidates.length) {
+    return { path: '', workflowState: null };
+  }
+
+  const normalizedSessionStatus = normalizeWorkflowHistoryStatus(session?.status || '');
+  existingCandidates.sort((left, right) => {
+    const leftStatusMatch = normalizeWorkflowHistoryStatus(left.workflowState?.status || '') === normalizedSessionStatus ? 1 : 0;
+    const rightStatusMatch = normalizeWorkflowHistoryStatus(right.workflowState?.status || '') === normalizedSessionStatus ? 1 : 0;
+    if (leftStatusMatch !== rightStatusMatch) {
+      return rightStatusMatch - leftStatusMatch;
+    }
+
+    const leftUpdatedAt = String(left.workflowState?.updated_at || '');
+    const rightUpdatedAt = String(right.workflowState?.updated_at || '');
+    if (leftUpdatedAt !== rightUpdatedAt) {
+      return rightUpdatedAt.localeCompare(leftUpdatedAt);
+    }
+
+    const leftInsideCwd = isPathInsideBase(cwd, left.path) ? 1 : 0;
+    const rightInsideCwd = isPathInsideBase(cwd, right.path) ? 1 : 0;
+    if (leftInsideCwd !== rightInsideCwd) {
+      return rightInsideCwd - leftInsideCwd;
+    }
+
+    return 0;
+  });
+
+  return existingCandidates[0];
+}
+
+function isPathInsideBase(basePath, targetPath) {
+  const relative = path.relative(path.resolve(basePath), path.resolve(targetPath));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
 function summarizeRecentEvents(rawEvents) {
   const rawLines = String(rawEvents || '')
     .split('\n')
@@ -1836,22 +2417,37 @@ function truncateMultiline(value, maxLength = 360, maxLines = 5) {
   return text;
 }
 
-function collectServiceEnvironment(botToken, service) {
+function collectServiceEnvironment(botToken, service, existingEnvironment = null) {
 
   const environment = new Map();
-  environment.set('PATH', process.env.PATH || '');
+  environment.set('PATH', existingEnvironment?.PATH || process.env.PATH || '');
   environment.set('OPENCODEX_TELEGRAM_BOT_TOKEN', botToken);
   environment.set('OPENCODEX_SERVICE_STATE_DIR', service.stateDir);
+  environment.set('OPENCODEX_TELEGRAM_SERVICE_MODE', '1');
+  environment.set('OPENCODEX_CTO_SOUL_PATH', service.ctoSoulPath);
   environment.set('OPENCODEX_HOST_EXECUTOR_ENABLED', '1');
-  environment.set('NODE_USE_ENV_PROXY', process.env.NODE_USE_ENV_PROXY || '1');
+  environment.set('NODE_USE_ENV_PROXY', existingEnvironment?.NODE_USE_ENV_PROXY || process.env.NODE_USE_ENV_PROXY || '1');
 
   for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'OPENCODEX_CODEX_BIN', 'OPENCODEX_HOST_EXECUTOR_SANDBOX_MODE']) {
+    if (typeof existingEnvironment?.[key] === 'string' && existingEnvironment[key].trim()) {
+      environment.set(key, existingEnvironment[key]);
+      continue;
+    }
     if (typeof process.env[key] === 'string' && process.env[key].trim()) {
       environment.set(key, process.env[key]);
     }
   }
 
   return environment;
+}
+
+async function writeServiceEnvironment(service, botToken, existingEnvironment = null) {
+  await writeFile(
+    service.envPath,
+    buildEnvironmentFile(collectServiceEnvironment(botToken, service, existingEnvironment)),
+    'utf8'
+  );
+  await chmod(service.envPath, 0o600);
 }
 
 function buildEnvironmentFile(environment) {
@@ -1868,7 +2464,7 @@ function buildWrapperScript(service) {
     'set -euo pipefail',
     `source ${shellQuote(service.envPath)}`,
     `cd ${shellQuote(service.cwd)}`,
-    `exec ${shellQuote(process.execPath)} ${shellQuote(CLI_PATH)} im telegram listen --cwd ${shellQuote(service.cwd)} --chat-id ${shellQuote(service.chatId)} --poll-timeout ${shellQuote(String(service.pollTimeout))} --cto --profile ${shellQuote(service.profile)}`
+    `exec ${shellQuote(service.nodePath)} ${shellQuote(service.cliPath)} im telegram listen --cwd ${shellQuote(service.cwd)} --chat-id ${shellQuote(service.chatId)} --poll-timeout ${shellQuote(String(service.pollTimeout))} --cto --profile ${shellQuote(service.profile)}`
   ].join('\n') + '\n';
 }
 
@@ -1933,11 +2529,16 @@ use scripting additions
 
 property statusItem : missing value
 property statusMenu : missing value
-property nodePath : ${appleScriptString(process.execPath)}
-property cliPath : ${appleScriptString(CLI_PATH)}
+property nodePath : ${appleScriptString(service.nodePath)}
+property cliPath : ${appleScriptString(service.cliPath)}
 property stateDir : ${appleScriptString(service.stateDir)}
-property repoPath : ${appleScriptString(service.cwd)}
-property ctoSoulPath : ${appleScriptString(path.join(service.cwd, DEFAULT_CTO_SOUL_RELATIVE_PATH))}
+property workspacePath : ${appleScriptString(service.cwd)}
+property ctoSoulPath : ${appleScriptString(service.ctoSoulPath)}
+property ctoChatSoulPath : ${appleScriptString(service.ctoChatSoulPath)}
+property ctoWorkflowSoulPath : ${appleScriptString(service.ctoWorkflowSoulPath)}
+property ctoReplyAgentSoulPath : ${appleScriptString(service.ctoReplyAgentSoulPath)}
+property ctoPlannerAgentSoulPath : ${appleScriptString(service.ctoPlannerAgentSoulPath)}
+property ctoWorkerAgentSoulPath : ${appleScriptString(service.ctoWorkerAgentSoulPath)}
 property stdoutPath : ${appleScriptString(service.stdoutPath)}
 property appTitle : "openCodex CTO"
 
@@ -2005,10 +2606,15 @@ on rebuildMenu(statusText)
 	my addMenuItem(my localizedText(statusText, "Use Balanced Mode", "切换到 Balanced 模式"), "useBalancedMode:")
 	my addMenuItem(my localizedText(statusText, "Use Full Access Mode", "切换到 Full Access 模式"), "useFullAccessMode:")
 	my addSeparator()
-	my addMenuItem(my localizedText(statusText, "Open Repo", "打开仓库"), "openRepo:")
+	my addMenuItem(my localizedText(statusText, "Open Workspace", "打开工作区"), "openWorkspace:")
 	my addMenuItem(my localizedText(statusText, "Open Logs", "打开日志"), "openLogs:")
 	my addMenuItem(my localizedText(statusText, "Open Latest Workflow", "打开最近工作流"), "openLatestWorkflow:")
 	my addMenuItem(my localizedText(statusText, "Edit CTO Soul", "编辑 CTO 灵魂文档"), "openCtoSoul:")
+	my addMenuItem(my localizedText(statusText, "Edit CTO Chat Soul", "编辑 CTO 聊天灵魂文档"), "openCtoChatSoul:")
+	my addMenuItem(my localizedText(statusText, "Edit CTO Workflow Soul", "编辑 CTO 工作流灵魂文档"), "openCtoWorkflowSoul:")
+	my addMenuItem(my localizedText(statusText, "Edit Reply Agent Soul", "编辑回复子代理灵魂文档"), "openReplyAgentSoul:")
+	my addMenuItem(my localizedText(statusText, "Edit Planner Agent Soul", "编辑规划子代理灵魂文档"), "openPlannerAgentSoul:")
+	my addMenuItem(my localizedText(statusText, "Edit Worker Agent Soul", "编辑执行子代理灵魂文档"), "openWorkerAgentSoul:")
 	my addMenuItem(my localizedText(statusText, "Restore Default CTO Soul", "恢复默认 CTO 灵魂模板"), "resetCtoSoul:")
 	my addMenuItem(my localizedText(statusText, "Send Status Reply", "发送状态回执"), "sendStatusReply:")
 	my addSeparator()
@@ -2140,10 +2746,119 @@ on runStatusCommand(asJson)
 end runStatusCommand
 
 on showStatus_(sender)
-	set responseText to my runStatusCommand(false)
-	display dialog responseText buttons {"OK"} default button "OK" with title appTitle
+	set statusText to my runStatusCommand(false)
+	repeat
+		set actionButtons to {my localizedText(statusText, "Sections", "分段"), my localizedText(statusText, "Close", "关闭")}
+		set overviewText to my statusOverviewText(statusText)
+		try
+			activate
+			set dialogResult to display dialog overviewText buttons actionButtons default button (item 1 of actionButtons) with title appTitle
+		on error number -128
+			exit repeat
+		end try
+		set selectedButton to button returned of dialogResult
+		if selectedButton is my localizedText(statusText, "Sections", "分段") then
+			if my browseStatusSections(statusText) is "close" then exit repeat
+		else
+			exit repeat
+		end if
+	end repeat
 	my refreshStatus()
 end showStatus_
+
+on statusOverviewText(statusText)
+	set summaryLines to {}
+	set end of summaryLines to "openCodex CTO"
+	set end of summaryLines to my localizedText(statusText, "Service", "服务") & ": " & my lineValue(statusText, "State: ", "unknown") & " • " & my detectMode(statusText)
+	set end of summaryLines to my localizedText(statusText, "Workflows", "工作流") & ": running " & my lineValue(statusText, "Running Workflows: ", "0") & " • waiting " & my lineValue(statusText, "Waiting Workflows: ", "0")
+	set end of summaryLines to my localizedText(statusText, "Tasks", "任务") & ": running " & my lineValue(statusText, "Running Tasks: ", "0") & " • rerouted " & my lineValue(statusText, "Rerouted Tasks: ", "0") & " • queued " & my lineValue(statusText, "Queued Tasks: ", "0")
+	set workflowIdsVisible to my settingEnabled(statusText, "Show Workflow IDs: ", false)
+	set latestWorkflowId to my lineValue(statusText, "Latest Workflow: ", "")
+	set latestWorkflowStatus to my lineValue(statusText, "Latest Workflow Status: ", "unknown")
+	set latestWorkflowStatusOnly to my lineValue(statusText, "Latest Workflow Status: ", "")
+	if latestWorkflowId is not "" then
+		if workflowIdsVisible then
+			set end of summaryLines to my localizedText(statusText, "Latest", "最近") & ": " & my truncateText(latestWorkflowId, 28) & " (" & latestWorkflowStatus & ")"
+		else
+			set end of summaryLines to my localizedText(statusText, "Latest", "最近") & ": " & latestWorkflowStatus
+		end if
+	else if latestWorkflowStatusOnly is not "" then
+		set end of summaryLines to my localizedText(statusText, "Latest", "最近") & ": " & latestWorkflowStatusOnly
+	end if
+	set latestGoal to my lineValue(statusText, "Latest Workflow Goal: ", "")
+	if latestGoal is not "" then set end of summaryLines to my localizedText(statusText, "Goal", "目标") & ": " & my truncateText(latestGoal, 72)
+	set latestPending to my lineValue(statusText, "Latest Workflow Pending: ", "")
+	if latestPending is not "" then set end of summaryLines to my localizedText(statusText, "Pending", "待确认") & ": " & my truncateText(latestPending, 72)
+	set end of summaryLines to my localizedText(statusText, "Use Sections for more details.", "更多详情请点“分段”。")
+	return my joinLines(summaryLines)
+end statusOverviewText
+
+on browseStatusSections(statusText)
+	repeat
+		set sectionNames to my statusSectionNames(statusText)
+		set picked to choose from list sectionNames with title appTitle with prompt (my localizedText(statusText, "Select a status section", "选择状态分段")) OK button name (my localizedText(statusText, "View", "查看")) cancel button name (my localizedText(statusText, "Back", "返回"))
+		if picked is false then return "back"
+		set sectionName to item 1 of picked
+		set sectionText to my statusSectionText(statusText, sectionName)
+
+		repeat
+			set sectionButtons to {my localizedText(statusText, "Back", "返回"), my localizedText(statusText, "Close", "关闭")}
+			try
+				activate
+				set dialogResult to display dialog sectionText buttons sectionButtons default button (item 1 of sectionButtons) with title (appTitle & " — " & sectionName)
+			on error number -128
+				return "back"
+			end try
+
+			set selectedButton to button returned of dialogResult
+			if selectedButton is my localizedText(statusText, "Back", "返回") then
+				exit repeat
+			else if selectedButton is my localizedText(statusText, "Close", "关闭") then
+				return "close"
+			end if
+		end repeat
+	end repeat
+end browseStatusSections
+
+on statusSectionNames(statusText)
+	set names to {"Overview", "Latest Workflow", "Settings"}
+	set pathsVisible to my settingEnabled(statusText, "Show Paths: ", false)
+	if pathsVisible then set end of names to "Paths"
+	set dispatchLines to my filterIndexedLines(my collectPrefixedLines(statusText, "Dispatch "))
+	if (count of dispatchLines) > 0 then set end of names to "Recent Dispatches"
+	if pathsVisible and my lineValue(statusText, "CTO Soul Path: ", "") is not "" then set end of names to "Soul Paths"
+	return names
+end statusSectionNames
+
+on statusSectionText(statusText, sectionName)
+	if sectionName is "Overview" then return my statusOverviewText(statusText)
+	if sectionName is "Latest Workflow" then
+		set workflowLines to {}
+		set workflowIdsVisible to my settingEnabled(statusText, "Show Workflow IDs: ", false)
+		if workflowIdsVisible then set end of workflowLines to "Latest Workflow: " & my lineValue(statusText, "Latest Workflow: ", "none")
+		set end of workflowLines to "Latest Workflow Status: " & my lineValue(statusText, "Latest Workflow Status: ", "unknown")
+		set end of workflowLines to "Latest Workflow Goal: " & my lineValue(statusText, "Latest Workflow Goal: ", "")
+		set end of workflowLines to "Latest Workflow Pending: " & my lineValue(statusText, "Latest Workflow Pending: ", "")
+		set end of workflowLines to "Latest Workflow Updated: " & my lineValue(statusText, "Latest Workflow Updated: ", "")
+		if workflowIdsVisible then set end of workflowLines to "Latest Listener Session: " & my lineValue(statusText, "Latest Listener Session: ", "")
+		return my joinLines(workflowLines)
+	end if
+	if sectionName is "Settings" then
+		return my joinLines({"Permission Mode: " & my lineValue(statusText, "Permission Mode: ", "unknown"), "Profile: " & my lineValue(statusText, "Profile: ", "unknown"), "UI Language: " & my lineValue(statusText, "UI Language: ", "en"), "Badge Mode: " & my lineValue(statusText, "Badge Mode: ", "tasks"), "Refresh Interval: " & my lineValue(statusText, "Refresh Interval: ", "15"), "Show Workflow IDs: " & my lineValue(statusText, "Show Workflow IDs: ", "on"), "Show Paths: " & my lineValue(statusText, "Show Paths: ", "on")})
+	end if
+	if sectionName is "Paths" then
+		return my joinLines({"CLI Path: " & my lineValue(statusText, "CLI Path: ", ""), "Node Path: " & my lineValue(statusText, "Node Path: ", ""), "Plist: " & my lineValue(statusText, "Plist: ", ""), "State Dir: " & my lineValue(statusText, "State Dir: ", ""), "Stdout Log: " & my lineValue(statusText, "Stdout Log: ", ""), "Stderr Log: " & my lineValue(statusText, "Stderr Log: ", ""), "Menu Bar Path: " & my lineValue(statusText, "Menu Bar Path: ", "")})
+	end if
+	if sectionName is "Soul Paths" then
+		return my joinLines({"CTO Soul Path: " & my lineValue(statusText, "CTO Soul Path: ", ""), "CTO Chat Soul Path: " & my lineValue(statusText, "CTO Chat Soul Path: ", ""), "CTO Workflow Soul Path: " & my lineValue(statusText, "CTO Workflow Soul Path: ", ""), "CTO Reply Agent Soul Path: " & my lineValue(statusText, "CTO Reply Agent Soul Path: ", ""), "CTO Planner Agent Soul Path: " & my lineValue(statusText, "CTO Planner Agent Soul Path: ", ""), "CTO Worker Agent Soul Path: " & my lineValue(statusText, "CTO Worker Agent Soul Path: ", "")})
+	end if
+	if sectionName is "Recent Dispatches" then
+		set dispatchLines to my filterIndexedLines(my collectPrefixedLines(statusText, "Dispatch "))
+		if (count of dispatchLines) is 0 then return "Recent Dispatches: unavailable"
+		return my joinLines(dispatchLines)
+	end if
+	return my statusOverviewText(statusText)
+end statusSectionText
 
 on openSettings_(sender)
 	set statusText to my runStatusCommand(false)
@@ -2311,9 +3026,9 @@ on runTaskHistoryCommand()
 	return do shell script commandText
 end runTaskHistoryCommand
 
-on openRepo_(sender)
-	do shell script "open " & quoted form of repoPath
-end openRepo_
+on openWorkspace_(sender)
+	do shell script "open " & quoted form of workspacePath
+end openWorkspace_
 
 on openLogs_(sender)
 	do shell script "open -R " & quoted form of stdoutPath
@@ -2337,10 +3052,50 @@ on openCtoSoul_(sender)
 	end try
 end openCtoSoul_
 
+on openCtoChatSoul_(sender)
+	try
+		do shell script "open " & quoted form of ctoChatSoulPath
+	on error errorMessage
+		display notification errorMessage with title appTitle
+	end try
+end openCtoChatSoul_
+
+on openCtoWorkflowSoul_(sender)
+	try
+		do shell script "open " & quoted form of ctoWorkflowSoulPath
+	on error errorMessage
+		display notification errorMessage with title appTitle
+	end try
+end openCtoWorkflowSoul_
+
+on openReplyAgentSoul_(sender)
+	try
+		do shell script "open " & quoted form of ctoReplyAgentSoulPath
+	on error errorMessage
+		display notification errorMessage with title appTitle
+	end try
+end openReplyAgentSoul_
+
+on openPlannerAgentSoul_(sender)
+	try
+		do shell script "open " & quoted form of ctoPlannerAgentSoulPath
+	on error errorMessage
+		display notification errorMessage with title appTitle
+	end try
+end openPlannerAgentSoul_
+
+on openWorkerAgentSoul_(sender)
+	try
+		do shell script "open " & quoted form of ctoWorkerAgentSoulPath
+	on error errorMessage
+		display notification errorMessage with title appTitle
+	end try
+end openWorkerAgentSoul_
+
 on resetCtoSoul_(sender)
 	set statusText to my runStatusCommand(false)
 	try
-		set dialogResult to display dialog (my localizedText(statusText, "Restore the default Codex-CLI-based CTO soul template? This will overwrite the current file.", "恢复基于 Codex CLI 的默认 CTO 灵魂模板？这会覆盖当前文件。")) buttons {(my localizedText(statusText, "Cancel", "取消")), (my localizedText(statusText, "Restore", "恢复"))} default button (my localizedText(statusText, "Restore", "恢复")) with title appTitle
+		set dialogResult to display dialog (my localizedText(statusText, "Restore the default Codex-CLI-based CTO soul templates? This will overwrite the current soul files.", "恢复基于 Codex CLI 的默认 CTO 灵魂模板？这会覆盖当前灵魂文件。")) buttons {(my localizedText(statusText, "Cancel", "取消")), (my localizedText(statusText, "Restore", "恢复"))} default button (my localizedText(statusText, "Restore", "恢复")) with title appTitle
 	on error number -128
 		return
 	end try
@@ -2435,7 +3190,10 @@ on openWorkflowRecord(workflowIndex)
 	set summaryText to my workflowSummaryText(detailText)
 	set statusText to my runStatusCommand(false)
 	set pathsVisible to my settingEnabled(statusText, "Show Paths: ", true)
-	if pathsVisible then
+	set mainThreadPath to my lineValue(detailText, "Main Thread Path: ", "")
+	if mainThreadPath is not "" then
+		set actionButtons to {my localizedText(statusText, "Open Main Thread", "打开主聊天线程"), my localizedText(statusText, "Sections", "分段"), my localizedText(statusText, "Close", "关闭")}
+	else if pathsVisible then
 		set actionButtons to {my localizedText(statusText, "Sections", "分段"), my localizedText(statusText, "Paths", "路径"), my localizedText(statusText, "Close", "关闭")}
 	else
 		set actionButtons to {my localizedText(statusText, "Sections", "分段"), my localizedText(statusText, "Close", "关闭")}
@@ -2450,6 +3208,8 @@ on openWorkflowRecord(workflowIndex)
 		set selectedButton to button returned of dialogResult
 		if selectedButton is my localizedText(statusText, "Close", "关闭") then
 			return
+		else if mainThreadPath is not "" and selectedButton is my localizedText(statusText, "Open Main Thread", "打开主聊天线程") then
+			my openWorkflowMainThread(detailText)
 		else if pathsVisible and selectedButton is my localizedText(statusText, "Paths", "路径") then
 			my browseWorkflowArtifacts(detailText)
 		else if selectedButton is my localizedText(statusText, "Sections", "分段") then
@@ -2616,9 +3376,20 @@ on browseWorkflowSections(detailText)
 	end repeat
 end browseWorkflowSections
 
+on openWorkflowMainThread(detailText)
+	set mainThreadPath to my lineValue(detailText, "Main Thread Path: ", "")
+	if mainThreadPath is "" then
+		display notification (my localizedText(my runStatusCommand(false), "No main thread path is available for this workflow.", "这个工作流没有可打开的主聊天线程。")) with title appTitle
+		return
+	end if
+
+	do shell script "open -R " & quoted form of mainThreadPath
+end openWorkflowMainThread
+
 on browseWorkflowArtifacts(detailText)
 	set recordPath to my lineValue(detailText, "Record Path: ", "")
 	set sessionPath to my lineValue(detailText, "Session Path: ", "")
+	set mainThreadPath to my lineValue(detailText, "Main Thread Path: ", "")
 	set workflowStatePath to my lineValue(detailText, "Workflow State Path: ", "")
 	set eventsPath to my lineValue(detailText, "Events Path: ", "")
 	set messagePath to my lineValue(detailText, "Last Message Path: ", "")
@@ -2626,6 +3397,7 @@ on browseWorkflowArtifacts(detailText)
 	set artifactChoices to {}
 	if recordPath is not "" then set end of artifactChoices to "Record — " & my truncateText(recordPath, 72)
 	if sessionPath is not "" then set end of artifactChoices to "Session — " & my truncateText(sessionPath, 72)
+	if mainThreadPath is not "" then set end of artifactChoices to "Main Thread — " & my truncateText(mainThreadPath, 72)
 	if workflowStatePath is not "" then set end of artifactChoices to "Workflow State — " & my truncateText(workflowStatePath, 72)
 	if eventsPath is not "" then set end of artifactChoices to "Events — " & my truncateText(eventsPath, 72)
 	if messagePath is not "" then set end of artifactChoices to "Last Message — " & my truncateText(messagePath, 72)
@@ -2644,6 +3416,8 @@ on browseWorkflowArtifacts(detailText)
 		do shell script "open -R " & quoted form of recordPath
 	else if selectedArtifact starts with "Session — " then
 		do shell script "open -R " & quoted form of sessionPath
+	else if selectedArtifact starts with "Main Thread — " then
+		do shell script "open -R " & quoted form of mainThreadPath
 	else if selectedArtifact starts with "Workflow State — " then
 		do shell script "open -R " & quoted form of workflowStatePath
 	else if selectedArtifact starts with "Events — " then
@@ -2710,6 +3484,7 @@ end isWorkflowSectionHeader
 on isWorkflowPathLine(lineText)
 	if lineText starts with "Record Path: " then return true
 	if lineText starts with "Session Path: " then return true
+	if lineText starts with "Main Thread Path: " then return true
 	if lineText starts with "Workflow State Path: " then return true
 	if lineText starts with "Events Path: " then return true
 	if lineText starts with "Last Message Path: " then return true
@@ -2888,8 +3663,10 @@ function buildTelegramServiceStatusReply(payload) {
     `线程：主活跃 ${payload.active_main_thread_count ?? payload.running_workflow_count ?? 0} / 子活跃 ${payload.active_child_thread_count ?? countActiveWorkflowTasks(payload) ?? 0} / 子累计 ${payload.child_session_count ?? payload.child_thread_count ?? 0}`
   ];
 
-  if (payload.latest_workflow_session_id) {
+  if (payload.show_workflow_ids !== false && payload.latest_workflow_session_id) {
     lines.push(`最近工作流：${payload.latest_workflow_session_id} (${payload.latest_workflow_status || 'unknown'})`);
+  } else if (payload.latest_workflow_status) {
+    lines.push(`最近工作流状态：${payload.latest_workflow_status}`);
   }
   if (payload.latest_workflow_goal) {
     lines.push(`目标：${truncateInline(payload.latest_workflow_goal, 120)}`);
@@ -2953,6 +3730,16 @@ function resolveTelegramBotToken(flagValue) {
     || '';
   if (!token) {
     throw new Error('Telegram bot token is required. Pass `--bot-token <token>` or set `OPENCODEX_TELEGRAM_BOT_TOKEN`.');
+  }
+  return token;
+}
+
+function resolveInstalledServiceBotToken(existingEnvironment = {}) {
+  const token = String(existingEnvironment.OPENCODEX_TELEGRAM_BOT_TOKEN || '').trim()
+    || (typeof process.env.OPENCODEX_TELEGRAM_BOT_TOKEN === 'string' && process.env.OPENCODEX_TELEGRAM_BOT_TOKEN.trim())
+    || '';
+  if (!token) {
+    throw new Error('Telegram bot token is missing from the installed service environment file. Reinstall the service or set `OPENCODEX_TELEGRAM_BOT_TOKEN` before retrying.');
   }
   return token;
 }

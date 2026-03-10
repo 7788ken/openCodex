@@ -3,10 +3,35 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 
 const cli = path.resolve('bin/opencodex.js');
+
+test('service telegram install refuses to bind a long-lived service to the current project checkout by default', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-install-refuse-'));
+  const cwd = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+
+  await mkdir(cwd, { recursive: true });
+
+  const result = await runCli([
+    'service', 'telegram', 'install',
+    '--cwd', cwd,
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load',
+    '--json'
+  ]);
+
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /refuses to bind a long-lived service to the current project checkout/);
+});
 
 test('service telegram install writes launchd files with full-access as the default permission mode', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-install-'));
@@ -21,6 +46,7 @@ test('service telegram install writes launchd files with full-access as the defa
 
   const result = await runCli([
     'service', 'telegram', 'install',
+    '--allow-project-cli',
     '--cwd', cwd,
     '--chat-id', '1379564094',
     '--bot-token', 'test-token',
@@ -39,6 +65,8 @@ test('service telegram install writes launchd files with full-access as the defa
   assert.equal(payload.installed, true);
   assert.equal(payload.loaded, false);
   assert.equal(payload.profile, 'full-access');
+  assert.equal(payload.launcher_scope, 'project_checkout');
+  assert.match(payload.launcher_warning, /development checkout/);
 
   const config = JSON.parse(await readFile(path.join(stateDir, 'service.json'), 'utf8'));
   const envFile = await readFile(path.join(stateDir, 'telegram.env'), 'utf8');
@@ -48,13 +76,77 @@ test('service telegram install writes launchd files with full-access as the defa
   assert.equal(config.chat_id, '1379564094');
   assert.equal(config.profile, 'full-access');
   assert.equal(config.permission_mode, 'full-access');
+  assert.deepEqual(config.settings, {
+    ui_language: 'en',
+    badge_mode: 'tasks',
+    refresh_interval_seconds: 15,
+    show_workflow_ids: false,
+    show_paths: false
+  });
+  assert.equal(config.cli_path, cli);
+  assert.match(config.cto_soul_path, /state\/cto-soul\.md$/);
+  assert.match(config.cto_chat_soul_path, /state\/cto-chat-soul\.md$/);
+  assert.match(config.cto_workflow_soul_path, /state\/cto-workflow-soul\.md$/);
+  assert.match(config.cto_reply_agent_soul_path, /state\/cto-reply-agent-soul\.md$/);
+  assert.match(config.cto_planner_agent_soul_path, /state\/cto-planner-agent-soul\.md$/);
+  assert.match(config.cto_worker_agent_soul_path, /state\/cto-worker-agent-soul\.md$/);
   assert.match(envFile, /OPENCODEX_TELEGRAM_BOT_TOKEN='test-token'/);
+  assert.match(envFile, /OPENCODEX_TELEGRAM_SERVICE_MODE='1'/);
+  assert.match(envFile, /OPENCODEX_CTO_SOUL_PATH='.*state\/cto-soul\.md'/);
   assert.ok(envFile.includes(`export OPENCODEX_SERVICE_STATE_DIR='${stateDir}'`));
   assert.match(envFile, /OPENCODEX_HOST_EXECUTOR_ENABLED='1'/);
   assert.match(wrapper, /im telegram listen/);
   assert.match(wrapper, /--cto/);
   assert.match(wrapper, /--profile 'full-access'/);
   assert.match(plist, /com\.opencodex\.telegram\.cto/);
+});
+
+test('service telegram install defaults to a user workspace outside the repository when --cwd is omitted', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-install-default-cwd-'));
+  const homeDir = path.join(root, 'home');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+  const launchctlState = path.join(root, 'launchctl-state.json');
+  const launchctl = await writeMockLaunchctl(path.join(root, 'mock-launchctl.js'), launchctlState);
+  const expectedWorkspace = path.join(homeDir, '.opencodex', 'workspaces', 'telegram-cto');
+
+  const result = await runCli([
+    'service', 'telegram', 'install',
+    '--allow-project-cli',
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load',
+    '--json'
+  ], {
+    HOME: homeDir,
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.cwd, expectedWorkspace);
+  assert.equal(payload.workspace_scope, 'workspace');
+  assert.equal(payload.workspace_warning, '');
+
+  const config = JSON.parse(await readFile(path.join(stateDir, 'service.json'), 'utf8'));
+  const envFile = await readFile(path.join(stateDir, 'telegram.env'), 'utf8');
+  const wrapper = await readFile(path.join(stateDir, 'telegram-listener.sh'), 'utf8');
+  const plist = await readFile(path.join(launchAgentDir, 'com.opencodex.telegram.cto.plist'), 'utf8');
+  assert.equal(config.cwd, expectedWorkspace);
+  assert.equal(config.cto_soul_path, path.join(stateDir, 'cto-soul.md'));
+  assert.equal(config.cto_chat_soul_path, path.join(stateDir, 'cto-chat-soul.md'));
+  assert.equal(config.cto_workflow_soul_path, path.join(stateDir, 'cto-workflow-soul.md'));
+  assert.equal(config.cto_reply_agent_soul_path, path.join(stateDir, 'cto-reply-agent-soul.md'));
+  assert.equal(config.cto_planner_agent_soul_path, path.join(stateDir, 'cto-planner-agent-soul.md'));
+  assert.equal(config.cto_worker_agent_soul_path, path.join(stateDir, 'cto-worker-agent-soul.md'));
+  assert.match(envFile, /OPENCODEX_CTO_SOUL_PATH='.*state\/cto-soul\.md'/);
+  assert.match(wrapper, new RegExp(`--cwd '${expectedWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
+  assert.match(plist, new RegExp(`<key>WorkingDirectory</key>\\s*<string>${expectedWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</string>`));
 });
 
 test('service telegram status includes workflow counts and latest workflow details', async () => {
@@ -71,6 +163,7 @@ test('service telegram status includes workflow counts and latest workflow detai
 
   await runCli([
     'service', 'telegram', 'install',
+    '--allow-project-cli',
     '--cwd', cwd,
     '--chat-id', '1379564094',
     '--bot-token', 'test-token',
@@ -114,16 +207,157 @@ test('service telegram status includes workflow counts and latest workflow detai
   assert.equal(payload.ui_language, 'en');
   assert.equal(payload.badge_mode, 'tasks');
   assert.equal(payload.refresh_interval_seconds, 15);
-  assert.equal(payload.show_workflow_ids, true);
-  assert.equal(payload.show_paths, true);
-  assert.equal(payload.cto_soul_source, 'builtin');
-  assert.match(payload.cto_soul_path, /prompts\/cto-soul\.md$/);
+  assert.equal(payload.show_workflow_ids, false);
+  assert.equal(payload.show_paths, false);
+  assert.equal(payload.cto_soul_source, 'file');
+  assert.match(payload.cto_soul_path, /state\/cto-soul\.md$/);
+  assert.equal(payload.cto_chat_soul_source, 'file');
+  assert.match(payload.cto_chat_soul_path, /state\/cto-chat-soul\.md$/);
+  assert.equal(payload.cto_workflow_soul_source, 'file');
+  assert.match(payload.cto_workflow_soul_path, /state\/cto-workflow-soul\.md$/);
+  assert.equal(payload.cto_reply_agent_soul_source, 'file');
+  assert.match(payload.cto_reply_agent_soul_path, /state\/cto-reply-agent-soul\.md$/);
+  assert.equal(payload.cto_planner_agent_soul_source, 'file');
+  assert.match(payload.cto_planner_agent_soul_path, /state\/cto-planner-agent-soul\.md$/);
+  assert.equal(payload.cto_worker_agent_soul_source, 'file');
+  assert.match(payload.cto_worker_agent_soul_path, /state\/cto-worker-agent-soul\.md$/);
   assert.equal(payload.latest_workflow_session_id, 'cto-20260309-100500-waiting');
   assert.equal(payload.latest_workflow_status, 'waiting');
   assert.equal(payload.latest_workflow_goal, 'Deploy change after confirmation');
   assert.equal(payload.latest_workflow_pending_question, '请确认是否继续发布');
   assert.match(payload.latest_workflow_path, /cto-workflow\.json$/);
   assert.equal(payload.latest_listener_session_id, 'im-20260309-100100-listener');
+
+  const humanStatus = await runCli([
+    'service', 'telegram', 'status',
+    '--state-dir', stateDir
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(humanStatus.code, 0);
+  assert.match(humanStatus.stdout, /Show Workflow IDs: off/);
+  assert.match(humanStatus.stdout, /Show Paths: off/);
+  assert.match(humanStatus.stdout, /Latest Workflow Status: waiting/);
+  assert.doesNotMatch(humanStatus.stdout, /Latest Workflow: cto-/);
+  assert.doesNotMatch(humanStatus.stdout, /Latest Listener Session:/);
+  assert.doesNotMatch(humanStatus.stdout, /Latest Workflow Path:/);
+  assert.doesNotMatch(humanStatus.stdout, /CLI Path:/);
+  assert.doesNotMatch(humanStatus.stdout, /CTO Soul Source:/);
+  assert.doesNotMatch(humanStatus.stdout, /CTO Soul Path:/);
+});
+
+test('service telegram status prefers the recorded workflow artifact path over a stale local fallback file', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-status-artifact-path-'));
+  const cwd = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+  const launchctlState = path.join(root, 'launchctl-state.json');
+  const launchctl = await writeMockLaunchctl(path.join(root, 'mock-launchctl.js'), launchctlState);
+
+  await mkdir(cwd, { recursive: true });
+
+  await runCli([
+    'service', 'telegram', 'install',
+    '--allow-project-cli',
+    '--cwd', cwd,
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  await writeSessionFixture(cwd, {
+    session_id: 'cto-20260309-100700-shadowed',
+    command: 'cto',
+    status: 'partial',
+    updated_at: '2026-03-09T10:07:30.000Z',
+    created_at: '2026-03-09T10:07:00.000Z',
+    input: {
+      prompt: 'Shadowed workflow',
+      arguments: {
+        provider: 'telegram'
+      }
+    },
+    summary: {
+      title: 'CTO workflow needs follow-up',
+      result: 'Shadowed workflow should stay partial.',
+      status: 'partial',
+      highlights: [],
+      next_steps: []
+    },
+    workflow_state: {
+      status: 'running',
+      goal_text: 'Shadowed workflow',
+      pending_question_zh: '',
+      updated_at: '2026-03-09T10:07:30.000Z',
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Shadowed task',
+          status: 'running',
+          result: '',
+          next_steps: [],
+          changed_files: [],
+          updated_at: '2026-03-09T10:07:30.000Z'
+        }
+      ]
+    }
+  });
+
+  const externalArtifactsDir = path.join(root, 'migrated-artifacts');
+  const externalWorkflowPath = path.join(externalArtifactsDir, 'shadowed-workflow.json');
+  await mkdir(externalArtifactsDir, { recursive: true });
+  await writeFile(externalWorkflowPath, JSON.stringify({
+    status: 'partial',
+    goal_text: 'Shadowed workflow',
+    pending_question_zh: '',
+    updated_at: '2026-03-09T10:08:00.000Z',
+    tasks: [
+      {
+        id: 'task-1',
+        title: 'Shadowed task',
+        status: 'partial',
+        result: 'Recovered from the recorded artifact path.',
+        next_steps: ['Resume from the recovered artifact path.'],
+        changed_files: [],
+        updated_at: '2026-03-09T10:08:00.000Z'
+      }
+    ]
+  }, null, 2) + '\n', 'utf8');
+
+  const sessionPath = path.join(cwd, '.opencodex', 'sessions', 'cto-20260309-100700-shadowed', 'session.json');
+  const session = JSON.parse(await readFile(sessionPath, 'utf8'));
+  session.artifacts = (session.artifacts || []).map((artifact) => artifact?.type === 'cto_workflow'
+    ? { ...artifact, path: externalWorkflowPath }
+    : artifact);
+  await writeFile(sessionPath, JSON.stringify(session, null, 2) + '\n', 'utf8');
+
+  const status = await runCli([
+    'service', 'telegram', 'status',
+    '--state-dir', stateDir,
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(status.code, 0);
+  const payload = JSON.parse(status.stdout);
+  assert.equal(payload.running_workflow_count, 0);
+  assert.equal(payload.waiting_workflow_count, 0);
+  assert.equal(payload.running_task_count, 0);
+  assert.equal(payload.latest_workflow_session_id, 'cto-20260309-100700-shadowed');
+  assert.equal(payload.latest_workflow_status, 'partial');
+  assert.equal(payload.latest_workflow_path, externalWorkflowPath);
+  assert.equal(payload.latest_workflow_state_path, externalWorkflowPath);
 });
 
 test('service telegram workflow-history returns the full workflow history for UI browsing', async () => {
@@ -140,6 +374,7 @@ test('service telegram workflow-history returns the full workflow history for UI
 
   await runCli([
     'service', 'telegram', 'install',
+    '--allow-project-cli',
     '--cwd', cwd,
     '--chat-id', '1379564094',
     '--bot-token', 'test-token',
@@ -187,6 +422,7 @@ test('service telegram workflow-detail returns workflow execution details for UI
 
   await runCli([
     'service', 'telegram', 'install',
+    '--allow-project-cli',
     '--cwd', cwd,
     '--chat-id', '1379564094',
     '--bot-token', 'test-token',
@@ -218,6 +454,8 @@ test('service telegram workflow-detail returns workflow execution details for UI
   assert.equal(payload.inferred_intent_zh, '执行 / 分析请求');
   assert.match(payload.routing_hint_zh, /执行\/分析型请求/);
   assert.equal(payload.pending_question, '请确认是否继续发布');
+  assert.equal(payload.main_thread_session_id, 'im-20260309-100100-listener');
+  assert.match(payload.main_thread_session_path, /im-20260309-100100-listener\/session\.json$/);
   assert.equal(payload.task_counts.total, 3);
   assert.equal(payload.task_counts.queued, 2);
   assert.equal(payload.task_counts.completed, 1);
@@ -241,6 +479,7 @@ test('service telegram dispatch-detail returns task execution details for UI vie
 
   await runCli([
     'service', 'telegram', 'install',
+    '--allow-project-cli',
     '--cwd', cwd,
     '--chat-id', '1379564094',
     '--bot-token', 'test-token',
@@ -312,6 +551,7 @@ test('service telegram surfaces rerouted host-executor tasks in status, history,
 
   await runCli([
     'service', 'telegram', 'install',
+    '--allow-project-cli',
     '--cwd', cwd,
     '--chat-id', '1379564094',
     '--bot-token', 'test-token',
@@ -391,6 +631,7 @@ test('service telegram task-history returns the full task history for UI browsin
 
   await runCli([
     'service', 'telegram', 'install',
+    '--allow-project-cli',
     '--cwd', cwd,
     '--chat-id', '1379564094',
     '--bot-token', 'test-token',
@@ -450,6 +691,7 @@ test('service telegram set-profile updates the wrapper and restarts a loaded ser
 
   await runCli([
     'service', 'telegram', 'install',
+    '--allow-project-cli',
     '--cwd', cwd,
     '--chat-id', '1379564094',
     '--bot-token', 'test-token',
@@ -533,6 +775,250 @@ test('service telegram set-profile updates the wrapper and restarts a loaded ser
   assert.equal(uninstallPayload.installed, false);
 });
 
+test('service telegram relink updates the installed launcher away from the project checkout', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-relink-'));
+  const cwd = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+  const launchctlState = path.join(root, 'launchctl-state.json');
+  const launchctl = await writeMockLaunchctl(path.join(root, 'mock-launchctl.js'), launchctlState);
+  const detachedCli = await writeDetachedCliFixture(path.join(root, 'detached-cli'));
+
+  await mkdir(cwd, { recursive: true });
+
+  await runCli([
+    'service', 'telegram', 'install',
+    '--allow-project-cli',
+    '--cwd', cwd,
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  const legacyEnvPath = path.join(stateDir, 'telegram.env');
+  const legacyEnv = await readFile(legacyEnvPath, 'utf8');
+  await writeFile(
+    legacyEnvPath,
+    legacyEnv
+      .split('\n')
+      .filter((line) => !line.includes('OPENCODEX_TELEGRAM_SERVICE_MODE'))
+      .join('\n'),
+    'utf8'
+  );
+
+  const relink = await runCli([
+    'service', 'telegram', 'relink',
+    '--state-dir', stateDir,
+    '--cli-path', detachedCli,
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(relink.code, 0);
+  const payload = JSON.parse(relink.stdout);
+  assert.equal(payload.action, 'relink');
+  assert.equal(payload.launcher_scope, 'installed_cli');
+  assert.equal(payload.previous_launcher_scope, 'project_checkout');
+  assert.match(payload.cli_path, /detached-cli\/bin\/opencodex\.js$/);
+
+  const config = JSON.parse(await readFile(path.join(stateDir, 'service.json'), 'utf8'));
+  const envFile = await readFile(path.join(stateDir, 'telegram.env'), 'utf8');
+  const wrapper = await readFile(path.join(stateDir, 'telegram-listener.sh'), 'utf8');
+  assert.equal(config.cli_path, payload.cli_path);
+  assert.match(envFile, /OPENCODEX_TELEGRAM_SERVICE_MODE='1'/);
+  assert.match(wrapper, new RegExp(payload.cli_path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+  const status = await runCli([
+    'service', 'telegram', 'status',
+    '--state-dir', stateDir,
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(status.code, 0);
+  assert.equal(JSON.parse(status.stdout).launcher_scope, 'installed_cli');
+});
+
+test('service telegram relink preserves a detached current symlink path for future upgrades', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-relink-current-'));
+  const cwd = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+  const launchctlState = path.join(root, 'launchctl-state.json');
+  const launchctl = await writeMockLaunchctl(path.join(root, 'mock-launchctl.js'), launchctlState);
+  const detachedInstall = await writeDetachedInstallFixture(path.join(root, 'OpenCodex'));
+
+  await mkdir(cwd, { recursive: true });
+
+  await runCli([
+    'service', 'telegram', 'install',
+    '--allow-project-cli',
+    '--cwd', cwd,
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  const relink = await runCli([
+    'service', 'telegram', 'relink',
+    '--state-dir', stateDir,
+    '--cli-path', detachedInstall.currentCliPath,
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(relink.code, 0);
+  const payload = JSON.parse(relink.stdout);
+  assert.equal(payload.action, 'relink');
+  assert.equal(payload.launcher_scope, 'installed_cli');
+  assert.equal(payload.cli_path, detachedInstall.currentCliPath);
+
+  const config = JSON.parse(await readFile(path.join(stateDir, 'service.json'), 'utf8'));
+  const wrapper = await readFile(path.join(stateDir, 'telegram-listener.sh'), 'utf8');
+  assert.equal(config.cli_path, detachedInstall.currentCliPath);
+  assert.match(wrapper, new RegExp(detachedInstall.currentCliPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.doesNotMatch(wrapper, new RegExp(detachedInstall.runtimeCliPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+  const status = await runCli([
+    'service', 'telegram', 'status',
+    '--state-dir', stateDir,
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(status.code, 0);
+  const statusPayload = JSON.parse(status.stdout);
+  assert.equal(statusPayload.launcher_scope, 'installed_cli');
+  assert.equal(statusPayload.cli_path, detachedInstall.currentCliPath);
+});
+
+test('service telegram set-workspace migrates the service workspace and preserves the active CTO soul text', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-set-workspace-'));
+  const cwd = path.join(root, 'repo');
+  const nextWorkspace = path.join(root, 'workspace');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+  const launchctlState = path.join(root, 'launchctl-state.json');
+  const launchctl = await writeMockLaunchctl(path.join(root, 'mock-launchctl.js'), launchctlState);
+
+  await mkdir(path.join(cwd, 'prompts'), { recursive: true });
+  await writeFile(path.join(cwd, 'prompts', 'cto-soul.md'), '# custom\n\n- keep this text\n', 'utf8');
+  await seedWorkflowSessions(cwd);
+
+  await runCli([
+    'service', 'telegram', 'install',
+    '--allow-project-cli',
+    '--cwd', cwd,
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  const result = await runCli([
+    'service', 'telegram', 'set-workspace',
+    '--state-dir', stateDir,
+    '--cwd', nextWorkspace,
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.action, 'set-workspace');
+  assert.equal(payload.previous_cwd, cwd);
+  assert.equal(payload.previous_workspace_scope, 'workspace');
+  assert.equal(payload.cwd, nextWorkspace);
+  assert.equal(payload.workspace_scope, 'workspace');
+  assert.equal(payload.workspace_warning, '');
+  assert.equal(payload.sessions_migrated, true);
+  assert.match(payload.cto_soul_path, /state\/cto-soul\.md$/);
+
+  const config = JSON.parse(await readFile(path.join(stateDir, 'service.json'), 'utf8'));
+  const envFile = await readFile(path.join(stateDir, 'telegram.env'), 'utf8');
+  const wrapper = await readFile(path.join(stateDir, 'telegram-listener.sh'), 'utf8');
+  const plist = await readFile(path.join(launchAgentDir, 'com.opencodex.telegram.cto.plist'), 'utf8');
+  const soulText = await readFile(path.join(stateDir, 'cto-soul.md'), 'utf8');
+  const chatSoulText = await readFile(path.join(stateDir, 'cto-chat-soul.md'), 'utf8');
+  const workflowSoulText = await readFile(path.join(stateDir, 'cto-workflow-soul.md'), 'utf8');
+  const replyAgentSoulText = await readFile(path.join(stateDir, 'cto-reply-agent-soul.md'), 'utf8');
+  const plannerAgentSoulText = await readFile(path.join(stateDir, 'cto-planner-agent-soul.md'), 'utf8');
+  const workerAgentSoulText = await readFile(path.join(stateDir, 'cto-worker-agent-soul.md'), 'utf8');
+  assert.equal(config.cwd, nextWorkspace);
+  assert.equal(config.cto_soul_path, path.join(stateDir, 'cto-soul.md'));
+  assert.equal(config.cto_chat_soul_path, path.join(stateDir, 'cto-chat-soul.md'));
+  assert.equal(config.cto_workflow_soul_path, path.join(stateDir, 'cto-workflow-soul.md'));
+  assert.equal(config.cto_reply_agent_soul_path, path.join(stateDir, 'cto-reply-agent-soul.md'));
+  assert.equal(config.cto_planner_agent_soul_path, path.join(stateDir, 'cto-planner-agent-soul.md'));
+  assert.equal(config.cto_worker_agent_soul_path, path.join(stateDir, 'cto-worker-agent-soul.md'));
+  assert.match(envFile, /OPENCODEX_CTO_SOUL_PATH='.*state\/cto-soul\.md'/);
+  assert.match(wrapper, new RegExp(`--cwd '${nextWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
+  assert.doesNotMatch(wrapper, new RegExp(`--cwd '${cwd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
+  assert.match(plist, new RegExp(`<key>WorkingDirectory</key>\\s*<string>${nextWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</string>`));
+  assert.doesNotMatch(plist, new RegExp(`<key>WorkingDirectory</key>\\s*<string>${cwd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</string>`));
+  assert.match(soulText, /keep this text/);
+  assert.match(chatSoulText, /default control surface/i);
+  assert.match(workflowSoulText, /workflow orchestration as a branch/i);
+  assert.match(replyAgentSoulText, /direct CEO replies/i);
+  assert.match(plannerAgentSoulText, /drafts workflow plans/i);
+  assert.match(workerAgentSoulText, /execute concrete subtasks/i);
+
+  const status = await runCli([
+    'service', 'telegram', 'status',
+    '--state-dir', stateDir,
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(status.code, 0);
+  const statusPayload = JSON.parse(status.stdout);
+  assert.equal(statusPayload.cwd, nextWorkspace);
+  assert.equal(statusPayload.workspace_scope, 'workspace');
+  assert.equal(statusPayload.cto_soul_path, path.join(stateDir, 'cto-soul.md'));
+  assert.equal(statusPayload.cto_chat_soul_path, path.join(stateDir, 'cto-chat-soul.md'));
+  assert.equal(statusPayload.cto_workflow_soul_path, path.join(stateDir, 'cto-workflow-soul.md'));
+  assert.equal(statusPayload.cto_reply_agent_soul_path, path.join(stateDir, 'cto-reply-agent-soul.md'));
+  assert.equal(statusPayload.cto_planner_agent_soul_path, path.join(stateDir, 'cto-planner-agent-soul.md'));
+  assert.equal(statusPayload.cto_worker_agent_soul_path, path.join(stateDir, 'cto-worker-agent-soul.md'));
+  assert.equal(statusPayload.workflow_history_count, 3);
+  assert.equal(statusPayload.dispatch_history_count, 6);
+  assert.match(statusPayload.latest_listener_session_path, new RegExp(`${nextWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*/\\.opencodex/sessions/`));
+  assert.match(statusPayload.latest_workflow_path, new RegExp(`${nextWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*/\\.opencodex/sessions/`));
+  assert.ok(statusPayload.recent_dispatches.every((item) => typeof item.path === 'string' && item.path.includes(`${nextWorkspace}/.opencodex/sessions/`)));
+});
+
 test('service telegram reset-cto-soul restores the default Codex-CLI-based template', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-reset-cto-soul-'));
   const cwd = path.join(root, 'repo');
@@ -547,6 +1033,7 @@ test('service telegram reset-cto-soul restores the default Codex-CLI-based templ
 
   await runCli([
     'service', 'telegram', 'install',
+    '--allow-project-cli',
     '--cwd', cwd,
     '--chat-id', '1379564094',
     '--bot-token', 'test-token',
@@ -572,12 +1059,94 @@ test('service telegram reset-cto-soul restores the default Codex-CLI-based templ
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.action, 'reset-cto-soul');
   assert.equal(payload.cto_soul_source, 'file');
-  assert.match(payload.cto_soul_path, /prompts\/cto-soul\.md$/);
+  assert.match(payload.cto_soul_path, /state\/cto-soul\.md$/);
+  assert.match(payload.cto_chat_soul_path, /state\/cto-chat-soul\.md$/);
+  assert.match(payload.cto_workflow_soul_path, /state\/cto-workflow-soul\.md$/);
+  assert.match(payload.cto_reply_agent_soul_path, /state\/cto-reply-agent-soul\.md$/);
+  assert.match(payload.cto_planner_agent_soul_path, /state\/cto-planner-agent-soul\.md$/);
+  assert.match(payload.cto_worker_agent_soul_path, /state\/cto-worker-agent-soul\.md$/);
 
-  const soulText = await readFile(path.join(cwd, 'prompts', 'cto-soul.md'), 'utf8');
+  const soulText = await readFile(path.join(stateDir, 'cto-soul.md'), 'utf8');
+  const chatSoulText = await readFile(path.join(stateDir, 'cto-chat-soul.md'), 'utf8');
+  const workflowSoulText = await readFile(path.join(stateDir, 'cto-workflow-soul.md'), 'utf8');
+  const replyAgentSoulText = await readFile(path.join(stateDir, 'cto-reply-agent-soul.md'), 'utf8');
+  const plannerAgentSoulText = await readFile(path.join(stateDir, 'cto-planner-agent-soul.md'), 'utf8');
+  const workerAgentSoulText = await readFile(path.join(stateDir, 'cto-worker-agent-soul.md'), 'utf8');
   assert.match(soulText, /general-purpose Codex CLI personal assistant persona/);
   assert.match(soulText, /CTO-style orchestrator/);
   assert.doesNotMatch(soulText, /old content/);
+  assert.match(chatSoulText, /default control surface/i);
+  assert.match(workflowSoulText, /workflow orchestration as a branch/i);
+  assert.match(replyAgentSoulText, /direct CEO replies/i);
+  assert.match(plannerAgentSoulText, /drafts workflow plans/i);
+  assert.match(workerAgentSoulText, /execute concrete subtasks/i);
+});
+
+test('service telegram status backfills missing subagent soul files for legacy installs', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-legacy-subagent-soul-'));
+  const cwd = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+  const launchctlState = path.join(root, 'launchctl-state.json');
+  const launchctl = await writeMockLaunchctl(path.join(root, 'mock-launchctl.js'), launchctlState);
+
+  await mkdir(cwd, { recursive: true });
+
+  await runCli([
+    'service', 'telegram', 'install',
+    '--allow-project-cli',
+    '--cwd', cwd,
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  const legacyConfigPath = path.join(stateDir, 'service.json');
+  const legacyConfig = JSON.parse(await readFile(legacyConfigPath, 'utf8'));
+  delete legacyConfig.cto_reply_agent_soul_path;
+  delete legacyConfig.cto_planner_agent_soul_path;
+  delete legacyConfig.cto_worker_agent_soul_path;
+  await writeFile(legacyConfigPath, `${JSON.stringify(legacyConfig, null, 2)}\n`, 'utf8');
+  await writeFile(path.join(stateDir, 'cto-reply-agent-soul.md'), '', 'utf8');
+  await writeFile(path.join(stateDir, 'cto-planner-agent-soul.md'), '', 'utf8');
+  await writeFile(path.join(stateDir, 'cto-worker-agent-soul.md'), '', 'utf8');
+
+  const status = await runCli([
+    'service', 'telegram', 'status',
+    '--state-dir', stateDir,
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(status.code, 0);
+  const payload = JSON.parse(status.stdout);
+  assert.equal(payload.cto_reply_agent_soul_source, 'file');
+  assert.equal(payload.cto_planner_agent_soul_source, 'file');
+  assert.equal(payload.cto_worker_agent_soul_source, 'file');
+  assert.equal(payload.cto_reply_agent_soul_path, path.join(stateDir, 'cto-reply-agent-soul.md'));
+  assert.equal(payload.cto_planner_agent_soul_path, path.join(stateDir, 'cto-planner-agent-soul.md'));
+  assert.equal(payload.cto_worker_agent_soul_path, path.join(stateDir, 'cto-worker-agent-soul.md'));
+
+  const healedConfig = JSON.parse(await readFile(legacyConfigPath, 'utf8'));
+  assert.equal(healedConfig.cto_reply_agent_soul_path, path.join(stateDir, 'cto-reply-agent-soul.md'));
+  assert.equal(healedConfig.cto_planner_agent_soul_path, path.join(stateDir, 'cto-planner-agent-soul.md'));
+  assert.equal(healedConfig.cto_worker_agent_soul_path, path.join(stateDir, 'cto-worker-agent-soul.md'));
+
+  const replyAgentSoulText = await readFile(path.join(stateDir, 'cto-reply-agent-soul.md'), 'utf8');
+  const plannerAgentSoulText = await readFile(path.join(stateDir, 'cto-planner-agent-soul.md'), 'utf8');
+  const workerAgentSoulText = await readFile(path.join(stateDir, 'cto-worker-agent-soul.md'), 'utf8');
+  assert.match(replyAgentSoulText, /direct CEO replies/i);
+  assert.match(plannerAgentSoulText, /drafts workflow plans/i);
+  assert.match(workerAgentSoulText, /execute concrete subtasks/i);
 });
 
 test('service telegram set-setting persists tray settings and exposes them in status', async () => {
@@ -594,6 +1163,7 @@ test('service telegram set-setting persists tray settings and exposes them in st
 
   await runCli([
     'service', 'telegram', 'install',
+    '--allow-project-cli',
     '--cwd', cwd,
     '--chat-id', '1379564094',
     '--bot-token', 'test-token',
@@ -703,6 +1273,7 @@ test('service telegram send-status sends the current workflow snapshot back to T
 
   await runCli([
     'service', 'telegram', 'install',
+    '--allow-project-cli',
     '--cwd', cwd,
     '--chat-id', '1379564094',
     '--bot-token', 'test-token',
@@ -734,7 +1305,9 @@ test('service telegram send-status sends the current workflow snapshot back to T
   assert.match(telegram.state.sentMessages[0].text, /工作流：running 1 \/ waiting 1/);
   assert.match(telegram.state.sentMessages[0].text, /任务：running 1 \/ rerouted 0 \/ queued 2/);
   assert.match(telegram.state.sentMessages[0].text, /线程：主活跃 1 \/ 子活跃 1 \/ 子累计 5/);
+  assert.match(telegram.state.sentMessages[0].text, /最近工作流状态：waiting/);
   assert.match(telegram.state.sentMessages[0].text, /Deploy change after confirmation/);
+  assert.doesNotMatch(telegram.state.sentMessages[0].text, /cto-20260309-100500-waiting/);
 
   await telegram.close();
 });
@@ -753,6 +1326,7 @@ test('service telegram install can compile the menu bar app and expose workflow 
 
   const result = await runCli([
     'service', 'telegram', 'install',
+    '--allow-project-cli',
     '--cwd', cwd,
     '--chat-id', '1379564094',
     '--bot-token', 'test-token',
@@ -779,15 +1353,37 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(infoPlist, /<true\/>/);
   assert.match(scriptSource, /Use Safe Mode/);
   assert.match(scriptSource, /Use Full Access Mode/);
+  assert.match(scriptSource, /Open Workspace/);
   assert.match(scriptSource, /Open Latest Workflow/);
   assert.match(scriptSource, /Edit CTO Soul/);
+  assert.match(scriptSource, /Edit CTO Chat Soul/);
+  assert.match(scriptSource, /Edit CTO Workflow Soul/);
+  assert.match(scriptSource, /Edit Reply Agent Soul/);
+  assert.match(scriptSource, /Edit Planner Agent Soul/);
+  assert.match(scriptSource, /Edit Worker Agent Soul/);
   assert.match(scriptSource, /Restore Default CTO Soul/);
+  assert.match(scriptSource, /workspacePath/);
   assert.match(scriptSource, /openCtoSoul_/);
+  assert.match(scriptSource, /openCtoChatSoul_/);
+  assert.match(scriptSource, /openCtoWorkflowSoul_/);
+  assert.match(scriptSource, /openReplyAgentSoul_/);
+  assert.match(scriptSource, /openPlannerAgentSoul_/);
+  assert.match(scriptSource, /openWorkerAgentSoul_/);
   assert.match(scriptSource, /resetCtoSoul_/);
   assert.match(scriptSource, /ctoSoulPath/);
+  assert.match(scriptSource, /ctoChatSoulPath/);
+  assert.match(scriptSource, /ctoWorkflowSoulPath/);
+  assert.match(scriptSource, /ctoReplyAgentSoulPath/);
+  assert.match(scriptSource, /ctoPlannerAgentSoulPath/);
+  assert.match(scriptSource, /ctoWorkerAgentSoulPath/);
   assert.match(scriptSource, /open " & quoted form of ctoSoulPath/);
+  assert.match(scriptSource, /open " & quoted form of ctoChatSoulPath/);
+  assert.match(scriptSource, /open " & quoted form of ctoWorkflowSoulPath/);
+  assert.match(scriptSource, /open " & quoted form of ctoReplyAgentSoulPath/);
+  assert.match(scriptSource, /open " & quoted form of ctoPlannerAgentSoulPath/);
+  assert.match(scriptSource, /open " & quoted form of ctoWorkerAgentSoulPath/);
   assert.match(scriptSource, /runServiceCommand\("reset-cto-soul"\)/);
-  assert.match(scriptSource, /Restore the default Codex-CLI-based CTO soul template/);
+  assert.match(scriptSource, /Restore the default Codex-CLI-based CTO soul templates/);
   assert.match(scriptSource, /Send Status Reply/);
   assert.match(scriptSource, /Running Workflows:/);
   assert.match(scriptSource, /Running Tasks:/);
@@ -802,8 +1398,19 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /Browse Tasks/);
   assert.match(scriptSource, /browseWorkflowHistory_/);
   assert.match(scriptSource, /openWorkflowRecord/);
+  assert.match(scriptSource, /Open Main Thread/);
+  assert.match(scriptSource, /打开主聊天线程/);
+  assert.match(scriptSource, /openWorkflowMainThread/);
   assert.match(scriptSource, /Settings…/);
   assert.match(scriptSource, /openSettings_/);
+  assert.match(scriptSource, /statusOverviewText/);
+  assert.match(scriptSource, /browseStatusSections/);
+  assert.match(scriptSource, /statusSectionNames/);
+  assert.match(scriptSource, /Select a status section/);
+  assert.match(scriptSource, /Use Sections for more details/);
+  assert.match(scriptSource, /set summaryLines to \{\}/);
+  assert.doesNotMatch(scriptSource, /set lines to \{\}/);
+  assert.doesNotMatch(scriptSource, /display dialog responseText buttons \{"OK"\}/);
   assert.match(scriptSource, /choose from list historyItems/);
   assert.match(scriptSource, /UI Language:/);
   assert.match(scriptSource, /Badge Mode:/);
@@ -841,6 +1448,41 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /service telegram send-status/);
   assert.match(scriptSource, /OC⚡/);
 });
+
+async function writeDetachedCliFixture(rootDir) {
+  const packageDir = path.resolve(rootDir);
+  const binDir = path.join(packageDir, 'bin');
+  const cliPath = path.join(binDir, 'opencodex.js');
+  await mkdir(binDir, { recursive: true });
+  await writeFile(path.join(packageDir, 'package.json'), JSON.stringify({
+    name: 'opencodex',
+    version: '0.1.0'
+  }, null, 2), 'utf8');
+  await writeFile(cliPath, '#!/usr/bin/env node\nconsole.log("detached opencodex");\n', 'utf8');
+  return cliPath;
+}
+
+async function writeDetachedInstallFixture(rootDir) {
+  const installRoot = path.resolve(rootDir);
+  const runtimeDir = path.join(installRoot, 'installs', '0.1.0-test');
+  const runtimeBinDir = path.join(runtimeDir, 'bin');
+  const runtimeCliPath = path.join(runtimeBinDir, 'opencodex.js');
+  const currentPath = path.join(installRoot, 'current');
+  const currentCliPath = path.join(currentPath, 'bin', 'opencodex.js');
+
+  await mkdir(runtimeBinDir, { recursive: true });
+  await writeFile(path.join(runtimeDir, 'package.json'), JSON.stringify({
+    name: 'opencodex',
+    version: '0.1.0'
+  }, null, 2), 'utf8');
+  await writeFile(runtimeCliPath, '#!/usr/bin/env node\nconsole.log("detached opencodex");\n', 'utf8');
+  await symlink(path.relative(installRoot, runtimeDir), currentPath);
+
+  return {
+    runtimeCliPath,
+    currentCliPath
+  };
+}
 
 function runCli(args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
@@ -1002,12 +1644,18 @@ async function seedWorkflowSessions(cwd) {
       status: 'running',
       highlights: [],
       next_steps: []
-    }
+    },
+    child_sessions: [
+      { session_id: 'cto-20260309-100300-running' },
+      { session_id: 'cto-20260309-100500-waiting' },
+      { session_id: 'cto-20260309-095900-completed' }
+    ]
   });
 
   await writeSessionFixture(cwd, {
     session_id: 'cto-20260309-100300-running',
     command: 'cto',
+    parent_session_id: 'im-20260309-100100-listener',
     status: 'running',
     updated_at: '2026-03-09T10:03:30.000Z',
     created_at: '2026-03-09T10:03:00.000Z',
@@ -1054,6 +1702,7 @@ async function seedWorkflowSessions(cwd) {
   await writeSessionFixture(cwd, {
     session_id: 'cto-20260309-100500-waiting',
     command: 'cto',
+    parent_session_id: 'im-20260309-100100-listener',
     status: 'partial',
     updated_at: '2026-03-09T10:05:30.000Z',
     created_at: '2026-03-09T10:05:00.000Z',
@@ -1107,6 +1756,7 @@ async function seedWorkflowSessions(cwd) {
   await writeSessionFixture(cwd, {
     session_id: 'cto-20260309-095900-completed',
     command: 'cto',
+    parent_session_id: 'im-20260309-100100-listener',
     status: 'completed',
     updated_at: '2026-03-09T09:59:50.000Z',
     created_at: '2026-03-09T09:59:00.000Z',
@@ -1347,6 +1997,7 @@ async function writeSessionFixture(cwd, fixture) {
 
   const session = {
     session_id: fixture.session_id,
+    parent_session_id: fixture.parent_session_id || undefined,
     command: fixture.command,
     status: fixture.status,
     created_at: fixture.created_at,
