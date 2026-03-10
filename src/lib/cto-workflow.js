@@ -40,6 +40,8 @@ const TELEGRAM_CTO_STATUS_HINT_PATTERN = /(状态|进度|历史|最近任务|任
 const TELEGRAM_CTO_EXPLORATION_PATTERN = /(探讨|讨论|聊聊(?:架构|方案|思路|方向|路线)?|研究一下|研究下|一起想想|脑暴|brainstorm|trade[- ]?off|方案对比|路线对比|可行性|怎么设计|怎么看|为什么|why)/i;
 const TELEGRAM_FORCE_EXECUTION_PATTERN = /(直接推进|直接开始|马上开始|立刻处理|现在就做|安排员工|进入编排|开始执行|马上执行|立即执行|go\s*ahead|execute\s*now|start\s*working|ship\s*it)/i;
 const TELEGRAM_WORK_OBJECT_PATTERN = /(repo|code|bug|issue|test|ui|workflow|telegram|wechat|tray|session|service|prompt|agent|review|fix|build|docs?|readme|todo|roadmap|代码|仓库|任务|工作流|文档|架构|测试|修复|实现|功能|界面|命令|续跑|手机|微信)/i;
+const TELEGRAM_CTO_EXPLICIT_CONTINUE_PATTERN = /^(?:(?:好|好的|行|可以|确认|收到|明白)[，,\s]*)?(?:继续|继续吧|继续推进|继续处理|继续执行|继续做|开始吧|开始执行|开始处理|按你说的做|照这个做|就这么做|就这样做|重建当前工作流|重新派发(?:该)?任务|继续调整当前工作流)(?:[。.!！?？~～\s]*)$/i;
+const TELEGRAM_CTO_DECISION_REPLY_PATTERN = /^(?:是|否|可以|不可以|要|不要|继续|重建|重派|重新派发|先别|先不要|改吧|就这样)(?:[。.!！?？~～\s]|$)/i;
 const TELEGRAM_SHORT_CASUAL_TEXTS = new Set([
   '嘿', '嗨', '哈喽', '哈啰', 'hello', 'hi', 'hey', 'yo',
   '在吗', '你在吗', '在不', '在嘛', '你好', '辛苦了', '早', '早安', '午安', '晚安'
@@ -81,6 +83,33 @@ export function shouldPromoteWorkflowGoal(workflowState, message) {
 
   return isLikelyTelegramNonDirectiveMessage(currentGoal)
     && !isLikelyTelegramNonDirectiveMessage(nextText);
+}
+
+export function shouldResumeTelegramPendingWorkflow({ workflowState, messageText }) {
+  const rawText = String(messageText || '').trim();
+  if (!workflowState || workflowState.status !== 'waiting_for_user' || !rawText) {
+    return false;
+  }
+
+  if (isLikelyTelegramNonDirectiveMessage(rawText)) {
+    return false;
+  }
+
+  if (TELEGRAM_CTO_EXPLICIT_CONTINUE_PATTERN.test(rawText)) {
+    return true;
+  }
+
+  const pendingQuestion = asTrimmedString(workflowState.pending_question_zh);
+  if (!pendingQuestion) {
+    return false;
+  }
+
+  if (TELEGRAM_CTO_DECISION_REPLY_PATTERN.test(rawText)) {
+    return true;
+  }
+
+  return extractTelegramQuestionHints(pendingQuestion)
+    .some((hint) => rawText.toLowerCase().includes(hint));
 }
 
 export function createTelegramWorkflowState({ workflowSessionId, relatedWorkflowId = '', message }) {
@@ -1437,4 +1466,12 @@ function asStringList(value) {
 
 function dedupeList(values) {
   return [...new Set((values || []).map((item) => String(item || '').trim()).filter(Boolean))];
+}
+
+function extractTelegramQuestionHints(text) {
+  return dedupeList([
+    ...(String(text || '').toLowerCase().match(/[a-z][a-z0-9._/-]{2,}/g) || []),
+    ...(String(text || '').match(/(?:重建当前工作流|重新派发该任务|继续调整当前工作流|可写环境|修改|service\.js|im\.js)/g) || [])
+      .map((item) => item.toLowerCase())
+  ]);
 }

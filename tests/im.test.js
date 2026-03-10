@@ -507,6 +507,254 @@ test('im telegram listen --cto handles casual chat inline without resuming the c
   assert.equal(stderr, '');
 });
 
+test('im telegram listen --cto preserves the pending question when the CEO explicitly continues a waiting workflow', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-explicit-continue-'));
+  const workflowId = 'cto-20260308-232854-zetg6z';
+  const workflowDir = path.join(cwd, '.opencodex', 'sessions', workflowId);
+  const workflowStatePath = path.join(workflowDir, 'artifacts', 'cto-workflow.json');
+  const workflowState = {
+    workflow_session_id: workflowId,
+    provider: 'telegram',
+    chat_id: '123456',
+    source_update_id: 320,
+    source_message_id: 720,
+    sender_display: 'Li Jianqian',
+    goal_text: 'review the repo',
+    latest_user_message: 'review the repo',
+    created_at: '2026-03-08T15:28:54.000Z',
+    updated_at: '2026-03-08T15:29:10.000Z',
+    status: 'waiting_for_user',
+    plan_mode: 'confirm',
+    plan_summary_zh: '当前需要你先确认关键决策。',
+    pending_question_zh: '请确认是否继续修改本地仓库。',
+    task_counter: 1,
+    tasks: [
+      {
+        id: 'inspect-repo',
+        title: 'Inspect repository',
+        worker_prompt: 'MOCK_WORKER inspect-repo',
+        depends_on: [],
+        status: 'partial',
+        session_id: 'run-1',
+        summary_status: 'partial',
+        result: 'Need confirmation before editing.',
+        next_steps: ['请确认是否继续修改本地仓库。'],
+        changed_files: [],
+        updated_at: '2026-03-08T15:29:10.000Z'
+      }
+    ],
+    user_messages: [
+      {
+        update_id: 320,
+        message_id: 720,
+        text: 'review the repo',
+        created_at: '2026-03-08T15:28:54.000Z'
+      }
+    ]
+  };
+  const workflowSession = {
+    session_id: workflowId,
+    command: 'cto',
+    status: 'partial',
+    created_at: '2026-03-08T15:28:54.000Z',
+    updated_at: '2026-03-08T15:29:10.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'telegram-cto',
+    input: {
+      prompt: 'review the repo',
+      arguments: {
+        provider: 'telegram',
+        profile: 'full-access',
+        update_id: 320,
+        chat_id: '123456',
+        sender: 'Li Jianqian'
+      }
+    },
+    summary: {
+      title: 'CTO workflow needs follow-up',
+      result: '请确认是否继续修改本地仓库。',
+      status: 'partial',
+      highlights: [],
+      next_steps: ['请确认是否继续修改本地仓库。']
+    },
+    artifacts: [
+      {
+        type: 'cto_workflow',
+        path: workflowStatePath,
+        description: 'Telegram CTO workflow state and task graph.'
+      }
+    ]
+  };
+
+  await mkdir(path.join(workflowDir, 'artifacts'), { recursive: true });
+  await writeFile(path.join(workflowDir, 'session.json'), `${JSON.stringify(workflowSession, null, 2)}\n`, 'utf8');
+  await writeFile(workflowStatePath, `${JSON.stringify(workflowState, null, 2)}\n`, 'utf8');
+
+  const telegram = await startTelegramMockServer({
+    updates: [
+      {
+        update_id: 322,
+        message: {
+          message_id: 722,
+          date: 1741435451,
+          text: '继续。',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      }
+    ]
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const child = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 722 && /已根据你的回复恢复执行/.test(message.text)), 'explicit continue plan reply');
+  await waitForCondition(() => stdout.includes(`Continuing CTO workflow ${workflowId} from update 322`), 'continue workflow log');
+
+  const continueReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 722 && /已根据你的回复恢复执行/.test(message.text));
+  assert.ok(continueReply);
+  assert.equal(telegram.state.reactions.length, 1);
+  assert.doesNotMatch(stdout, /started workflow .* for update 322/);
+
+  const resumedWorkflowState = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'sessions', workflowId, 'artifacts', 'cto-workflow.json'), 'utf8'));
+  assert.equal(resumedWorkflowState.latest_user_message, '继续。');
+  assert.ok(resumedWorkflowState.tasks.some((task) => task.id === 'resume-work'));
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+});
+
+test('im telegram listen --cto starts a new workflow for a new directive instead of resuming a waiting workflow', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-new-goal-'));
+  const telegram = await startTelegramMockServer({
+    updates: [
+      {
+        update_id: 321,
+        message: {
+          message_id: 721,
+          date: 1741435450,
+          text: 'need confirm',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      }
+    ]
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const child = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 721 && /需要你确认下一步/.test(message.text)), 'confirmation reply');
+
+  const waitingReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 721 && /Workflow: cto-/.test(message.text));
+  assert.ok(waitingReply);
+  const originalWorkflowId = waitingReply.text.match(/Workflow:\s+(cto-[^\s]+)/)?.[1] || '';
+  assert.ok(originalWorkflowId);
+
+  const originalWorkflowState = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'sessions', originalWorkflowId, 'artifacts', 'cto-workflow.json'), 'utf8'));
+  assert.equal(originalWorkflowState.status, 'waiting_for_user');
+  assert.ok(originalWorkflowState.pending_question_zh);
+
+  telegram.state.updates.push({
+    update_id: 322,
+    message: {
+      message_id: 722,
+      date: 1741435451,
+      text: '这样，帮我的电脑播放音乐。',
+      chat: { id: 123456, type: 'private' },
+      from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+    }
+  });
+
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 722 && /已完成任务拆解/.test(message.text)), 'new workflow plan reply');
+  await waitForCondition(() => stdout.includes('started workflow') && stdout.includes('update 322'), 'new workflow start log');
+
+  const newPlanReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 722 && /Workflow: cto-/.test(message.text));
+  assert.ok(newPlanReply);
+  const newWorkflowId = newPlanReply.text.match(/Workflow:\s+(cto-[^\s]+)/)?.[1] || '';
+  assert.ok(newWorkflowId);
+  assert.notEqual(newWorkflowId, originalWorkflowId);
+  assert.match(stdout, /started workflow .* for update 322/);
+  assert.doesNotMatch(stdout, /Continuing CTO workflow .* from update 322/);
+
+  const preservedWorkflowState = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'sessions', originalWorkflowId, 'artifacts', 'cto-workflow.json'), 'utf8'));
+  assert.equal(preservedWorkflowState.status, 'waiting_for_user');
+  assert.equal(preservedWorkflowState.pending_question_zh, originalWorkflowState.pending_question_zh);
+
+  const newWorkflowState = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'sessions', newWorkflowId, 'artifacts', 'cto-workflow.json'), 'utf8'));
+  assert.equal(newWorkflowState.goal_text, '这样，帮我的电脑播放音乐。');
+  assert.equal(newWorkflowState.latest_user_message, '这样，帮我的电脑播放音乐。');
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+});
+
 test('im telegram listen --cto keeps the first vague greeting in conversation mode instead of opening a workflow', async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-conversation-gate-'));
   const telegram = await startTelegramMockServer({
@@ -1362,7 +1610,7 @@ test('im telegram listen --cto fails closed on stricter host sandbox without lea
   assert.ok(finalReply);
   assert.match(finalReply.text, /read-only/);
   assert.doesNotMatch(finalReply.text, /待确认/);
-  assert.match(stdout, /finished with status failed/);
+  assert.match(stdout, /task inspect-repo finished with failed|finished with status failed/);
 
   const workflowState = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'sessions', workflowIdMatch[1], 'artifacts', 'cto-workflow.json'), 'utf8'));
   assert.equal(workflowState.status, 'failed');

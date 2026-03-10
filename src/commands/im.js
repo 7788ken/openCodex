@@ -29,7 +29,8 @@ import {
   markWorkflowTaskRunning,
   normalizeTelegramCtoPlan,
   applyWorkflowTaskResult,
-  loadCtoSoulDocument
+  loadCtoSoulDocument,
+  shouldResumeTelegramPendingWorkflow
 } from '../lib/cto-workflow.js';
 import { createSession, getSessionDir, listSessions, loadSession, saveSession } from '../lib/session-store.js';
 import {
@@ -398,8 +399,14 @@ async function runTelegramListen(args) {
           continue;
         }
 
-        const pendingWorkflow = delegateMode === 'cto'
+        const waitingWorkflow = delegateMode === 'cto'
           ? findPendingWorkflowForChat(workflowRuntimes.values(), normalizedMessage.chat_id)
+          : null;
+        const pendingWorkflow = delegateMode === 'cto' && waitingWorkflow
+          ? (shouldResumeTelegramPendingWorkflow({
+            workflowState: waitingWorkflow.state,
+            messageText: normalizedMessage.text
+          }) ? waitingWorkflow : null)
           : null;
 
         const workflowDirectReply = delegateMode === 'cto'
@@ -407,7 +414,7 @@ async function runTelegramListen(args) {
             cwd,
             parentSession: session,
             message: normalizedMessage,
-            pendingWorkflow,
+            pendingWorkflow: waitingWorkflow,
             workflowRuntimes,
             chatState,
             runsPath,
@@ -755,7 +762,6 @@ async function continueTelegramCtoWorkflow({
 }) {
   appendWorkflowUserMessage(runtime.state, message);
   runtime.state.status = 'planning';
-  runtime.state.pending_question_zh = '';
   await persistTelegramWorkflowRuntime(cwd, runtime);
   await persistListenerSession();
 

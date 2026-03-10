@@ -23,7 +23,8 @@ import {
   isStrongTelegramCtoDirectiveMessage,
   normalizeTelegramCtoPlan,
   shouldKeepTelegramCtoInConversationMode,
-  shouldPromoteWorkflowGoal
+  shouldPromoteWorkflowGoal,
+  shouldResumeTelegramPendingWorkflow
 } from '../src/lib/cto-workflow.js';
 
 test('cto main thread prompt declares central orchestration ownership', () => {
@@ -158,6 +159,26 @@ test('cto workflow keeps the original goal when the later Telegram reply is only
   assert.equal(workflowState.goal_text, '修复 Telegram CTO 续跑逻辑');
   assert.equal(workflowState.latest_user_message, '好的，加油');
   assert.equal(workflowState.user_messages.length, 1);
+});
+
+test('pending workflow resumes only for explicit continue or question answer', () => {
+  const workflowState = {
+    status: 'waiting_for_user',
+    pending_question_zh: '在可写环境中修改 `src/commands/service.js` 增加 weekday reminder provider'
+  };
+
+  assert.equal(shouldResumeTelegramPendingWorkflow({
+    workflowState,
+    messageText: '继续。'
+  }), true);
+  assert.equal(shouldResumeTelegramPendingWorkflow({
+    workflowState,
+    messageText: '好，就改 service.js。'
+  }), true);
+  assert.equal(shouldResumeTelegramPendingWorkflow({
+    workflowState,
+    messageText: '这样，帮我的电脑播放音乐。'
+  }), false);
 });
 
 test('cto intent classifier treats short greeting with emoticon as casual chat', () => {
