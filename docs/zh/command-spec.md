@@ -162,6 +162,41 @@ openCodex 是架在 Codex CLI 之上的轻量 CLI 层。
 - 在 v1 就引入托管 relay 基础设施
 - 第一版就支持所有 IM 平台
 
+### `opencodex install`
+
+**Purpose**
+
+创建并检查 detached local runtime，让已安装 CLI 和长期 service 不再依赖源码 checkout。
+
+**Initial scope**
+
+- 先产出一个可交付的 runtime bundle
+- 在用户目录下安装版本化 detached runtime
+- 重写活动 runtime 的 `current` 指针
+- 创建给 shell 使用的 CLI shim
+- 编译一个启动同一 detached runtime 的轻量 `OpenCodex.app` 宿主壳
+- 输出供 `service relink` 使用的 runtime CLI 路径
+
+**Minimal flags**
+
+- `bundle`
+- `detached`
+- `status`
+- `--output <path>`
+- `--root <dir>`
+- `--bin-dir <dir>`
+- `--applications-dir <dir>`
+- `--bundle <path>`
+- `--name <id>`
+- `--force`
+- `--json`
+
+**Non-goals**
+
+- 第一版就交付 notarized 桌面 App
+- 自动改写现有 service
+- 在 v1 定义系统级安装器
+
 ### `opencodex service`
 
 **Purpose**
@@ -183,15 +218,22 @@ openCodex 是架在 Codex CLI 之上的轻量 CLI 层。
 - `telegram stop`
 - `telegram restart`
 - `telegram send-status`
+- `telegram set-workspace`
+- `telegram relink`
 - `telegram task-history`
 - `telegram dispatch-detail`
 - `telegram uninstall`
 - `--cwd <dir>`
 - `--chat-id <id>`
 - `--bot-token <token>`
+- `--cli-path <path>`
+- `--cto-soul-path <path>`
 - `--poll-timeout <seconds>`
 - `--profile <name>`
 - `set-profile --profile <name>`
+- `set-workspace --cwd <path>`
+- `relink --cli-path <path>`
+- `--allow-project-cli`
 - `--install-menubar`
 - `--open-menubar`
 - `--no-load`

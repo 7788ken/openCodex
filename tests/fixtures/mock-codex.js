@@ -225,6 +225,32 @@ function buildRunPayload(prompt) {
   }
 
   if (prompt.includes('Conversation gate mode: Telegram CTO pre-orchestration reply.')) {
+    if (prompt.includes('The message points to a problem, error, or situation without enough context.')) {
+      return {
+        title: 'Telegram CTO direct reply',
+        result: '先不急着开 workflow。\n请把“这个问题”的具体内容发我：报错、现象、相关文件路径，或直接贴截图/日志。',
+        status: 'completed',
+        highlights: [],
+        next_steps: [],
+        risks: [],
+        validation: [],
+        changed_files: [],
+        findings: []
+      };
+    }
+    if (prompt.includes('The CEO is referring to your immediately previous pending question, not opening a new workflow.')) {
+      return {
+        title: 'Telegram CTO direct reply',
+        result: '我说的待确认问题，是想确认是否就在可写环境里按最小方案改 `src/commands/im.js`。\n因为这一步一旦开改，就从分析进入真实实现了。\n你如果同意，我就按那条最小改法继续推进。',
+        status: 'completed',
+        highlights: [],
+        next_steps: [],
+        risks: [],
+        validation: [],
+        changed_files: [],
+        findings: []
+      };
+    }
     return {
       title: 'Telegram CTO direct reply',
       result: '我在，先不急着进入员工编排。\n你可以先告诉我想聊聊方向，或者直接给一个具体目标。\n等意图明确后，我再切到编排模式并持续汇报进度。',

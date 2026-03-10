@@ -30,3 +30,8 @@
 - Reuse `run`, `session`, and `review` for chained execution.
 - Add safe stop limits and stale-session recovery.
 
+## Phase 5 — Installed Product Surface
+
+- Define a detached installed runtime root.
+- Let the app surface and CLI surface coexist on the same runtime.
+- Keep long-lived services attached to the installed launcher instead of a source checkout.

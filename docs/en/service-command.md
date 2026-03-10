@@ -15,6 +15,8 @@ The first version supports Telegram CTO service management only:
 - `opencodex service telegram stop`
 - `opencodex service telegram restart`
 - `opencodex service telegram set-profile`
+- `opencodex service telegram set-workspace`
+- `opencodex service telegram relink`
 - `opencodex service telegram set-setting`
 - `opencodex service telegram send-status`
 - `opencodex service telegram workflow-history`
@@ -33,20 +35,50 @@ The first version supports Telegram CTO service management only:
 - a protected environment file with the Telegram bot token and inherited proxy settings
 - persistent stdout and stderr logs for the background listener
 - an optional stay-open macOS menu bar app when `--install-menubar` is enabled
+- a detached default workspace under `~/.opencodex/workspaces/telegram-cto` when `--cwd` is omitted
+- a set of service-local CTO soul files under the service state directory:
+  `cto-soul.md`, `cto-chat-soul.md`, and `cto-workflow-soul.md`
+- a set of service-local child-agent soul files:
+  `cto-reply-agent-soul.md`, `cto-planner-agent-soul.md`, and `cto-worker-agent-soul.md`
+
+By default, `install` refuses to bind the long-lived service to the current source checkout.
+Install the service from an installed openCodex CLI, or use `--allow-project-cli` only when you intentionally want a temporary source-coupled setup.
 
 ## Inputs
 
 ### `telegram install`
 
-- `--cwd <dir>`
+- `--cwd <dir>`; optional workspace root. Default: `~/.opencodex/workspaces/telegram-cto`
 - `--chat-id <id>`
 - `--bot-token <token>` or `OPENCODEX_TELEGRAM_BOT_TOKEN`
+- `--cli-path <path>`; optional explicit openCodex CLI entry for the background service
+- `--cto-soul-path <path>`; optional explicit shared-layer service-local CTO soul path; the chat/workflow layers default to sibling files in the same directory
 - `--poll-timeout <seconds>`
 - `--profile <name>`; default: `full-access`
+- `--allow-project-cli`; explicitly allow binding the service to the current project checkout
 - `--install-menubar`
 - `--open-menubar`
 - `--no-load`
 - `--json`
+
+### `telegram relink`
+
+- `--cli-path <path>`; required detached openCodex CLI entry
+- `--allow-project-cli`; only for an intentional temporary rollback to a source checkout
+- `--json`
+
+`telegram relink` keeps the existing service config and chat binding, but rewrites the saved launcher path, wrapper script, and menu bar app bindings to the new CLI entry.
+For a detached install created by `opencodex install detached`, prefer the `current/bin/opencodex.js` path so later upgrades can move with the `current` pointer.
+
+### `telegram set-workspace`
+
+- `--cwd <dir>`; required next workspace root for the service
+- `--cto-soul-path <path>`; optional override path for the shared-layer service-local CTO soul file; the chat/workflow layers follow it into the same directory
+- `--json`
+
+`telegram set-workspace` keeps the installed launcher and chat binding, but rewrites the saved workspace path, wrapper script, and menu bar app bindings.
+If the active CTO soul text was still coming from the old workspace, openCodex copies it into the service-local soul file before switching over.
+If the new workspace has no `.opencodex/sessions` tree yet, openCodex also copies the existing session history forward so status and tray history stay continuous after the move.
 
 ### `telegram status | start | stop | restart | send-status | task-history | uninstall`
 
@@ -93,6 +125,9 @@ Supported keys in the first version:
 
 - `--json`
 
+`telegram reset-cto-soul` writes the default templates back to all three service-local CTO soul files, which default to `<state-dir>/cto-soul.md`, `<state-dir>/cto-chat-soul.md`, and `<state-dir>/cto-workflow-soul.md`.
+It also resets the three child-agent soul files: `<state-dir>/cto-reply-agent-soul.md`, `<state-dir>/cto-planner-agent-soul.md`, and `<state-dir>/cto-worker-agent-soul.md`.
+
 ### `telegram uninstall`
 
 - `--remove-menubar`
@@ -110,6 +145,7 @@ The app can:
 - browse the full task history from the menu bar, then inspect a selected task without leaving the tray workflow
 - change tray settings directly in the UI, including language, badge mode, refresh interval, workflow-id visibility, and path shortcuts
 - reveal the task record, raw events, latest task message, repository, service log, latest workflow session, and the editable CTO soul file when needed
+- reveal the current service workspace, service log, latest workflow session, and the editable service-local CTO soul files when needed
 - restore the default Codex-CLI-based CTO soul template from the tray when needed
 - send a Telegram status reply back to the configured CEO chat
 

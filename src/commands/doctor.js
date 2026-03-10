@@ -3,7 +3,8 @@ import path from 'node:path';
 import { access } from 'node:fs/promises';
 import { parseOptions } from '../lib/args.js';
 import { getCodexBin, runCommandCapture } from '../lib/codex.js';
-import { writeJson } from '../lib/fs.js';
+import { readJson, writeJson } from '../lib/fs.js';
+import { describeOpenCodexLauncher, describeOpenCodexPath } from '../lib/launcher.js';
 import { createSession, saveSession } from '../lib/session-store.js';
 import { renderHumanSummary } from '../lib/summary.js';
 
@@ -54,6 +55,19 @@ export async function runDoctorCommand(args) {
   const configExists = await fileExists(configPath);
   checks.push(toCheck('codex_config', configExists ? 'pass' : 'warn', false, configExists ? configPath : 'Config file not found at ~/.codex/config.toml'));
 
+  const launcher = describeOpenCodexLauncher(process.argv[1] || '');
+  checks.push(toCheck(
+    'opencodex_launcher',
+    launcher.launcherScope === 'project_checkout' ? 'warn' : 'pass',
+    false,
+    launcher.launcherScope === 'project_checkout'
+      ? `Current openCodex launcher comes from a source checkout: ${launcher.cliPath}`
+      : `Current openCodex launcher is detached from a source checkout: ${launcher.cliPath}`
+  ));
+
+  checks.push(await inspectTelegramServiceLauncherCheck());
+  checks.push(await inspectTelegramServiceWorkspaceCheck());
+
   const failedRequired = checks.filter((check) => check.required && check.status === 'fail');
   const warnings = checks.filter((check) => check.status === 'warn');
   const summaryStatus = failedRequired.length ? 'failed' : warnings.length ? 'partial' : 'completed';
@@ -63,7 +77,7 @@ export async function runDoctorCommand(args) {
     result: buildDoctorResult(checks),
     status: summaryStatus,
     highlights: checks.map((check) => `${check.status.toUpperCase()} ${check.name}: ${check.details}`),
-    next_steps: buildDoctorNextSteps(checks),
+    next_steps: await buildDoctorNextSteps(checks),
     validation: checks.map((check) => `${check.name}:${check.status}`)
   };
 
@@ -107,7 +121,7 @@ function buildDoctorResult(checks) {
   return `Completed ${checks.length} checks: ${passed} passed, ${warned} warned, ${failed} failed.`;
 }
 
-function buildDoctorNextSteps(checks) {
+async function buildDoctorNextSteps(checks) {
   const nextSteps = [];
   const byName = Object.fromEntries(checks.map((check) => [check.name, check]));
 
@@ -122,6 +136,25 @@ function buildDoctorNextSteps(checks) {
   }
   if (byName.codex_config?.status === 'warn') {
     nextSteps.push('Create `~/.codex/config.toml` if you need persistent Codex CLI defaults.');
+  }
+  if (byName.opencodex_launcher?.status === 'warn') {
+    const detachedInstall = await findDetachedInstallHints();
+    if (detachedInstall.installed) {
+      const installedTargets = [
+        detachedInstall.shimExists ? detachedInstall.shimPath : '',
+        detachedInstall.appInstalled ? detachedInstall.appPath : '',
+        detachedInstall.currentCliExists ? detachedInstall.currentCliPath : ''
+      ].filter(Boolean);
+      nextSteps.push(`Use the detached openCodex launcher instead of the source checkout: ${installedTargets.join(' or ')}.`);
+    } else {
+      nextSteps.push('Run `node ./bin/opencodex.js install detached` from the source checkout, then use the detached runtime for long-lived services.');
+    }
+  }
+  if (byName.telegram_service_launcher?.status === 'warn') {
+    nextSteps.push('Reinstall or relink the Telegram service from a detached openCodex CLI so it no longer points at a project checkout.');
+  }
+  if (byName.telegram_service_workspace?.status === 'warn') {
+    nextSteps.push('Run `opencodex service telegram set-workspace --cwd ~/.opencodex/workspaces/telegram-cto` from the detached launcher if you want the installed product fully detached from the development checkout.');
   }
   if (!nextSteps.length) {
     nextSteps.push('Environment looks ready for the first openCodex wrapper flows.');
@@ -150,6 +183,69 @@ function describeMcpResult(stdout, stderr) {
   } catch {
   }
   return pickFirstMeaningfulLine(stdout || stderr) || 'No MCP data available.';
+}
+
+async function inspectTelegramServiceLauncherCheck() {
+  const configPath = path.join(os.homedir(), '.opencodex', 'service', 'telegram', 'service.json');
+  if (!(await fileExists(configPath))) {
+    return toCheck('telegram_service_launcher', 'pass', false, 'No installed Telegram service found.');
+  }
+
+  try {
+    const config = await readJson(configPath);
+    const launcher = describeOpenCodexLauncher(config?.cli_path || '');
+    if (launcher.launcherScope === 'project_checkout') {
+      return toCheck('telegram_service_launcher', 'warn', false, `Installed Telegram service is bound to a source checkout: ${launcher.cliPath}`);
+    }
+    return toCheck('telegram_service_launcher', 'pass', false, `Installed Telegram service launcher: ${launcher.cliPath}`);
+  } catch {
+    return toCheck('telegram_service_launcher', 'warn', false, `Installed Telegram service config could not be parsed: ${configPath}`);
+  }
+}
+
+async function inspectTelegramServiceWorkspaceCheck() {
+  const configPath = path.join(os.homedir(), '.opencodex', 'service', 'telegram', 'service.json');
+  if (!(await fileExists(configPath))) {
+    return toCheck('telegram_service_workspace', 'pass', false, 'No installed Telegram service workspace found.');
+  }
+
+  try {
+    const config = await readJson(configPath);
+    const workspacePath = typeof config?.cwd === 'string' && config.cwd.trim() ? config.cwd.trim() : '';
+    if (!workspacePath) {
+      return toCheck('telegram_service_workspace', 'warn', false, `Installed Telegram service workspace is missing from config: ${configPath}`);
+    }
+    const workspace = describeOpenCodexPath(workspacePath, workspacePath);
+    if (workspace.pathScope === 'project_checkout') {
+      return toCheck('telegram_service_workspace', 'warn', false, `Installed Telegram service workspace still points at the openCodex development checkout: ${workspace.path}`);
+    }
+    return toCheck('telegram_service_workspace', 'pass', false, `Installed Telegram service workspace: ${workspace.path}`);
+  } catch {
+    return toCheck('telegram_service_workspace', 'warn', false, `Installed Telegram service config could not be parsed: ${configPath}`);
+  }
+}
+
+async function findDetachedInstallHints() {
+  const homeDir = os.homedir();
+  const rootDir = path.join(homeDir, 'Library', 'Application Support', 'OpenCodex');
+  const currentCliPath = path.join(rootDir, 'current', 'bin', 'opencodex.js');
+  const shimPath = path.join(homeDir, '.local', 'bin', 'opencodex');
+  const appPath = path.join(homeDir, 'Applications', 'OpenCodex.app');
+  const [currentCliExists, shimExists, appInstalled] = await Promise.all([
+    fileExists(currentCliPath),
+    fileExists(shimPath),
+    fileExists(appPath)
+  ]);
+
+  return {
+    installed: currentCliExists || shimExists || appInstalled,
+    currentCliExists,
+    currentCliPath,
+    shimExists,
+    shimPath,
+    appInstalled,
+    appPath
+  };
 }
 
 async function fileExists(filePath) {

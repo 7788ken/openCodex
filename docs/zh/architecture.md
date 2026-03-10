@@ -55,6 +55,12 @@ openCodex CTO 应该驻留在这一层。
 但它们不应成为 supervisor of record。
 最终决策、状态归属与面向用户的回复仍由宿主 supervisor 持有。
 
+## 安装产物边界
+
+已安装的 App 形态、CLI 形态和长期服务应共享同一个 detached runtime root。
+默认 launcher 不应再指向源码 checkout。
+当前包装方向见 `install-layout.md`。
+
 ### Layer 3 — openCodex Gateway
 
 这一层保留给后续阶段。

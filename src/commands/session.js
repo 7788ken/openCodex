@@ -2,7 +2,7 @@ import path from 'node:path';
 import { parseOptions } from '../lib/args.js';
 import { listSessions, loadSession, saveSession, getSessionDir } from '../lib/session-store.js';
 import { readJson, readTextIfExists, writeJson } from '../lib/fs.js';
-import { buildTelegramCtoSessionSummary, finalizeWorkflowStatus } from '../lib/cto-workflow.js';
+import { buildTelegramCtoSessionSummary, classifyTelegramCtoMessageIntent, finalizeWorkflowStatus, summarizeWorkflowCounts } from '../lib/cto-workflow.js';
 import { buildSummaryFromMessage } from './run.js';
 import { buildReviewSummary } from './review.js';
 import { renderHumanSummary } from '../lib/summary.js';
@@ -395,6 +395,26 @@ async function deriveCtoRepair(cwd, session, lineage) {
     child.command = resolvedChild.command || child.command || 'run';
   }
 
+  const misroutedChatRepair = repairMisroutedCasualChatWorkflow(session, workflowState);
+  if (misroutedChatRepair) {
+    const workflowChanged = JSON.stringify(workflowState) !== originalWorkflowState;
+    const childSessionsChanged = JSON.stringify(childSessions) !== originalChildSessions;
+    const summaryChanged = JSON.stringify(session.summary || null) !== JSON.stringify(misroutedChatRepair.summary);
+    if (!workflowChanged && !childSessionsChanged && !summaryChanged && session.status === misroutedChatRepair.status) {
+      return null;
+    }
+    workflowState.updated_at = new Date().toISOString();
+    return {
+      from: session.status,
+      status: misroutedChatRepair.status,
+      reason: misroutedChatRepair.reason,
+      summary: misroutedChatRepair.summary,
+      workflow_state: workflowState,
+      workflow_state_path: workflowStatePath,
+      child_sessions: childSessions
+    };
+  }
+
   const derivedPendingQuestion = deriveCtoPendingQuestion(workflowState.tasks);
   if (!asTrimmedString(workflowState.pending_question_zh) && derivedPendingQuestion) {
     workflowState.pending_question_zh = derivedPendingQuestion;
@@ -426,6 +446,58 @@ async function deriveCtoRepair(cwd, session, lineage) {
     workflow_state: workflowState,
     workflow_state_path: workflowStatePath,
     child_sessions: childSessions
+  };
+}
+
+function repairMisroutedCasualChatWorkflow(session, workflowState) {
+  const inferredIntent = classifyTelegramCtoMessageIntent(workflowState?.goal_text || '');
+  if (inferredIntent.kind !== 'casual_chat') {
+    return null;
+  }
+
+  const counts = summarizeWorkflowCounts(workflowState);
+  if (counts.completed > 0 || counts.running > 0 || counts.rerouted > 0 || counts.queued > 0) {
+    return null;
+  }
+  if (counts.failed + counts.partial === 0) {
+    return null;
+  }
+
+  const hasChangedFiles = (workflowState.tasks || []).some((task) => normalizeStringList(task?.changed_files).length > 0);
+  if (hasChangedFiles) {
+    return null;
+  }
+
+  for (const task of workflowState.tasks || []) {
+    task.next_steps = [];
+  }
+
+  workflowState.status = 'failed';
+  workflowState.pending_question_zh = '';
+
+  const result = '这条历史 Telegram 消息更像轻聊天，本不该进入 workflow；已停止后续等待，不再要求 CEO 跟进。';
+  const summary = {
+    title: 'CTO workflow repaired as chat-only',
+    result,
+    status: 'failed',
+    highlights: [
+      `Chat: ${workflowState.chat_id || ''}`,
+      `Intent: ${inferredIntent.label_zh}`,
+      `Tasks: ${counts.total}`,
+      `Failed: ${counts.failed}`,
+      `Partial: ${counts.partial}`
+    ].filter(Boolean),
+    next_steps: [],
+    risks: [],
+    validation: ['chat_routing:casual_chat_repair'],
+    changed_files: [],
+    findings: []
+  };
+
+  return {
+    status: 'failed',
+    reason: result,
+    summary
   };
 }
 
@@ -546,7 +618,7 @@ function getCtoWorkflowStatePath(cwd, session) {
 }
 
 function extractTaskIdFromChildLabel(label) {
-  const match = String(label || '').match(/^Task\s+(.+)$/i);
+  const match = String(label || '').match(/^Task\s+(.+?)(?:\s+·\s+.+)?$/i);
   return match?.[1]?.trim() || '';
 }
 
@@ -560,6 +632,7 @@ function normalizeStringList(value) {
   }
   return value.map((item) => String(item || '').trim()).filter(Boolean);
 }
+
 async function deriveRunRepair(cwd, session) {
   const sessionDir = getSessionDir(cwd, session.session_id);
   const eventsPath = path.join(sessionDir, 'events.jsonl');

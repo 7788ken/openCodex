@@ -15,6 +15,8 @@
     "session": "node ./bin/opencodex.js session",
     "remote": "node ./bin/opencodex.js remote",
     "im": "node ./bin/opencodex.js im",
+    "install:bundle": "node ./bin/opencodex.js install bundle",
+    "install:detached": "node ./bin/opencodex.js install detached",
     "test": "node --test",
     "service": "node ./bin/opencodex.js service"
   },

@@ -27,16 +27,17 @@ test('buildRunArgs uses package schema path and output files', () => {
     '-c',
     'model_reasoning_effort="medium"',
     'exec',
+    '--skip-git-repo-check',
     '--json',
     '--output-schema',
-    args[9],
+    args[10],
     '--output-last-message',
     '/tmp/message.txt',
     '-C',
     '/tmp/repo',
     'fix bug'
   ]);
-  assert.match(args[9], /schemas[\/]+run-summary\.schema\.json$/);
+  assert.match(args[10], /schemas[\/]+run-summary\.schema\.json$/);
 });
 
 test('buildReviewArgs applies profile defaults', () => {
@@ -61,8 +62,8 @@ test('buildRunArgs uses bundled schema path by default', () => {
     lastMessagePath: '/tmp/message.txt'
   });
 
-  assert.equal(path.isAbsolute(args[9]), true);
-  assert.equal(args[9].endsWith('/schemas/run-summary.schema.json'), true);
+  assert.equal(path.isAbsolute(args[10]), true);
+  assert.equal(args[10].endsWith('/schemas/run-summary.schema.json'), true);
 });
 
 test('buildSummaryFromMessage parses structured JSON output', () => {

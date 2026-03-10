@@ -4,6 +4,11 @@ import { readTextIfExists } from './fs.js';
 
 export const CTO_PLANNER_SCHEMA_PATH = fileURLToPath(new URL('../../schemas/cto-workflow-plan.schema.json', import.meta.url));
 export const DEFAULT_CTO_SOUL_RELATIVE_PATH = path.join('prompts', 'cto-soul.md');
+export const DEFAULT_CTO_CHAT_SOUL_RELATIVE_PATH = path.join('prompts', 'cto-chat-soul.md');
+export const DEFAULT_CTO_WORKFLOW_SOUL_RELATIVE_PATH = path.join('prompts', 'cto-workflow-soul.md');
+export const DEFAULT_CTO_REPLY_AGENT_SOUL_RELATIVE_PATH = path.join('prompts', 'cto-reply-agent-soul.md');
+export const DEFAULT_CTO_PLANNER_AGENT_SOUL_RELATIVE_PATH = path.join('prompts', 'cto-planner-agent-soul.md');
+export const DEFAULT_CTO_WORKER_AGENT_SOUL_RELATIVE_PATH = path.join('prompts', 'cto-worker-agent-soul.md');
 export const DEFAULT_CTO_HISTORY_REPAIR_STALE_MINUTES = 30;
 
 const MAX_TASKS = 4;
@@ -36,15 +41,32 @@ const TELEGRAM_REASONING_TARGET_PATTERN = /(思考|思维|推理|reasoning|深�
 const TELEGRAM_ARCHITECTURE_TARGET_PATTERN = /(架构|workflow|工作流|主线程|子线程|调度|planner|prompt|session|任务栏|telegram|cto)/i;
 const TELEGRAM_CTO_CASUAL_CHAT_PATTERN = /(陪我聊聊天|陪聊|聊聊天|聊会儿|聊天吗|可以聊天吗|能聊天吗|陪我说说话|随便聊聊|你在哪|人呢|在干嘛|忙吗)/i;
 const TELEGRAM_CTO_GREETING_PATTERN = /^(?:(?:cto|open\s*codex|opencodex)[,，:：\s]*)?(?:嘿|嗨|哈喽|哈啰|你在吗|在吗|在不|在嘛|你好|hello|hi|hey|yo|早上好|晚上好|午安|辛苦了)(?:[!！?？~～\s]*)$/i;
+const TELEGRAM_CTO_SOCIAL_CHAT_PATTERN = /(吃(?:饭|早饭|早餐|午饭|午餐|晚饭|晚餐)|睡了吗|睡了没|最近怎么样|最近还好吗|今天怎么样|累吗|忙吗|在干嘛|在做什么|下班了吗|休息了吗|晚安|早安|午安|下午好|周末过得怎么样|心情怎么样|天气怎么样)/i;
+const TELEGRAM_CTO_PRAISE_PATTERN = /(厉害|真快|好快|秒回|牛|真牛|太强了|棒|真棒|赞|靠谱|给力|优秀|nice|awesome|great job)/i;
 const TELEGRAM_CTO_STATUS_HINT_PATTERN = /(状态|进度|历史|最近任务|任务历史|workflow|工作流|task\s*history|workflow\s*status|task\s*status|安排了哪些任务)/i;
 const TELEGRAM_CTO_EXPLORATION_PATTERN = /(探讨|讨论|聊聊(?:架构|方案|思路|方向|路线)?|研究一下|研究下|一起想想|脑暴|brainstorm|trade[- ]?off|方案对比|路线对比|可行性|怎么设计|怎么看|为什么|why)/i;
 const TELEGRAM_FORCE_EXECUTION_PATTERN = /(直接推进|直接开始|马上开始|立刻处理|现在就做|安排员工|进入编排|开始执行|马上执行|立即执行|go\s*ahead|execute\s*now|start\s*working|ship\s*it)/i;
 const TELEGRAM_WORK_OBJECT_PATTERN = /(repo|code|bug|issue|test|ui|workflow|telegram|wechat|tray|session|service|prompt|agent|review|fix|build|docs?|readme|todo|roadmap|代码|仓库|任务|工作流|文档|架构|测试|修复|实现|功能|界面|命令|续跑|手机|微信)/i;
+const TELEGRAM_CTO_INTERACTION_META_PATTERN = /((?:聊天|即时通讯).{0,8}主线|主线.{0,8}(?:聊天|chat|即时通讯)|聊天主线|主线聊天|主线\s*chat|聊天是主线|chat[-\s]*first|workflow.{0,10}不是主线|工作流.{0,10}不是主线|不要每句(?:话)?都触发工作流|不是每句(?:话)?都要触发工作流|自然回复|不要.{0,8}格式化回复|别.{0,8}格式化回复|默认推进|自行推进|自主完成|不要等我|别等我|高风险再确认|风险再确认|只在高风险时确认|任务不能自行推进|不能自主完成|编排.{0,12}没有达到.{0,6}要求)/i;
+const TELEGRAM_CTO_INTERACTION_EXECUTION_PATTERN = /(继续处理|继续推进|默认推进|解决这些|落地|修一下|修复|优化|实现|改一下|调整|处理这些|按这个改|推进解决)/i;
+const TELEGRAM_CTO_REQUIREMENT_LIST_PATTERN = /(?:^|[\s\n])(?:1[\.\)、,:：]|一[、：]|1[、：])/;
 const TELEGRAM_CTO_EXPLICIT_CONTINUE_PATTERN = /^(?:(?:好|好的|行|可以|确认|收到|明白)[，,\s]*)?(?:继续|继续吧|继续推进|继续处理|继续执行|继续做|开始吧|开始执行|开始处理|按你说的做|照这个做|就这么做|就这样做|重建当前工作流|重新派发(?:该)?任务|继续调整当前工作流)(?:[。.!！?？~～\s]*)$/i;
 const TELEGRAM_CTO_DECISION_REPLY_PATTERN = /^(?:是|否|可以|不可以|要|不要|继续|重建|重派|重新派发|先别|先不要|改吧|就这样)(?:[。.!！?？~～\s]|$)/i;
+const TELEGRAM_CTO_STATUS_QUERY_OVERRIDE_PATTERN = /(继续|推进|推进项目|落地|优化|处理|修复|实现|开发|发布|上线|安排|开始|启动|执行|直接)/i;
+const TELEGRAM_CTO_CONTEXTLESS_REFERENCE_PATTERN = /(这个问题|这个报错|这个错误|这个情况|这个现象|这个逻辑|这段代码|这段逻辑|这里的问题|这里报错|这里为啥|这里为什么|这块问题|这块逻辑|怎么回事|什么意思|啥情况|什么情况)/i;
+const TELEGRAM_CTO_CONTEXTLESS_REQUEST_PATTERN = /(解释|说说|分析|看看|看下|看一下|帮我看|帮我分析|诊断|排查|拆解|怎么回事|什么意思|为什么|为啥|原因)/i;
+const TELEGRAM_CTO_PREVIOUS_PENDING_QUESTION_REFERENCE_PATTERN = /((这个|那个|上个|上一条|刚才|刚刚|你刚才|你刚刚).{0,8}(待确认问题|问题))|解释一下这个待确认问题/i;
 const TELEGRAM_SHORT_CASUAL_TEXTS = new Set([
   '嘿', '嗨', '哈喽', '哈啰', 'hello', 'hi', 'hey', 'yo',
   '在吗', '你在吗', '在不', '在嘛', '你好', '辛苦了', '早', '早安', '午安', '晚安'
+]);
+const TELEGRAM_CTO_WORKER_PERSONA_POOL = Object.freeze([
+  { name_zh: '阿杭', name_en: 'Hang', vibe_zh: '动手快、汇报实在的工程搭子。', vibe_en: 'A practical implementation partner who moves quickly and reports honestly.' },
+  { name_zh: '阿宁', name_en: 'Ning', vibe_zh: '稳一点，先把边界和回滚想清楚。', vibe_en: 'A steady operator who thinks through boundaries and rollback paths first.' },
+  { name_zh: '阿岳', name_en: 'Yue', vibe_zh: '擅长把杂事拆顺，推进不拖泥带水。', vibe_en: 'Good at untangling messy work and pushing it forward cleanly.' },
+  { name_zh: '阿澈', name_en: 'Che', vibe_zh: '偏爱清晰实现和直接验证，不说空话。', vibe_en: 'Prefers clear implementations and direct validation over fluff.' },
+  { name_zh: '阿朴', name_en: 'Pu', vibe_zh: '改动克制，先做最小可回滚的一步。', vibe_en: 'Keeps changes restrained and starts with the smallest reversible step.' },
+  { name_zh: '阿原', name_en: 'Yuan', vibe_zh: '先摸清现场，再下手，不乱猜。', vibe_en: 'Maps the terrain before acting and avoids guessing.' }
 ]);
 
 export function isLikelyTelegramNonDirectiveMessage(text) {
@@ -180,11 +202,40 @@ export function classifyTelegramCtoMessageIntent(text) {
 
   const compactText = normalizeTelegramIntentText(rawText);
 
-  if (TELEGRAM_CTO_STATUS_HINT_PATTERN.test(rawText)) {
+  if (isTelegramCtoInteractionPolicyDiscussion(rawText)
+    && !isTelegramCtoConcreteInteractionExecutionRequest(rawText)
+    && !TELEGRAM_FORCE_EXECUTION_PATTERN.test(rawText)) {
+    return {
+      kind: 'exploration',
+      label_zh: '交互策略讨论',
+      reason_zh: '更像在讨论聊天主线、编排方式、确认门槛或回复风格，不必立刻进入工作流。'
+    };
+  }
+
+  if (TELEGRAM_CTO_STATUS_HINT_PATTERN.test(rawText)
+    && !TELEGRAM_CTO_STATUS_QUERY_OVERRIDE_PATTERN.test(rawText)
+    && !TELEGRAM_FORCE_EXECUTION_PATTERN.test(rawText)
+    && !TELEGRAM_CTO_EXPLICIT_CONTINUE_PATTERN.test(rawText)) {
     return {
       kind: 'status_query',
       label_zh: '状态/历史查询',
       reason_zh: '命中了状态、工作流或任务历史关键词。'
+    };
+  }
+
+  if (TELEGRAM_CTO_CASUAL_CHAT_PATTERN.test(rawText)
+    || TELEGRAM_CTO_GREETING_PATTERN.test(rawText)
+    || (TELEGRAM_CTO_PRAISE_PATTERN.test(rawText)
+      && !TELEGRAM_EXECUTION_HINT_PATTERN.test(rawText)
+      && !TELEGRAM_ANALYSIS_INTENT_PATTERN.test(rawText)
+      && !TELEGRAM_CTO_STATUS_HINT_PATTERN.test(rawText))
+    || isLikelyTelegramCtoSocialChatMessage(rawText)
+    || TELEGRAM_SHORT_CASUAL_TEXTS.has(compactText)
+    || (compactText.length <= 6 && TELEGRAM_SHORT_CASUAL_TEXTS.has(compactText))) {
+    return {
+      kind: 'casual_chat',
+      label_zh: '轻聊天 / 寒暄',
+      reason_zh: '更像打招呼、陪聊或轻反馈，不像执行请求。'
     };
   }
 
@@ -193,17 +244,6 @@ export function classifyTelegramCtoMessageIntent(text) {
       kind: 'exploration',
       label_zh: '聊天 / 探讨 / 研究',
       reason_zh: '更像讨论方案、研究方向或共同推演，不必立即进入任务编排。'
-    };
-  }
-
-  if (TELEGRAM_CTO_CASUAL_CHAT_PATTERN.test(rawText)
-    || TELEGRAM_CTO_GREETING_PATTERN.test(rawText)
-    || TELEGRAM_SHORT_CASUAL_TEXTS.has(compactText)
-    || (compactText.length <= 6 && TELEGRAM_SHORT_CASUAL_TEXTS.has(compactText))) {
-    return {
-      kind: 'casual_chat',
-      label_zh: '轻聊天 / 寒暄',
-      reason_zh: '更像打招呼、陪聊或轻反馈，不像执行请求。'
     };
   }
 
@@ -231,6 +271,30 @@ export function classifyTelegramCtoMessageIntent(text) {
     label_zh: '可能是执行请求',
     reason_zh: '当前未命中状态、控制或轻聊天规则，所以会按执行型消息处理。'
   };
+}
+
+export function isLikelyTelegramCtoSocialChatMessage(text) {
+  const rawText = String(text || '').trim();
+  if (!rawText) {
+    return false;
+  }
+
+  if (TELEGRAM_CTO_STATUS_HINT_PATTERN.test(rawText)
+    || TELEGRAM_EXECUTION_HINT_PATTERN.test(rawText)
+    || TELEGRAM_ANALYSIS_INTENT_PATTERN.test(rawText)
+    || TELEGRAM_REASONING_TARGET_PATTERN.test(rawText)
+    || TELEGRAM_ARCHITECTURE_TARGET_PATTERN.test(rawText)
+    || TELEGRAM_CTO_EXPLORATION_PATTERN.test(rawText)
+    || TELEGRAM_FORCE_EXECUTION_PATTERN.test(rawText)
+    || TELEGRAM_WORK_OBJECT_PATTERN.test(rawText)) {
+    return false;
+  }
+
+  if (TELEGRAM_CTO_SOCIAL_CHAT_PATTERN.test(rawText)) {
+    return true;
+  }
+
+  return /^你(?:最近|今天|现在|刚刚)?[^。！!?？]{0,24}(?:吗|嘛|呢)[。！!?？]?$/i.test(rawText);
 }
 
 export function isStrongTelegramCtoDirectiveMessage(text) {
@@ -264,22 +328,73 @@ function isVagueTelegramCtoDirectiveMessage(text) {
   return /(帮我看看|帮我看下|看一下|看下|看看|瞅瞅|想想|过目)/i.test(rawText);
 }
 
-export function shouldKeepTelegramCtoInConversationMode({ text, chatState = null, hasPendingWorkflow = false }) {
-  if (hasPendingWorkflow) {
+function isTelegramCtoInteractionPolicyDiscussion(text) {
+  return TELEGRAM_CTO_INTERACTION_META_PATTERN.test(String(text || '').trim());
+}
+
+function isTelegramCtoConcreteInteractionExecutionRequest(text) {
+  const rawText = String(text || '').trim();
+  if (!rawText || !isTelegramCtoInteractionPolicyDiscussion(rawText)) {
     return false;
   }
 
+  return TELEGRAM_CTO_INTERACTION_EXECUTION_PATTERN.test(rawText)
+    && (TELEGRAM_CTO_REQUIREMENT_LIST_PATTERN.test(rawText)
+      || /解决这些|默认推进|落地|修复|优化|实现|改一下|调整/.test(rawText));
+}
+
+function isContextMissingTelegramCtoRequest(text) {
+  const rawText = String(text || '').trim();
+  if (!rawText) {
+    return false;
+  }
+
+  if (TELEGRAM_FORCE_EXECUTION_PATTERN.test(rawText)
+    || TELEGRAM_CTO_EXPLICIT_CONTINUE_PATTERN.test(rawText)
+    || isStrongTelegramCtoDirectiveMessage(rawText)) {
+    return false;
+  }
+
+  return TELEGRAM_CTO_CONTEXTLESS_REFERENCE_PATTERN.test(rawText)
+    && TELEGRAM_CTO_CONTEXTLESS_REQUEST_PATTERN.test(rawText);
+}
+
+function referencesTelegramPreviousPendingQuestion(text, chatState = null) {
+  const rawText = String(text || '').trim();
+  if (!rawText) {
+    return false;
+  }
+
+  return Boolean(asTrimmedString(chatState?.last_pending_question))
+    && TELEGRAM_CTO_PREVIOUS_PENDING_QUESTION_REFERENCE_PATTERN.test(rawText);
+}
+
+export function shouldKeepTelegramCtoInConversationMode({ text, chatState = null, hasPendingWorkflow = false }) {
   const intent = classifyTelegramCtoMessageIntent(text);
   if (intent.kind === 'empty') {
+    return true;
+  }
+  if (isTelegramCtoInteractionPolicyDiscussion(text)
+    && !isTelegramCtoConcreteInteractionExecutionRequest(text)
+    && !TELEGRAM_FORCE_EXECUTION_PATTERN.test(String(text || '').trim())) {
     return true;
   }
   if (intent.kind === 'status_query') {
     return false;
   }
   if (intent.kind === 'casual_chat') {
-    return Number(chatState?.direct_reply_count || 0) < 1;
+    return isGreetingLikeTelegramCtoMessage(text);
   }
   if (intent.kind === 'exploration') {
+    return true;
+  }
+  if (referencesTelegramPreviousPendingQuestion(text, chatState)) {
+    return true;
+  }
+  if (isContextMissingTelegramCtoRequest(text)) {
+    return true;
+  }
+  if (hasPendingWorkflow && isVagueTelegramCtoDirectiveMessage(text)) {
     return true;
   }
   if (isStrongTelegramCtoDirectiveMessage(text)) {
@@ -290,13 +405,49 @@ export function shouldKeepTelegramCtoInConversationMode({ text, chatState = null
     && isVagueTelegramCtoDirectiveMessage(text);
 }
 
+function isGreetingLikeTelegramCtoMessage(text) {
+  const rawText = String(text || '').trim();
+  if (!rawText) {
+    return false;
+  }
+  const compactText = normalizeTelegramIntentText(rawText);
+  return TELEGRAM_CTO_GREETING_PATTERN.test(rawText)
+    || TELEGRAM_CTO_CASUAL_CHAT_PATTERN.test(rawText)
+    || TELEGRAM_SHORT_CASUAL_TEXTS.has(compactText)
+    || (compactText.length <= 6 && TELEGRAM_SHORT_CASUAL_TEXTS.has(compactText));
+}
+
 export function isLikelyTelegramCtoCasualChatMessage(text) {
   return classifyTelegramCtoMessageIntent(text).kind === 'casual_chat';
 }
 
-export function buildTelegramCtoDirectReplyPrompt({ message, pendingWorkflowState = null, soulText = '', soulPath = '', replyMode = 'casual', chatState = null }) {
+export function buildTelegramCtoDirectReplyPrompt({
+  message,
+  pendingWorkflowState = null,
+  soulText = '',
+  soulPath = '',
+  modeSoulText = '',
+  modeSoulPath = '',
+  agentSoulText = '',
+  agentSoulPath = '',
+  replyMode = 'casual',
+  chatState = null
+}) {
+  const agentProfile = resolveTelegramCtoSubagentProfile({ kind: 'reply', replyMode });
   const lines = [
-    buildTelegramCtoMainThreadSystemPrompt({ soulText, soulPath }),
+    buildTelegramCtoMainThreadSystemPrompt({
+      mode: 'chat',
+      baseSoulText: soulText,
+      baseSoulPath: soulPath,
+      modeSoulText,
+      modeSoulPath
+    }),
+    '',
+    buildTelegramCtoSubagentIdentityBlock({
+      profile: agentProfile,
+      soulText: agentSoulText,
+      soulPath: agentSoulPath
+    }),
     '',
     replyMode === 'exploration'
       ? 'Exploration mode: Telegram CTO discussion and research reply.'
@@ -312,6 +463,9 @@ export function buildTelegramCtoDirectReplyPrompt({ message, pendingWorkflowStat
     'Reply in Simplified Chinese.',
     'Be warm, grounded, and concise.',
     replyMode === 'exploration' ? 'Keep the reply within 5 short lines.' : 'Keep the reply within 3 short lines.',
+    'The `result` field must be a natural chat reply, not a report.',
+    'Do not use headings, labels, numbered sections, bullets, markdown, workflow summaries, or template wrappers inside `result`.',
+    'Prefer one short paragraph. Only split into two very short paragraphs if that reads more naturally.',
     'Return JSON that matches the provided schema.',
     'Set `title` to `Telegram CTO direct reply`.',
     'Set `status` to `completed`.',
@@ -328,6 +482,20 @@ export function buildTelegramCtoDirectReplyPrompt({ message, pendingWorkflowStat
       'If the message hints at work but is still vague, ask one short clarifying question about which lane to start with.',
       `Direct-reply turns so far in this listener session: ${Number(chatState?.direct_reply_count || 0)}`
     );
+    if (isContextMissingTelegramCtoRequest(message?.text)) {
+      lines.push(
+        'The message points to a problem, error, or situation without enough context.',
+        'Ask for the concrete error text, symptom, related file path, or screenshot/log in one short natural sentence.'
+      );
+    }
+    if (referencesTelegramPreviousPendingQuestion(message?.text, chatState)) {
+      lines.push(
+        'The CEO is referring to your immediately previous pending question, not opening a new workflow.',
+        `Previous pending question: ${truncateInline(asTrimmedString(chatState?.last_pending_question), 220)}`,
+        'Explain that pending question directly in plain Chinese.',
+        'Do not ask which pending question they mean unless the reference is still ambiguous after using the previous question above.'
+      );
+    }
   }
 
   if (replyMode === 'exploration') {
@@ -364,13 +532,15 @@ export function buildTelegramCtoDirectReplyPrompt({ message, pendingWorkflowStat
 
 export async function loadCtoSoulDocument(cwd = process.cwd(), options = {}) {
   const resolvedCwd = path.resolve(cwd || process.cwd());
+  const variant = normalizeCtoSoulVariant(options.variant);
   const overridePath = String(options.path || process.env.OPENCODEX_CTO_SOUL_PATH || '').trim();
   const candidatePaths = [];
 
   if (overridePath) {
-    candidatePaths.push(path.isAbsolute(overridePath) ? overridePath : path.resolve(resolvedCwd, overridePath));
+    const resolvedOverridePath = path.isAbsolute(overridePath) ? overridePath : path.resolve(resolvedCwd, overridePath);
+    candidatePaths.push(resolveCtoSoulVariantPath(resolvedOverridePath, variant));
   }
-  candidatePaths.push(path.resolve(resolvedCwd, DEFAULT_CTO_SOUL_RELATIVE_PATH));
+  candidatePaths.push(path.resolve(resolvedCwd, getDefaultCtoSoulRelativePath(variant)));
 
   for (const candidatePath of candidatePaths) {
     const text = (await readTextIfExists(candidatePath))?.trim() || '';
@@ -379,20 +549,70 @@ export async function loadCtoSoulDocument(cwd = process.cwd(), options = {}) {
         path: candidatePath,
         display_path: path.relative(resolvedCwd, candidatePath) || path.basename(candidatePath),
         text,
-        builtin: false
+        builtin: false,
+        variant
       };
     }
   }
 
   return {
-    path: path.resolve(resolvedCwd, DEFAULT_CTO_SOUL_RELATIVE_PATH),
-    display_path: DEFAULT_CTO_SOUL_RELATIVE_PATH,
-    text: buildDefaultCtoSoulDocument(),
-    builtin: true
+    path: path.resolve(resolvedCwd, getDefaultCtoSoulRelativePath(variant)),
+    display_path: getDefaultCtoSoulRelativePath(variant),
+    text: buildDefaultCtoSoulDocument(variant),
+    builtin: true,
+    variant
   };
 }
 
-export function buildDefaultCtoSoulDocument() {
+export async function loadCtoSoulBundle(cwd = process.cwd(), options = {}) {
+  const base = await loadCtoSoulDocument(cwd, { ...options, variant: 'base' });
+  const chat = await loadCtoSoulDocument(cwd, { path: base.path, variant: 'chat' });
+  const workflow = await loadCtoSoulDocument(cwd, { path: base.path, variant: 'workflow' });
+  return { base, chat, workflow };
+}
+
+export async function loadCtoSubagentSoulDocument(cwd = process.cwd(), options = {}) {
+  const resolvedCwd = path.resolve(cwd || process.cwd());
+  const kind = normalizeCtoSubagentKind(options.kind);
+  const overridePath = String(options.path || process.env.OPENCODEX_CTO_SOUL_PATH || '').trim();
+  const candidatePaths = [];
+
+  if (overridePath) {
+    const resolvedOverridePath = path.isAbsolute(overridePath) ? overridePath : path.resolve(resolvedCwd, overridePath);
+    candidatePaths.push(resolveCtoSubagentSoulPath(resolvedOverridePath, kind));
+  }
+  candidatePaths.push(path.resolve(resolvedCwd, getDefaultCtoSubagentSoulRelativePath(kind)));
+
+  for (const candidatePath of candidatePaths) {
+    const text = (await readTextIfExists(candidatePath))?.trim() || '';
+    if (text) {
+      return {
+        path: candidatePath,
+        display_path: path.relative(resolvedCwd, candidatePath) || path.basename(candidatePath),
+        text,
+        builtin: false,
+        kind
+      };
+    }
+  }
+
+  return {
+    path: path.resolve(resolvedCwd, getDefaultCtoSubagentSoulRelativePath(kind)),
+    display_path: getDefaultCtoSubagentSoulRelativePath(kind),
+    text: buildDefaultCtoSubagentSoulDocument(kind),
+    builtin: true,
+    kind
+  };
+}
+
+export function buildDefaultCtoSoulDocument(variant = 'base') {
+  const normalizedVariant = normalizeCtoSoulVariant(variant);
+  if (normalizedVariant === 'chat') {
+    return buildDefaultCtoChatSoulDocument();
+  }
+  if (normalizedVariant === 'workflow') {
+    return buildDefaultCtoWorkflowSoulDocument();
+  }
   return [
     '# openCodex CTO Soul',
     '',
@@ -433,7 +653,127 @@ export function buildDefaultCtoSoulDocument() {
   ].join('\n');
 }
 
-export function buildTelegramCtoMainThreadSystemPrompt({ continuation = false, soulText = '', soulPath = '' } = {}) {
+export function buildDefaultCtoSubagentSoulDocument(kind = 'worker') {
+  const normalizedKind = normalizeCtoSubagentKind(kind);
+  if (normalizedKind === 'reply') {
+    return buildDefaultCtoReplyAgentSoulDocument();
+  }
+  if (normalizedKind === 'planner') {
+    return buildDefaultCtoPlannerAgentSoulDocument();
+  }
+  return buildDefaultCtoWorkerAgentSoulDocument();
+}
+
+export function buildDefaultCtoChatSoulDocument() {
+  return [
+    '# openCodex CTO Chat Soul',
+    '',
+    'This overlay only applies when the CTO main thread is staying in chat, casual reply, or exploration mode.',
+    '',
+    '## Chat Priority',
+    '- Treat chat as the default control surface and primary continuity thread.',
+    '- Prefer a natural, direct answer before considering workflow creation.',
+    '- Do not create tasks just because the user is warm, vague, or thinking aloud.',
+    '',
+    '## Tone',
+    '- Reply in a warm, grounded, concise way.',
+    '- Avoid bureaucratic summaries, heavy templates, and premature TODO lists.',
+    '- If the user is casually checking in, reply like a person, not a dispatcher.',
+    '',
+    '## Escalation Into Workflow',
+    '- Only suggest orchestration when the user shows a concrete execution intent, asks for implementation, or wants progress on real work.',
+    '- If the request is still vague, ask one short clarifying question instead of spawning a workflow.',
+    '- If there is already a waiting workflow, keep the reply anchored to that existing thread instead of creating a new one.'
+  ].join('\n');
+}
+
+export function buildDefaultCtoWorkflowSoulDocument() {
+  return [
+    '# openCodex CTO Workflow Soul',
+    '',
+    'This overlay only applies when the CTO main thread is planning, resuming, or supervising workflow execution.',
+    '',
+    '## Workflow Priority',
+    '- Treat workflow orchestration as a branch triggered by the main chat thread, not as the default response mode.',
+    '- When execution is justified, move decisively: infer the safest high-leverage path and start with the smallest meaningful task set.',
+    '- Keep workflow state coherent so the CEO can always tell what is running, waiting, blocked, or complete.',
+    '',
+    '## Planning Discipline',
+    '- Prefer 1-4 concrete tasks at a time.',
+    '- Keep tasks scoped, independently executable, and easy to resume.',
+    '- Use waiting questions only when the next branch materially changes execution or external side effects.',
+    '',
+    '## Delegation Discipline',
+    '- Child sessions are helpers, not coordinators.',
+    '- Worker prompts should be explicit enough that the child does not need to invent policy.',
+    '- Preserve chat-thread continuity by linking workflow output back to the main thread whenever possible.'
+  ].join('\n');
+}
+
+export function buildDefaultCtoReplyAgentSoulDocument() {
+  return [
+    '# openCodex CTO Reply Agent Soul',
+    '',
+    'This soul applies to the child agent that drafts direct CEO replies for the CTO main thread.',
+    '',
+    '## Role',
+    '- Stay natural, grounded, and conversational.',
+    '- Do not sound like a task dispatcher during casual chat.',
+    '- If the message is vague, help clarify it in one short, human question.',
+    '',
+    '## Boundaries',
+    '- Do not silently escalate light chat into orchestration.',
+    '- Respect an existing waiting workflow and point back to it when needed.',
+    '- Keep replies short, warm, and practical.'
+  ].join('\n');
+}
+
+export function buildDefaultCtoPlannerAgentSoulDocument() {
+  return [
+    '# openCodex CTO Planner Agent Soul',
+    '',
+    'This soul applies to the child agent that drafts workflow plans for the CTO main thread.',
+    '',
+    '## Role',
+    '- Think like a grounded project lead, not a grand strategist.',
+    '- Prefer the next 1-4 concrete tasks over oversized master plans.',
+    '- Keep plans easy to resume and easy to explain back to the CEO.',
+    '',
+    '## Boundaries',
+    '- You are not the CEO-facing CTO identity.',
+    '- Do not invent broad strategy when a smaller safe execution path is obvious.',
+    '- Ask for confirmation only when the next branch materially changes execution or external effects.'
+  ].join('\n');
+}
+
+export function buildDefaultCtoWorkerAgentSoulDocument() {
+  return [
+    '# openCodex CTO Worker Agent Soul',
+    '',
+    'This soul applies to child worker agents that execute concrete subtasks under the CTO main thread.',
+    '',
+    '## Role',
+    '- Behave like a practical engineer or operator who owns one scoped task at a time.',
+    '- Prefer the smallest reversible change that proves progress.',
+    '- Validate what changed and report blockers plainly.',
+    '',
+    '## Boundaries',
+    '- Do not take over orchestration.',
+    '- Do not rewrite task scope or invent policy.',
+    '- Stop when the assigned task is done, blocked, or needs a supervisor decision.'
+  ].join('\n');
+}
+
+export function buildTelegramCtoMainThreadSystemPrompt({
+  continuation = false,
+  soulText = '',
+  soulPath = '',
+  baseSoulText = '',
+  baseSoulPath = '',
+  modeSoulText = '',
+  modeSoulPath = '',
+  mode = 'workflow'
+} = {}) {
   const lines = [
     'You are the dedicated openCodex CTO main thread operating through the Telegram control channel.',
     'You are the host-level supervisor for the CEO-facing CTO thread and must stay in the CTO role.',
@@ -449,6 +789,8 @@ export function buildTelegramCtoMainThreadSystemPrompt({ continuation = false, s
     'Use Simplified Chinese for `summary_zh` and `question_zh`.',
     'Use English for task titles and worker prompts.',
     'Create 1-4 concrete tasks at a time. Prefer parallel tasks when dependencies allow.',
+    'Default to autonomous progress: when a safe local path is obvious, choose `execute` and keep the work moving without waiting for the CEO.',
+    'Use `confirm` only for destructive or external side effects, missing external access, or a material strategy fork.',
     'You must personally generate and edit every worker prompt. Do not ask workers to invent their own mission.',
     'Each worker prompt must be self-contained, minimal, reversible, and executable by a child agent without extra clarification.',
     'Workers reply in Simplified Chinese. Project artifacts stay in English, and docs remain bilingual under docs/en and docs/zh.',
@@ -459,17 +801,38 @@ export function buildTelegramCtoMainThreadSystemPrompt({ continuation = false, s
       : 'Ask one concise Chinese question only when ambiguity would materially change the execution path or create a meaningful external risk.'
   ];
 
-  const normalizedSoulText = String(soulText || '').trim();
-  if (normalizedSoulText) {
-    lines.push('', soulPath
-      ? `Active CTO soul document (${soulPath}):`
-      : 'Active CTO soul document:', normalizedSoulText);
+  const normalizedBaseSoulText = String(baseSoulText || soulText || '').trim();
+  const normalizedBaseSoulPath = String(baseSoulPath || soulPath || '').trim();
+  if (normalizedBaseSoulText) {
+    lines.push('', normalizedBaseSoulPath
+      ? `Active CTO base soul document (${normalizedBaseSoulPath}):`
+      : 'Active CTO base soul document:', normalizedBaseSoulText);
+  }
+
+  const normalizedModeSoulText = String(modeSoulText || '').trim();
+  const normalizedModeSoulPath = String(modeSoulPath || '').trim();
+  if (normalizedModeSoulText) {
+    const modeLabel = mode === 'chat' ? 'chat-mode' : 'workflow-mode';
+    lines.push('', normalizedModeSoulPath
+      ? `Active CTO ${modeLabel} soul document (${normalizedModeSoulPath}):`
+      : `Active CTO ${modeLabel} soul document:`, normalizedModeSoulText);
   }
 
   return lines.join('\n');
 }
 
-export function buildTelegramCtoPlannerPrompt({ message, workflowState, continuationMessage = null, soulText = '', soulPath = '' }) {
+export function buildTelegramCtoPlannerPrompt({
+  message,
+  workflowState,
+  continuationMessage = null,
+  soulText = '',
+  soulPath = '',
+  modeSoulText = '',
+  modeSoulPath = '',
+  agentSoulText = '',
+  agentSoulPath = ''
+}) {
+  const agentProfile = resolveTelegramCtoSubagentProfile({ kind: 'planner' });
   const completedTaskLines = summarizeTasksForPrompt(workflowState.tasks || []);
   const historyLines = (workflowState.user_messages || [])
     .slice(-4)
@@ -477,7 +840,20 @@ export function buildTelegramCtoPlannerPrompt({ message, workflowState, continua
 
   if (continuationMessage) {
     return [
-      buildTelegramCtoMainThreadSystemPrompt({ continuation: true, soulText, soulPath }),
+      buildTelegramCtoMainThreadSystemPrompt({
+        continuation: true,
+        mode: 'workflow',
+        baseSoulText: soulText,
+        baseSoulPath: soulPath,
+        modeSoulText,
+        modeSoulPath
+      }),
+      '',
+      buildTelegramCtoSubagentIdentityBlock({
+        profile: agentProfile,
+        soulText: agentSoulText,
+        soulPath: agentSoulPath
+      }),
       '',
       'Original Telegram goal:',
       workflowState.goal_text,
@@ -497,11 +873,165 @@ export function buildTelegramCtoPlannerPrompt({ message, workflowState, continua
   }
 
   return [
-    buildTelegramCtoMainThreadSystemPrompt({ soulText, soulPath }),
+    buildTelegramCtoMainThreadSystemPrompt({
+      mode: 'workflow',
+      baseSoulText: soulText,
+      baseSoulPath: soulPath,
+      modeSoulText,
+      modeSoulPath
+    }),
+    '',
+    buildTelegramCtoSubagentIdentityBlock({
+      profile: agentProfile,
+      soulText: agentSoulText,
+      soulPath: agentSoulPath
+    }),
     '',
     'Telegram message:',
     message.text
   ].join('\n');
+}
+
+function normalizeCtoSoulVariant(variant) {
+  return ['chat', 'workflow'].includes(String(variant || '').trim()) ? String(variant).trim() : 'base';
+}
+
+function getDefaultCtoSoulRelativePath(variant) {
+  if (variant === 'chat') {
+    return DEFAULT_CTO_CHAT_SOUL_RELATIVE_PATH;
+  }
+  if (variant === 'workflow') {
+    return DEFAULT_CTO_WORKFLOW_SOUL_RELATIVE_PATH;
+  }
+  return DEFAULT_CTO_SOUL_RELATIVE_PATH;
+}
+
+export function resolveCtoSoulVariantPath(basePath, variant = 'base') {
+  const normalizedVariant = normalizeCtoSoulVariant(variant);
+  if (normalizedVariant === 'base') {
+    return basePath;
+  }
+  const dir = path.dirname(basePath);
+  const filename = normalizedVariant === 'chat' ? 'cto-chat-soul.md' : 'cto-workflow-soul.md';
+  return path.join(dir, filename);
+}
+
+function normalizeCtoSubagentKind(kind) {
+  return ['reply', 'planner'].includes(String(kind || '').trim()) ? String(kind).trim() : 'worker';
+}
+
+function getDefaultCtoSubagentSoulRelativePath(kind) {
+  const normalizedKind = normalizeCtoSubagentKind(kind);
+  if (normalizedKind === 'reply') {
+    return DEFAULT_CTO_REPLY_AGENT_SOUL_RELATIVE_PATH;
+  }
+  if (normalizedKind === 'planner') {
+    return DEFAULT_CTO_PLANNER_AGENT_SOUL_RELATIVE_PATH;
+  }
+  return DEFAULT_CTO_WORKER_AGENT_SOUL_RELATIVE_PATH;
+}
+
+export function resolveCtoSubagentSoulPath(basePath, kind = 'worker') {
+  const normalizedKind = normalizeCtoSubagentKind(kind);
+  const dir = path.dirname(basePath);
+  if (normalizedKind === 'reply') {
+    return path.join(dir, 'cto-reply-agent-soul.md');
+  }
+  if (normalizedKind === 'planner') {
+    return path.join(dir, 'cto-planner-agent-soul.md');
+  }
+  return path.join(dir, 'cto-worker-agent-soul.md');
+}
+
+export function resolveTelegramCtoSubagentProfile({ kind = 'worker', task = null, replyMode = 'casual' } = {}) {
+  const normalizedKind = normalizeCtoSubagentKind(kind);
+  if (normalizedKind === 'reply') {
+    if (replyMode === 'exploration') {
+      return {
+        kind: 'reply',
+        name_zh: '阿研',
+        name_en: 'Yan',
+        role_zh: '讨论型回复搭子',
+        role_en: 'discussion reply partner',
+        vibe_zh: '擅长把想法聊清楚，不把闲聊硬拐成任务编排。',
+        vibe_en: 'Good at talking ideas through without force-converting every exchange into orchestration.'
+      };
+    }
+    if (replyMode === 'conversation') {
+      return {
+        kind: 'reply',
+        name_zh: '阿桥',
+        name_en: 'Qiao',
+        role_zh: '意图澄清搭子',
+        role_en: 'intent clarification partner',
+        vibe_zh: '会先把话接住，再用一句人话问清该从哪条线开始。',
+        vibe_en: 'Catches the thread first, then asks one natural clarifying question when needed.'
+      };
+    }
+    return {
+      kind: 'reply',
+      name_zh: '阿满',
+      name_en: 'Man',
+      role_zh: '日常回复搭子',
+      role_en: 'everyday reply partner',
+      vibe_zh: '像个靠谱又不端着的产品伙计，接话自然，不装腔作势。',
+      vibe_en: 'A grounded product-minded partner who replies naturally and without ceremony.'
+    };
+  }
+
+  if (normalizedKind === 'planner') {
+    return {
+      kind: 'planner',
+      name_zh: '阿周',
+      name_en: 'Zhou',
+      role_zh: '排程规划搭子',
+      role_en: 'planning partner',
+      vibe_zh: '像项目群里最靠谱的排期同事，先把下一步安排顺，再动手。',
+      vibe_en: 'Feels like the most reliable planning partner in a project chat: line up the next steps cleanly before moving.'
+    };
+  }
+
+  const selected = TELEGRAM_CTO_WORKER_PERSONA_POOL[computeDeterministicIndex(String(task?.id || task?.title || 'worker'), TELEGRAM_CTO_WORKER_PERSONA_POOL.length)];
+  return {
+    kind: 'worker',
+    name_zh: selected.name_zh,
+    name_en: selected.name_en,
+    role_zh: '工程执行搭子',
+    role_en: 'implementation partner',
+    vibe_zh: selected.vibe_zh,
+    vibe_en: selected.vibe_en
+  };
+}
+
+function buildTelegramCtoSubagentIdentityBlock({ profile = null, soulText = '', soulPath = '' } = {}) {
+  if (!profile) {
+    return '';
+  }
+
+  const lines = [
+    `Child agent name: ${profile.name_zh}${profile.name_en ? ` (${profile.name_en})` : ''}`,
+    `Child agent role: ${profile.role_en || profile.role_zh || 'helper'}`,
+    `Child agent vibe: ${profile.vibe_en || profile.vibe_zh || 'Grounded and practical.'}`,
+    'You are operating as this child agent under the CTO main thread, not replacing the CTO identity.'
+  ];
+
+  const normalizedSoulText = String(soulText || '').trim();
+  if (normalizedSoulText) {
+    lines.push(soulPath
+      ? `Active child-agent soul document (${soulPath}):`
+      : 'Active child-agent soul document:', normalizedSoulText);
+  }
+
+  return lines.join('\n');
+}
+
+function computeDeterministicIndex(seed, size) {
+  const limit = Math.max(Number(size) || 0, 1);
+  let hash = 0;
+  for (const char of String(seed || 'worker')) {
+    hash = (hash * 33 + char.charCodeAt(0)) >>> 0;
+  }
+  return hash % limit;
 }
 
 function buildInferredTelegramCtoPlan({ fallbackMessageText, workflowState }) {
@@ -510,8 +1040,36 @@ function buildInferredTelegramCtoPlan({ fallbackMessageText, workflowState }) {
     return null;
   }
 
-  if (!TELEGRAM_ANALYSIS_INTENT_PATTERN.test(messageText)) {
+  const interactionPolicyDiscussion = isTelegramCtoInteractionPolicyDiscussion(messageText);
+  const hasMetaAuditTarget = TELEGRAM_ANALYSIS_INTENT_PATTERN.test(messageText)
+    || TELEGRAM_REASONING_TARGET_PATTERN.test(messageText)
+    || TELEGRAM_ARCHITECTURE_TARGET_PATTERN.test(messageText)
+    || interactionPolicyDiscussion;
+
+  if (!hasMetaAuditTarget) {
     return null;
+  }
+
+  if (interactionPolicyDiscussion) {
+    return {
+      mode: 'execute',
+      summary_zh: '已将你的要求自动推断为一次 CTO 交互与编排修正任务，并默认先执行安全的审查/改进。',
+      question_zh: '',
+      tasks: [
+        {
+          id: 'improve-cto-interaction-flow',
+          title: 'Improve CTO chat-first interaction flow',
+          worker_prompt: [
+            `Interpret the CEO message as a request to improve the openCodex CTO interaction model: ${messageText}`,
+            'Inspect at minimum `src/lib/cto-workflow.js`, `src/commands/im.js`, the CTO soul/prompt files, and the most relevant Telegram CTO tests.',
+            'Focus on three outcomes: 1) chat stays the main continuity thread, 2) workflows autonomously progress and finish when safe, 3) chat-mode replies stay natural instead of templated.',
+            'Implement the highest-leverage safe fixes directly in the repo with focused regression coverage.',
+            'Only stop for missing external information or destructive/high-risk actions. Otherwise finish the change end-to-end.'
+          ].join('\n'),
+          depends_on: []
+        }
+      ]
+    };
   }
 
   if (TELEGRAM_REASONING_TARGET_PATTERN.test(messageText)) {
@@ -924,19 +1482,12 @@ export function buildTelegramCtoPlanText(workflowState) {
 }
 
 export function buildTelegramCtoQuestionText(workflowState) {
-  const lines = [
-    'openCodex CTO 需要你确认下一步',
-    `问题：${truncateInline(workflowState.pending_question_zh || '请补充执行所需信息。', 500)}`,
-    `当前目标：${truncateInline(workflowState.goal_text, 160)}`,
-    `Workflow: ${workflowState.workflow_session_id}`
-  ];
-
   const counts = summarizeWorkflowCounts(workflowState);
-  if (counts.completed > 0 || counts.failed > 0) {
-    lines.splice(3, 0, `进度：completed ${counts.completed}, partial ${counts.partial}, failed ${counts.failed}`);
+  const question = truncateInline(workflowState.pending_question_zh || '请补充执行所需信息。', 500);
+  if (counts.completed > 0 || counts.failed > 0 || counts.partial > 0) {
+    return `现在还差你确认这一步：${question}。前面已经完成 ${counts.completed} 项，失败 ${counts.failed} 项，待跟进 ${counts.partial} 项。`;
   }
-
-  return lines.join('\n');
+  return `现在还差你确认这一步：${question}。`;
 }
 
 export function buildTelegramCtoStatusText(workflowState) {
@@ -972,46 +1523,58 @@ export function buildTelegramCtoStatusText(workflowState) {
 
 export function buildTelegramCtoFinalText(workflowState) {
   const counts = summarizeWorkflowCounts(workflowState);
-  const statusTitle = workflowState.status === 'completed'
-    ? 'openCodex CTO 工作流已完成'
-    : workflowState.status === 'waiting_for_user'
-      ? 'openCodex CTO 工作流待确认'
-      : workflowState.status === 'cancelled'
-        ? 'openCodex CTO 工作流已取消'
-        : 'openCodex CTO 工作流已结束';
+  const taskResults = (workflowState.tasks || [])
+    .map((task) => asTrimmedString(task?.result))
+    .filter(Boolean);
+  const nextSteps = collectWorkflowNextSteps(workflowState).slice(0, 2);
 
-  const lines = [
-    statusTitle,
-    `目标：${truncateInline(workflowState.goal_text, 160)}`,
-    `进度：completed ${counts.completed}, rerouted ${counts.rerouted}, partial ${counts.partial}, failed ${counts.failed}, cancelled ${counts.cancelled}, queued ${counts.queued}`
-  ];
-
-  const highlights = collectWorkflowHighlights(workflowState).slice(0, 4);
-  if (highlights.length) {
-    lines.push('要点：');
-    for (const item of highlights) {
-      lines.push(`- ${truncateInline(item, 220)}`);
+  if (workflowState.status === 'completed') {
+    if (taskResults.length === 1) {
+      return truncateInline(taskResults[0], 900);
     }
+    if (taskResults.length > 1) {
+      return `这轮已经处理完。${truncateInline(taskResults[taskResults.length - 1], 900)}`;
+    }
+    return `这轮已经处理完，一共完成了 ${counts.completed} 项。`;
   }
 
-  const changedFiles = collectWorkflowChangedFiles(workflowState).slice(0, 4);
-  if (changedFiles.length) {
-    lines.push('改动：');
-    for (const item of changedFiles) {
-      lines.push(`- ${truncateInline(item, 220)}`);
+  if (workflowState.status === 'cancelled') {
+    if (counts.cancelled > 0) {
+      return `这轮先停在这里了，已取消 ${counts.cancelled} 项尚未完成的任务。`;
     }
+    return '这轮先停在这里了。';
   }
 
-  const nextSteps = collectWorkflowNextSteps(workflowState).slice(0, 4);
+  if (workflowState.status === 'waiting_for_user') {
+    return buildTelegramCtoQuestionText(workflowState);
+  }
+
+  if (taskResults.length > 0) {
+    const suffix = nextSteps.length ? ` 下一步建议先处理：${truncateInline(nextSteps[0], 220)}。` : '';
+    return `${truncateInline(taskResults[taskResults.length - 1], 900)}${suffix}`;
+  }
+
   if (nextSteps.length) {
-    lines.push('下一步：');
-    for (const item of nextSteps) {
-      lines.push(`- ${truncateInline(item, 220)}`);
-    }
+    return `这轮还没完全收口，建议先处理：${truncateInline(nextSteps[0], 220)}。`;
   }
 
-  lines.push(`Workflow: ${workflowState.workflow_session_id}`);
-  return lines.join('\n');
+  if (workflowState.status === 'failed') {
+    return counts.failed > 0
+      ? `这轮处理失败了，失败 ${counts.failed} 项。`
+      : '这轮处理失败了。';
+  }
+
+  if (workflowState.status === 'partial') {
+    return `这轮还没完全收口，已完成 ${counts.completed} 项，待跟进 ${counts.partial} 项，失败 ${counts.failed} 项。`;
+  }
+
+  if (workflowState.status === 'running') {
+    return counts.rerouted > 0
+      ? `这轮还在继续处理中，已有 ${counts.rerouted} 项转到宿主执行器继续跑。`
+      : '这轮还在继续处理中。';
+  }
+
+  return '这轮还在处理中。';
 }
 
 export function buildTelegramCtoSessionSummary(workflowState) {
@@ -1372,14 +1935,23 @@ function findTask(workflowState, taskId) {
   return (workflowState.tasks || []).find((task) => task.id === taskId) || null;
 }
 
-export function buildTelegramCtoWorkerSystemPrompt({ workflowState, task }) {
+export function buildTelegramCtoWorkerSystemPrompt({ workflowState, task, agentSoulText = '', agentSoulPath = '' }) {
+  const agentProfile = resolveTelegramCtoSubagentProfile({ kind: 'worker', task });
   return [
     'You are a sandbox-side advisor session delegated by the host-level openCodex CTO supervisor.',
+    buildTelegramCtoSubagentIdentityBlock({
+      profile: agentProfile,
+      soulText: agentSoulText,
+      soulPath: agentSoulPath
+    }),
     'The CTO main thread is the sole orchestrator. You are a child helper, not the coordinator or the CEO-facing CTO identity.',
-    'Execute only the assigned subtask, report concrete progress, and stop when the task scope is done or blocked.',
+    'Execute only the assigned subtask, report concrete progress, and stop when the task scope is done or truly blocked.',
     'Reply to the maintainer in Simplified Chinese.',
     'Keep project content in English. Keep docs bilingual under docs/en and docs/zh when docs change.',
     'Prefer the smallest practical, reversible change and validate what you changed when reasonable.',
+    'Default to finishing the task end-to-end inside this run when the path is safe and local.',
+    'Do not hand routine next steps back to the CTO if you can execute them yourself.',
+    'Use `partial`, `failed`, or `next_steps` only when you hit missing external information, destructive/high-risk actions, or a material strategy decision.',
     `Workflow goal: ${truncateInline(workflowState?.goal_text || '', 160) || '(none)'}`,
     `Task id: ${task?.id || '(unknown)'}`,
     `Task title: ${task?.title || '(untitled)'}`,
@@ -1387,9 +1959,9 @@ export function buildTelegramCtoWorkerSystemPrompt({ workflowState, task }) {
   ].join('\n');
 }
 
-export function buildTelegramCtoWorkerExecutionPrompt({ workflowState, task, fallbackMessageText = '' }) {
+export function buildTelegramCtoWorkerExecutionPrompt({ workflowState, task, fallbackMessageText = '', agentSoulText = '', agentSoulPath = '' }) {
   return [
-    buildTelegramCtoWorkerSystemPrompt({ workflowState, task }),
+    buildTelegramCtoWorkerSystemPrompt({ workflowState, task, agentSoulText, agentSoulPath }),
     '',
     'Worker directive from the CTO main thread:',
     asTrimmedString(task?.worker_prompt) || buildFallbackWorkerDirective({

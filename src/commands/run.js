@@ -228,6 +228,7 @@ export function buildRunArgs(prompt, options = {}, paths = {}) {
   return [
     ...profile.args,
     'exec',
+    '--skip-git-repo-check',
     '--json',
     '--output-schema',
     schemaPath,
@@ -254,8 +255,6 @@ export function buildSummaryFromMessage(message, fallbackStatus, codexCliVersion
   });
 }
 
-<<<<<<< HEAD
-=======
 function buildHostSandboxFailureSummary({ profileName, requestedSandboxMode, hostSandboxMode = '', codexCliVersion = '', detectionSource = '' }) {
   const effectiveHostSandboxMode = hostSandboxMode || 'read-only';
   return normalizeSummary({
@@ -285,8 +284,6 @@ function buildHostSandboxFailureSummary({ profileName, requestedSandboxMode, hos
     findings: []
   });
 }
-
->>>>>>> 962493a (fix(cto): fail fast on stricter host sandbox)
 function resolveSchemaPath(schemaPath) {
   return schemaPath ? path.resolve(schemaPath) : DEFAULT_SCHEMA_PATH;
 }

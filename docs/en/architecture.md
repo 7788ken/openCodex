@@ -55,6 +55,12 @@ They can act as:
 They must not become the supervisor of record.
 The host supervisor owns the final decision, status, and user-facing reply.
 
+## Installed Product Boundary
+
+The installed app surface, CLI surface, and long-lived services should share one detached runtime root.
+They should not use a source checkout as the default launcher of record.
+See `install-layout.md` for the current packaging direction.
+
 ### Layer 3 — openCodex Gateway
 
 This layer is reserved for later phases.

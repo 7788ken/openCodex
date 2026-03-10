@@ -15,10 +15,12 @@
 - `auto-command.md` — 基于现有 wrapper 命令串联的无人值守本地工作流。
 - `remote-command.md` — 基于本地 HTTP 的带 token 手机消息桥。
 - `service-command.md` — Telegram CTO 模式的 macOS launchd 服务与菜单栏 app 管理。
+- `install-command.md` — detached runtime 安装与本地 CLI shim 管理。
 - `im-command.md` — 以 Telegram 为第一优先的即时通讯连接器。
 - `cto-main-thread-sequence.md` — CTO 主线程、workflow 与 task 的 chat-first 时序图。
 - `profile-policy.md` — 当前 wrapper profiles 与 Codex CLI 策略映射。
 - `cto-soul.md` — CTO 主线程可编辑的初始化提示文档。
+- `install-layout.md` — App 形态、CLI shim 与长期服务共享 detached runtime 的安装布局。
 
 ## 说明
 

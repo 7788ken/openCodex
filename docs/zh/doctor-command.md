@@ -15,6 +15,8 @@
 - 通过 `codex mcp list --json` 检查 MCP 可见性
 - 当前是否处于 Git 工作区
 - `~/.codex/config.toml` 是否存在
+- 当前 openCodex launcher 是源码 checkout 还是独立安装入口
+- 已安装的 Telegram service 是否仍绑定在源码 checkout 上
 
 ## 输出结构
 

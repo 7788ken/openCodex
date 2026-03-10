@@ -162,6 +162,41 @@ Connect openCodex to chat platforms without relying on local IP reachability.
 - adding hosted relay infrastructure in v1
 - supporting every IM provider in the first pass
 
+### `opencodex install`
+
+**Purpose**
+
+Create and inspect a detached local runtime so the installed CLI and long-lived services stop depending on a source checkout.
+
+**Initial scope**
+
+- create a portable runtime bundle for release handoff
+- install a versioned detached runtime under a user-owned root
+- rewrite a `current` pointer to the active installed runtime
+- create a CLI shim for shell usage
+- compile a thin `OpenCodex.app` shell that launches the same detached runtime
+- report the runtime CLI path that `service relink` should use
+
+**Minimal flags**
+
+- `bundle`
+- `detached`
+- `status`
+- `--output <path>`
+- `--root <dir>`
+- `--bin-dir <dir>`
+- `--applications-dir <dir>`
+- `--bundle <path>`
+- `--name <id>`
+- `--force`
+- `--json`
+
+**Non-goals**
+
+- shipping a notarized desktop app in the first pass
+- mutating existing services automatically
+- defining a system-wide installer in v1
+
 ### `opencodex service`
 
 **Purpose**
@@ -183,15 +218,22 @@ Install and control a macOS background service for the Telegram CTO bridge, with
 - `telegram stop`
 - `telegram restart`
 - `telegram send-status`
+- `telegram set-workspace`
+- `telegram relink`
 - `telegram task-history`
 - `telegram dispatch-detail`
 - `telegram uninstall`
 - `--cwd <dir>`
 - `--chat-id <id>`
 - `--bot-token <token>`
+- `--cli-path <path>`
+- `--cto-soul-path <path>`
 - `--poll-timeout <seconds>`
 - `--profile <name>`
 - `set-profile --profile <name>`
+- `set-workspace --cwd <path>`
+- `relink --cli-path <path>`
+- `--allow-project-cli`
 - `--install-menubar`
 - `--open-menubar`
 - `--no-load`

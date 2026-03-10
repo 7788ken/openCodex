@@ -497,6 +497,88 @@ test('session repair gives failed stale cto workflows a generic follow-up questi
   assert.match(repairedWorkflowState.pending_question_zh, /重新派发失败任务/);
 });
 
+test('session repair closes misrouted casual-chat cto workflows and stays idempotent', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-repair-cto-casual-chat-'));
+  const ctoSessionId = 'cto-20260310-casual-chat';
+  const ctoSessionDir = path.join(cwd, '.opencodex', 'sessions', ctoSessionId);
+  const workflowStatePath = path.join(ctoSessionDir, 'artifacts', 'cto-workflow.json');
+
+  await mkdir(path.join(ctoSessionDir, 'artifacts'), { recursive: true });
+  await writeFile(path.join(ctoSessionDir, 'session.json'), `${JSON.stringify({
+    session_id: ctoSessionId,
+    command: 'cto',
+    status: 'partial',
+    created_at: '2026-03-10T12:09:50.000Z',
+    updated_at: '2026-03-10T12:09:50.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'telegram-bot-api',
+    input: { prompt: '你吃晚餐了吗', arguments: { provider: 'telegram' } },
+    summary: {
+      title: 'CTO workflow needs follow-up',
+      result: '旧规则把轻聊天误开成 workflow，仍在等待 CEO 回复。',
+      status: 'partial',
+      highlights: [],
+      next_steps: ['请确认是否继续当前工作流。']
+    },
+    artifacts: [
+      { type: 'cto_workflow', path: workflowStatePath, description: 'Telegram CTO workflow state and task graph.' }
+    ]
+  }, null, 2)}
+`, 'utf8');
+  await writeFile(workflowStatePath, `${JSON.stringify({
+    workflow_session_id: ctoSessionId,
+    provider: 'telegram',
+    chat_id: '1379564094',
+    source_update_id: 1,
+    source_message_id: 1,
+    sender_display: 'CEO',
+    goal_text: '你吃晚餐了吗',
+    latest_user_message: '你吃晚餐了吗',
+    created_at: '2026-03-10T12:09:50.000Z',
+    updated_at: '2026-03-10T12:09:50.000Z',
+    status: 'waiting_for_user',
+    pending_question_zh: '请确认是否继续当前工作流。',
+    tasks: [
+      {
+        id: 'reply-social-chat',
+        title: 'Reply to the social check-in',
+        status: 'failed',
+        session_id: '',
+        summary_status: 'failed',
+        result: 'Not inside a trusted directory and --skip-git-repo-check was not specified.',
+        next_steps: ['请确认是否重新派发失败任务。'],
+        changed_files: [],
+        updated_at: '2026-03-10T12:10:10.000Z'
+      }
+    ]
+  }, null, 2)}\n`, 'utf8');
+
+  const firstRun = await runCli(['session', 'repair', '--json', '--cwd', cwd, '--stale-minutes', '0']);
+  assert.equal(firstRun.code, 0);
+
+  const firstPayload = JSON.parse(firstRun.stdout);
+  assert.equal(firstPayload.repaired_count, 1);
+  assert.equal(firstPayload.repaired[0].session_id, ctoSessionId);
+  assert.equal(firstPayload.repaired[0].to, 'failed');
+
+  const repairedSession = JSON.parse(await readFile(path.join(ctoSessionDir, 'session.json'), 'utf8'));
+  const repairedWorkflowState = JSON.parse(await readFile(workflowStatePath, 'utf8'));
+  assert.equal(repairedSession.status, 'failed');
+  assert.equal(repairedSession.summary.status, 'failed');
+  assert.match(repairedSession.summary.result, /本不该进入 workflow/);
+  assert.deepEqual(repairedSession.summary.validation, ['chat_routing:casual_chat_repair']);
+  assert.equal(repairedWorkflowState.status, 'failed');
+  assert.equal(repairedWorkflowState.pending_question_zh, '');
+  assert.deepEqual(repairedWorkflowState.tasks[0].next_steps, []);
+
+  const secondRun = await runCli(['session', 'repair', '--json', '--cwd', cwd, '--stale-minutes', '0']);
+  assert.equal(secondRun.code, 0);
+
+  const secondPayload = JSON.parse(secondRun.stdout);
+  assert.equal(secondPayload.repaired_count, 0);
+  assert.deepEqual(secondPayload.repaired, []);
+});
+
 test('session repair restores stale review sessions from review-report artifact', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-repair-review-'));
   const sessionId = 'review-20260308-stale';

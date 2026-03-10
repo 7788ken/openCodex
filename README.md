@@ -38,19 +38,30 @@ The goal of this repository is to explore a practical, repo-aware coding workflo
 - `opencodex remote` — open a token-protected HTTP bridge so your phone can send messages into the current workspace.
 - `opencodex im` — connect openCodex to IM platforms like Telegram without depending on local IP reachability, and route messages into a host-resident CTO supervisor workflow with task splitting, progress replies, and confirmation gates.
 - `opencodex service` — install a macOS launchd service and optional menu bar app for the Telegram CTO bridge, with a configurable permission mode and host-supervisor control loop.
+- `opencodex install` — create or inspect a detached local runtime, plus a thin `OpenCodex.app` shell and CLI shim that stay off the development checkout.
+
+## Installed Product Boundary
+
+openCodex can ship as a menu bar app and a CLI at the same time, but they should resolve to one detached installed runtime.
+The source checkout remains a development workspace only.
+See `docs/en/install-layout.md` for the current packaging direction.
 
 ## Quick Start
 
 ```bash
 npm test
 node ./bin/opencodex.js doctor
+node ./bin/opencodex.js install detached
+open "$HOME/Applications/OpenCodex.app"
 node ./bin/opencodex.js run "summarize this repository"
 node ./bin/opencodex.js review --uncommitted
 node ./bin/opencodex.js auto --review "stabilize this repository"
 node ./bin/opencodex.js remote serve --host 0.0.0.0
 node ./bin/opencodex.js im telegram listen --bot-token "$OPENCODEX_TELEGRAM_BOT_TOKEN"
 node ./bin/opencodex.js im telegram listen --chat-id "$OPENCODEX_TELEGRAM_CHAT_ID" --cto --bot-token "$OPENCODEX_TELEGRAM_BOT_TOKEN"
-node ./bin/opencodex.js service telegram install --cwd "$PWD" --chat-id "$OPENCODEX_TELEGRAM_CHAT_ID" --profile full-access --install-menubar --open-menubar
+# Long-lived services should normally be installed from an installed openCodex CLI.
+# Use --allow-project-cli only when you intentionally want this source checkout to stay coupled to the service.
+node ./bin/opencodex.js service telegram install --cwd "$PWD" --chat-id "$OPENCODEX_TELEGRAM_CHAT_ID" --profile full-access --install-menubar --open-menubar --allow-project-cli
 node ./bin/opencodex.js session latest
 node ./bin/opencodex.js session repair --stale-minutes 30
 node ./bin/opencodex.js session repair

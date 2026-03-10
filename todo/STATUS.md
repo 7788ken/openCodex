@@ -1,5 +1,20 @@
 # Status Log
 
+## 2026-03-10
+
+- Fixed a merge-conflict residue in `src/commands/run.js` that was blocking the CLI from starting.
+- `opencodex service telegram install` now refuses by default to bind a long-lived service to the current source checkout; `--allow-project-cli` is required for an intentional temporary coupling.
+- Service status now exposes launcher provenance (`launcher_scope`, `cli_path`, `node_path`, `launcher_warning`) so checkout-coupled installs are visible without opening raw config files.
+- Added `opencodex service telegram relink --cli-path <path>` so an existing Telegram service can move to a detached openCodex launcher without a full uninstall/reinstall cycle.
+- Added shared launcher detection helpers and updated `doctor` to warn when either the current launcher or an installed Telegram service still points at a source checkout.
+- Added install-layout documents in English and Chinese, plus `T017`, to define the detached runtime boundary for the app surface, CLI shim, and long-lived services.
+- Added `opencodex install detached` / `status` as the first detached-runtime installer skeleton, with versioned runtime copies, a `current` pointer, and a user CLI shim.
+- The detached installer now also compiles a thin `OpenCodex.app` host shell, so the installed app surface and CLI shim share the same `current` runtime.
+- The detached installer now reports both `current` and version-slot CLI paths, so `service relink` can target `current/bin/opencodex.js` and follow future upgrades.
+- Telegram services now default to a user workspace under `~/.opencodex/workspaces/telegram-cto`, keep a service-local `cto-soul.md`, and support `set-workspace` migration with session-history carry-forward.
+- Service and doctor docs were updated in English and Chinese to document the launcher-boundary workflow.
+- Validation passed for the launcher-boundary and installer-skeleton changes: `node --test tests/install.test.js`, `tests/doctor.test.js`, and focused `tests/service.test.js` coverage are green.
+
 ## 2026-03-08
 
 - CTO authorization confirmed by project owner.

@@ -15,6 +15,8 @@ The first version checks:
 - MCP visibility through `codex mcp list --json`
 - Git workspace presence
 - `~/.codex/config.toml` availability
+- whether the current openCodex launcher is a source checkout or a detached install
+- whether an installed Telegram service is still bound to a source checkout
 
 ## Output Shape
 

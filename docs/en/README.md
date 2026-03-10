@@ -15,10 +15,12 @@ This folder contains the English documentation for openCodex.
 - `auto-command.md` — unattended local workflow chaining on top of existing wrapper commands.
 - `remote-command.md` — token-protected mobile message bridge over local HTTP.
 - `service-command.md` — macOS launchd service and menu bar app management for Telegram CTO mode.
+- `install-command.md` — detached runtime installation and local CLI shim management.
 - `im-command.md` — Telegram-first instant-messaging connector for phone-to-openCodex reachability.
 - `cto-main-thread-sequence.md` — chat-first sequence diagram for the CTO main thread, workflow, and task flow.
 - `profile-policy.md` — current wrapper profiles and Codex CLI policy mapping.
 - `cto-soul.md` — editable initialization prompt for the CTO main thread.
+- `install-layout.md` — detached install layout for the app surface, CLI shim, and long-lived services.
 
 ## Notes
 

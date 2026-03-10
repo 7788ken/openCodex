@@ -6,6 +6,7 @@ import { runAutoCommand } from './commands/auto.js';
 import { runRemoteCommand } from './commands/remote.js';
 import { runImCommand } from './commands/im.js';
 import { runServiceCommand } from './commands/service.js';
+import { runInstallCommand } from './commands/install.js';
 
 const HELP_TEXT = `openCodex
 
@@ -21,6 +22,7 @@ Commands:
   remote    Expose a phone-friendly remote message bridge
   im        Connect to chat apps like Telegram
   service   Install and control local background services
+  install   Create or inspect a detached local openCodex runtime
 
 Global options:
   --help    Show help
@@ -71,6 +73,11 @@ export async function main(argv) {
 
   if (command === 'service') {
     await runServiceCommand(rest);
+    return;
+  }
+
+  if (command === 'install') {
+    await runInstallCommand(rest);
     return;
   }
 

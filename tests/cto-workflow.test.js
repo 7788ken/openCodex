@@ -5,14 +5,23 @@ import path from 'node:path';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import {
   appendWorkflowUserMessage,
+  buildDefaultCtoChatSoulDocument,
+  buildDefaultCtoPlannerAgentSoulDocument,
+  buildDefaultCtoReplyAgentSoulDocument,
   buildTelegramCtoFinalText,
   buildTelegramCtoMainThreadSystemPrompt,
   buildTelegramCtoPlannerPrompt,
+  buildDefaultCtoWorkflowSoulDocument,
+  buildDefaultCtoWorkerAgentSoulDocument,
   buildTelegramCtoSessionSummary,
   buildTelegramCtoWorkerExecutionPrompt,
   cancelTelegramWorkflowState,
   finalizeWorkflowStatus,
+  loadCtoSoulBundle,
   loadCtoSoulDocument,
+  loadCtoSubagentSoulDocument,
+  buildTelegramCtoDirectReplyPrompt,
+  resolveTelegramCtoSubagentProfile,
   summarizeWorkflowCounts,
   buildDefaultCtoSoulDocument,
   collectHistoricalStuckCtoWorkflowCandidates,
@@ -67,7 +76,7 @@ test('cto soul document loads from repo prompts and extends the main-thread prom
 
   assert.equal(soul.display_path, 'prompts/cto-soul.md');
   assert.equal(soul.builtin, false);
-  assert.match(prompt, /Active CTO soul document \(prompts\/cto-soul\.md\):/);
+  assert.match(prompt, /Active CTO base soul document \(prompts\/cto-soul\.md\):/);
   assert.match(prompt, /Stay opinionated\./);
   assert.match(prompt, /Keep Codex CLI as the engine\./);
 });
@@ -75,11 +84,30 @@ test('cto soul document loads from repo prompts and extends the main-thread prom
 test('cto default soul template is based on the Codex CLI personal assistant persona', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-cto-soul-default-'));
   const soul = await loadCtoSoulDocument(cwd);
+  const bundle = await loadCtoSoulBundle(cwd);
+  const replySoul = await loadCtoSubagentSoulDocument(cwd, { kind: 'reply' });
+  const plannerSoul = await loadCtoSubagentSoulDocument(cwd, { kind: 'planner' });
+  const workerSoul = await loadCtoSubagentSoulDocument(cwd, { kind: 'worker' });
   const template = buildDefaultCtoSoulDocument();
+  const chatTemplate = buildDefaultCtoChatSoulDocument();
+  const workflowTemplate = buildDefaultCtoWorkflowSoulDocument();
+  const replyTemplate = buildDefaultCtoReplyAgentSoulDocument();
+  const plannerTemplate = buildDefaultCtoPlannerAgentSoulDocument();
+  const workerTemplate = buildDefaultCtoWorkerAgentSoulDocument();
 
   assert.equal(soul.builtin, true);
   assert.equal(soul.display_path, 'prompts/cto-soul.md');
   assert.equal(soul.text, template);
+  assert.equal(bundle.chat.display_path, 'prompts/cto-chat-soul.md');
+  assert.equal(bundle.workflow.display_path, 'prompts/cto-workflow-soul.md');
+  assert.equal(bundle.chat.text, chatTemplate);
+  assert.equal(bundle.workflow.text, workflowTemplate);
+  assert.equal(replySoul.display_path, 'prompts/cto-reply-agent-soul.md');
+  assert.equal(plannerSoul.display_path, 'prompts/cto-planner-agent-soul.md');
+  assert.equal(workerSoul.display_path, 'prompts/cto-worker-agent-soul.md');
+  assert.equal(replySoul.text, replyTemplate);
+  assert.equal(plannerSoul.text, plannerTemplate);
+  assert.equal(workerSoul.text, workerTemplate);
   assert.match(template, /general-purpose Codex CLI personal assistant persona/);
   assert.match(template, /primary local execution engine/);
   assert.match(template, /CTO-style orchestrator/);
@@ -87,6 +115,72 @@ test('cto default soul template is based on the Codex CLI personal assistant per
   assert.match(template, /Sandbox Codex sessions are advisors, planners, reviewers/);
   assert.match(template, /Support natural chat, discussion, and research-style exploration/);
   assert.match(template, /three interaction modes: chat, exploration, and orchestration/);
+  assert.match(chatTemplate, /chat as the default control surface/i);
+  assert.match(workflowTemplate, /workflow orchestration as a branch/i);
+  assert.match(replyTemplate, /direct CEO replies/i);
+  assert.match(plannerTemplate, /drafts workflow plans/i);
+  assert.match(workerTemplate, /execute concrete subtasks/i);
+});
+
+test('cto prompt builders apply chat and workflow soul overlays separately', () => {
+  const directReplyPrompt = buildTelegramCtoDirectReplyPrompt({
+    message: { text: '你吃晚餐了吗' },
+    soulText: '# base\n- keep continuity',
+    soulPath: 'prompts/cto-soul.md',
+    modeSoulText: '# chat\n- keep it human',
+    modeSoulPath: 'prompts/cto-chat-soul.md',
+    agentSoulText: '# reply agent\n- keep it human',
+    agentSoulPath: 'prompts/cto-reply-agent-soul.md',
+    replyMode: 'casual',
+    chatState: { direct_reply_count: 0 }
+  });
+  const plannerPrompt = buildTelegramCtoPlannerPrompt({
+    message: { text: '继续推进 Telegram CTO 的续跑修复' },
+    workflowState: { goal_text: '继续推进 Telegram CTO 的续跑修复', tasks: [], user_messages: [] },
+    soulText: '# base\n- keep continuity',
+    soulPath: 'prompts/cto-soul.md',
+    modeSoulText: '# workflow\n- prefer 1-4 tasks',
+    modeSoulPath: 'prompts/cto-workflow-soul.md',
+    agentSoulText: '# planner agent\n- plan like a grounded lead',
+    agentSoulPath: 'prompts/cto-planner-agent-soul.md'
+  });
+
+  assert.match(directReplyPrompt, /Active CTO base soul document \(prompts\/cto-soul\.md\):/);
+  assert.match(directReplyPrompt, /Active CTO chat-mode soul document \(prompts\/cto-chat-soul\.md\):/);
+  assert.match(directReplyPrompt, /Child agent name: 阿满/);
+  assert.match(directReplyPrompt, /Active child-agent soul document \(prompts\/cto-reply-agent-soul\.md\):/);
+  assert.match(directReplyPrompt, /natural chat reply, not a report/i);
+  assert.match(directReplyPrompt, /Do not use headings, labels, numbered sections, bullets, markdown/i);
+  assert.doesNotMatch(directReplyPrompt, /workflow-mode soul document/);
+  assert.match(plannerPrompt, /Active CTO workflow-mode soul document \(prompts\/cto-workflow-soul\.md\):/);
+  assert.match(plannerPrompt, /Child agent name: 阿周/);
+  assert.match(plannerPrompt, /Active child-agent soul document \(prompts\/cto-planner-agent-soul\.md\):/);
+  assert.match(plannerPrompt, /Default to autonomous progress/i);
+  assert.match(plannerPrompt, /Use `confirm` only for destructive or external side effects/i);
+  assert.doesNotMatch(plannerPrompt, /chat-mode soul document/);
+});
+
+test('cto worker prompt assigns a grounded named subagent deterministically', () => {
+  const workerProfile = resolveTelegramCtoSubagentProfile({
+    kind: 'worker',
+    task: { id: 'fix-telegram-routing', title: 'Fix Telegram routing' }
+  });
+  const workerPrompt = buildTelegramCtoWorkerExecutionPrompt({
+    workflowState: { goal_text: 'Fix Telegram routing' },
+    task: {
+      id: 'fix-telegram-routing',
+      title: 'Fix Telegram routing',
+      depends_on: [],
+      worker_prompt: 'Update the routing logic and add regression tests.'
+    },
+    agentSoulText: '# worker agent\n- stay practical',
+    agentSoulPath: 'prompts/cto-worker-agent-soul.md'
+  });
+
+  assert.match(workerPrompt, new RegExp(`Child agent name: ${workerProfile.name_zh}`));
+  assert.match(workerPrompt, /Child agent role: implementation partner/);
+  assert.match(workerPrompt, /Active child-agent soul document \(prompts\/cto-worker-agent-soul\.md\):/);
+  assert.match(workerPrompt, /Worker directive from the CTO main thread:/);
 });
 
 test('cto worker execution prompt wraps child work under the main thread', () => {
@@ -108,6 +202,8 @@ test('cto worker execution prompt wraps child work under the main thread', () =>
   assert.match(prompt, /Task id: fix-telegram-cto/);
   assert.match(prompt, /Dependencies: inspect-current-flow/);
   assert.match(prompt, /CEO-facing CTO identity/i);
+  assert.match(prompt, /Default to finishing the task end-to-end inside this run/i);
+  assert.match(prompt, /Do not hand routine next steps back to the CTO/i);
   assert.match(prompt, /Worker directive from the CTO main thread:/);
   assert.match(prompt, /Update the IM routing and add regression coverage\./);
 });
@@ -192,8 +288,29 @@ test('cto intent classifier still treats explicit execution requests as directiv
   assert.equal(classified.kind, 'directive');
 });
 
+test('cto intent classifier does not downgrade progress-push directives into status queries', () => {
+  const classified = classifyTelegramCtoMessageIntent('继续检查项目进度,推进项目落地,优化框架与用户体验.');
+  assert.equal(classified.kind, 'directive');
+});
+
 test('cto intent classifier treats location-style greeting as casual chat', () => {
   const classified = classifyTelegramCtoMessageIntent('嘿，你在哪？');
+  assert.equal(classified.kind, 'casual_chat');
+});
+
+test('cto intent classifier treats social small talk as casual chat instead of a workflow directive', () => {
+  const classified = classifyTelegramCtoMessageIntent('你吃晚餐了吗');
+  assert.equal(classified.kind, 'casual_chat');
+  assert.equal(isLikelyTelegramCtoCasualChatMessage('你吃晚餐了吗'), true);
+  assert.equal(shouldKeepTelegramCtoInConversationMode({
+    text: '你吃晚餐了吗',
+    chatState: { direct_reply_count: 0 },
+    hasPendingWorkflow: false
+  }), false);
+});
+
+test('cto intent classifier treats praise-only feedback as casual chat', () => {
+  const classified = classifyTelegramCtoMessageIntent('你好厉害，居然能秒回。');
   assert.equal(classified.kind, 'casual_chat');
 });
 
@@ -201,6 +318,30 @@ test('cto conversation gate keeps the first vague task-like turn in chat mode', 
   assert.equal(shouldKeepTelegramCtoInConversationMode({
     text: '帮我看看',
     chatState: { direct_reply_count: 0 },
+    hasPendingWorkflow: false
+  }), true);
+});
+
+test('cto conversation gate keeps context-missing problem explanations on the chat main line', () => {
+  assert.equal(shouldKeepTelegramCtoInConversationMode({
+    text: '解释一下这个问题。。',
+    chatState: { direct_reply_count: 2 },
+    hasPendingWorkflow: false
+  }), true);
+  assert.equal(shouldKeepTelegramCtoInConversationMode({
+    text: '帮我看看这个报错怎么回事',
+    chatState: { direct_reply_count: 2 },
+    hasPendingWorkflow: true
+  }), true);
+});
+
+test('cto conversation gate keeps references to the previous pending question on the chat main line', () => {
+  assert.equal(shouldKeepTelegramCtoInConversationMode({
+    text: '我觉得你可以解释一下这个待确认问题。',
+    chatState: {
+      direct_reply_count: 1,
+      last_pending_question: '是否在可写环境中按上述最小方案修改 `src/commands/im.js`。'
+    },
     hasPendingWorkflow: false
   }), true);
 });
@@ -213,10 +354,29 @@ test('cto conversation gate keeps exploration turns in direct discussion mode', 
   }), true);
 });
 
+test('cto conversation gate keeps interaction-policy discussion on the chat main line', () => {
+  assert.equal(classifyTelegramCtoMessageIntent('我希望我们即时通讯才是主线，聊天触发 workflow，但不是每句话都要触发 workflow。').kind, 'exploration');
+  assert.equal(shouldKeepTelegramCtoInConversationMode({
+    text: '我希望我们即时通讯才是主线，聊天触发 workflow，但不是每句话都要触发 workflow。',
+    chatState: { direct_reply_count: 0 },
+    hasPendingWorkflow: false
+  }), true);
+});
+
 test('cto conversation gate allows strong directives to enter orchestration', () => {
   assert.equal(isStrongTelegramCtoDirectiveMessage('继续推进 Telegram CTO 续跑修复并补测试'), true);
   assert.equal(shouldKeepTelegramCtoInConversationMode({
     text: '继续推进 Telegram CTO 续跑修复并补测试',
+    chatState: { direct_reply_count: 0 },
+    hasPendingWorkflow: false
+  }), false);
+});
+
+test('cto conversation gate allows concrete interaction-policy fix requests into orchestration', () => {
+  const text = '继续处理，当前编排没有达到我的要求。1, 任务不能自行推进。2, 不能自主完成任务。3, 主线 chat 还是格式化回复。默认推进解决这些东西。';
+  assert.equal(classifyTelegramCtoMessageIntent(text).kind, 'directive');
+  assert.equal(shouldKeepTelegramCtoInConversationMode({
+    text,
     chatState: { direct_reply_count: 0 },
     hasPendingWorkflow: false
   }), false);
@@ -344,8 +504,8 @@ test('cto cancel helper marks active tasks cancelled and renders a cancelled fin
   assert.equal(workflowState.tasks[0].status, 'cancelled');
   assert.equal(workflowState.tasks[1].status, 'cancelled');
   assert.equal(workflowState.tasks[2].status, 'completed');
-  assert.match(finalText, /工作流已取消/);
-  assert.match(finalText, /cancelled 2/);
+  assert.match(finalText, /这轮先停在这里了/);
+  assert.match(finalText, /已取消 2 项/);
 });
 
 test('cto workflow finalization does not turn failed dependency chains into waiting', () => {
@@ -423,4 +583,24 @@ test('cto planner auto-infers a safe execute plan from an abstract inspection re
   assert.equal(plan.tasks[0].id, 'audit-cto-reasoning');
   assert.match(plan.tasks[0].title, /Audit CTO reasoning depth/);
   assert.match(plan.tasks[0].worker_prompt, /src\/lib\/cto-workflow\.js/);
+});
+
+test('cto planner auto-infers an interaction-flow repair plan from a concrete policy-fix request', () => {
+  const plan = normalizeTelegramCtoPlan({
+    mode: 'confirm',
+    summary_zh: '当前还缺少更具体的执行对象。',
+    question_zh: '请直接给本轮要推进的具体目标。',
+    tasks: []
+  }, '继续处理，当前编排没有达到我的要求。1, 任务不能自行推进。2, 不能自主完成任务。3, 主线 chat 还是格式化回复。默认推进解决这些东西。', {
+    task_counter: 0,
+    tasks: [],
+    goal_text: '继续处理 CTO 交互与编排问题'
+  });
+
+  assert.equal(plan.mode, 'execute');
+  assert.match(plan.summary_zh, /交互与编排修正/);
+  assert.equal(plan.tasks.length, 1);
+  assert.equal(plan.tasks[0].id, 'improve-cto-interaction-flow');
+  assert.match(plan.tasks[0].title, /Improve CTO chat-first interaction flow/);
+  assert.match(plan.tasks[0].worker_prompt, /chat stays the main continuity thread/);
 });
