@@ -14,7 +14,8 @@
 - Follow-up implementation also closed the planning-stage restart gap: a rehydrated Telegram CTO workflow can now wait for its planner child session, reuse the returned plan, and continue execution after listener restart.
 - Added shared `session-contract` helpers and wired them through `im`, `auto`, `run`, `review`, `session-store`, child-session capture, and service payloads so host/child role metadata is machine-readable.
 - Service workflow/dispatch history and detail payloads now expose `thread_kind`, `thread_kind_label`, `session_role`, `session_scope`, `session_layer`, `execution_surface`, and `session_contract`.
-- Reclassified `T013`, `T014`, and `T015` to mostly implemented after the runtime, contract, and UI-separation follow-up landed; the remaining gaps are planning-stage recovery and legacy-session backfill.
+- The legacy `session` CLI now also surfaces the same host/child thread metadata in `list`, `show`, `latest`, and `tree` output, including fallback child-session contract hints carried by parent workflow records.
+- Reclassified `T013`, `T014`, and `T015` to mostly implemented after the runtime, contract, and UI-separation follow-up landed; the remaining gaps are a fully standalone host supervisor runtime plus legacy-session backfill.
 - Validation passed for the follow-up supervisor/contract work: `node --test tests/auto.test.js tests/im.test.js tests/service.test.js` and `node --test tests/run.test.js tests/review.test.js`.
 
 ## 2026-03-10

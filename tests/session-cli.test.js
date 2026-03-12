@@ -22,6 +22,31 @@ test('session latest returns the most recent session in json mode', async () => 
   assert.equal(payload.command, 'review');
 });
 
+test('session show exposes derived thread metadata in json mode', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-session-show-'));
+  const sessionId = 'cto-20260308-000200-workflow';
+
+  await writeSession(cwd, sessionId, '2026-03-08T00:02:00.000Z', 'cto', 'running', {
+    input: {
+      prompt: 'restart chain',
+      arguments: {
+        provider: 'telegram',
+        chat_id: '123456'
+      }
+    }
+  });
+
+  const result = await runCli(['session', 'show', sessionId, '--json', '--cwd', cwd]);
+  assert.equal(result.code, 0);
+
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.thread_kind, 'host_workflow');
+  assert.equal(payload.thread_kind_label, 'host workflow');
+  assert.equal(payload.session_role, 'cto_supervisor');
+  assert.equal(payload.session_scope, 'telegram_cto');
+  assert.equal(payload.session_layer, 'host');
+});
+
 test('session tree resolves the full tree from a child session id', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-session-tree-'));
   const rootId = 'auto-20260308-000000-root';
@@ -61,6 +86,41 @@ test('session tree can infer the parent from child_sessions fallback links', asy
   assert.equal(payload.children.length, 1);
   assert.equal(payload.children[0].session_id, childId);
   assert.equal(payload.children[0].parent_session_id, rootId);
+});
+
+test('session tree prefers recorded child session contract metadata for child nodes', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-session-tree-contract-'));
+  const rootId = 'auto-20260308-000000-root';
+  const childId = 'run-20260308-000100-child';
+
+  await writeSession(cwd, rootId, '2026-03-08T00:00:00.000Z', 'auto', 'completed', {
+    child_sessions: [{
+      session_id: childId,
+      command: 'run',
+      status: 'completed',
+      session_contract: {
+        schema: 'opencodex/session-contract/v1',
+        layer: 'child',
+        thread_kind: 'child_session',
+        role: 'executor',
+        scope: 'auto',
+        supervisor_session_id: rootId
+      }
+    }]
+  });
+  await writeSession(cwd, childId, '2026-03-08T00:01:00.000Z', 'run');
+
+  const result = await runCli(['session', 'tree', childId, '--json', '--cwd', cwd]);
+  assert.equal(result.code, 0);
+
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.thread_kind, 'host_workflow');
+  assert.equal(payload.session_role, 'auto_orchestrator');
+  assert.equal(payload.children[0].thread_kind, 'child_session');
+  assert.equal(payload.children[0].thread_kind_label, 'child session');
+  assert.equal(payload.children[0].session_role, 'executor');
+  assert.equal(payload.children[0].session_scope, 'auto');
+  assert.equal(payload.children[0].session_layer, 'child');
 });
 
 test('session repair backfills stale failed sessions from terminal events', async () => {

@@ -3,6 +3,7 @@ import { parseOptions } from '../lib/args.js';
 import { listSessions, loadSession, saveSession, getSessionDir } from '../lib/session-store.js';
 import { readJson, readTextIfExists, writeJson } from '../lib/fs.js';
 import { buildTelegramCtoSessionSummary, classifyTelegramCtoMessageIntent, finalizeWorkflowStatus, summarizeWorkflowCounts } from '../lib/cto-workflow.js';
+import { formatSessionThreadKindLabel, inferSessionContract } from '../lib/session-contract.js';
 import { buildSummaryFromMessage } from './run.js';
 import { buildReviewSummary } from './review.js';
 import { renderHumanSummary } from '../lib/summary.js';
@@ -30,7 +31,7 @@ export async function runSessionCommand(args) {
     const targetCwd = path.resolve(options.cwd || cwd);
     const sessions = await listSessions(targetCwd);
     if (options.json) {
-      process.stdout.write(`${JSON.stringify(sessions, null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify(sessions.map((session) => buildSessionCliPayload(session)), null, 2)}\n`);
       return;
     }
     if (!sessions.length) {
@@ -38,7 +39,7 @@ export async function runSessionCommand(args) {
       return;
     }
     for (const session of sessions) {
-      process.stdout.write(`${session.session_id}  ${session.command}  ${session.status}  ${session.updated_at}\n`);
+      process.stdout.write(`${formatSessionListLine(session)}\n`);
     }
     return;
   }
@@ -212,14 +213,15 @@ async function resolveSessionTree(cwd, requestedSessionId) {
     ? sessions
     : [...sessions, requestedSession];
   const sessionMap = new Map(allSessions.map((session) => [session.session_id, session]));
-  const { parentByChild, childrenByParent } = buildSessionLinks(allSessions);
+  const { parentByChild, childrenByParent, childMetadataBySessionId } = buildSessionLinks(allSessions);
   const rootSessionId = findRootSessionId(requestedSession.session_id, parentByChild);
-  return buildSessionTreeNode(rootSessionId, sessionMap, parentByChild, childrenByParent);
+  return buildSessionTreeNode(rootSessionId, sessionMap, parentByChild, childrenByParent, childMetadataBySessionId);
 }
 
 function buildSessionLinks(sessions) {
   const parentByChild = new Map();
   const childrenByParent = new Map();
+  const childMetadataBySessionId = new Map();
 
   for (const session of sessions) {
     if (typeof session?.parent_session_id === 'string' && session.parent_session_id) {
@@ -230,10 +232,13 @@ function buildSessionLinks(sessions) {
   for (const session of sessions) {
     for (const child of normalizeChildSessions(session?.child_sessions)) {
       addSessionLink(childrenByParent, parentByChild, session.session_id, child.session_id, true);
+      if (!childMetadataBySessionId.has(child.session_id)) {
+        childMetadataBySessionId.set(child.session_id, child);
+      }
     }
   }
 
-  return { parentByChild, childrenByParent };
+  return { parentByChild, childrenByParent, childMetadataBySessionId };
 }
 
 function addSessionLink(childrenByParent, parentByChild, parentSessionId, childSessionId, isFallback) {
@@ -287,8 +292,10 @@ function compareSessionCreatedAt(leftSession, rightSession, leftId, rightId) {
   return String(leftId || '').localeCompare(String(rightId || ''));
 }
 
-function buildSessionTreeNode(sessionId, sessionMap, parentByChild, childrenByParent, lineage = new Set()) {
+function buildSessionTreeNode(sessionId, sessionMap, parentByChild, childrenByParent, childMetadataBySessionId, lineage = new Set()) {
   const session = sessionMap.get(sessionId);
+  const childMetadata = childMetadataBySessionId.get(sessionId) || null;
+  const presentation = buildSessionPresentation(session, childMetadata?.session_contract || null);
   const nextLineage = new Set(lineage);
   nextLineage.add(sessionId);
   const childIds = (childrenByParent.get(sessionId) || [])
@@ -303,8 +310,14 @@ function buildSessionTreeNode(sessionId, sessionMap, parentByChild, childrenByPa
     status: session?.status || 'missing',
     updated_at: session?.updated_at || null,
     parent_session_id: parentByChild.get(sessionId) || session?.parent_session_id || null,
+    thread_kind: presentation.thread_kind,
+    thread_kind_label: presentation.thread_kind_label,
+    session_role: presentation.session_role,
+    session_scope: presentation.session_scope,
+    session_layer: presentation.session_layer,
+    session_contract: presentation.session_contract,
     children: childIds.map((childSessionId) => {
-      return buildSessionTreeNode(childSessionId, sessionMap, parentByChild, childrenByParent, nextLineage);
+      return buildSessionTreeNode(childSessionId, sessionMap, parentByChild, childrenByParent, childMetadataBySessionId, nextLineage);
     })
   };
 }
@@ -1173,15 +1186,22 @@ function isOlderThan(isoTimestamp, minutes) {
 }
 
 function outputSession(session, asJson) {
+  const payload = buildSessionCliPayload(session);
   if (asJson) {
-    process.stdout.write(`${JSON.stringify(session, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
     return;
   }
-  process.stdout.write(renderHumanSummary(session.summary));
-  process.stdout.write(`\nSession: ${session.session_id}\n`);
-  if (session.artifacts?.length) {
+  process.stdout.write(renderHumanSummary(payload.summary));
+  process.stdout.write(`\nSession: ${payload.session_id}\n`);
+  if (payload.thread_kind_label || payload.session_role) {
+    process.stdout.write(`Thread: ${payload.thread_kind_label || payload.thread_kind || 'unknown'}${payload.session_role ? ` • role ${payload.session_role}` : ''}\n`);
+  }
+  if (payload.parent_session_id) {
+    process.stdout.write(`Parent: ${payload.parent_session_id}\n`);
+  }
+  if (payload.artifacts?.length) {
     process.stdout.write('\nArtifacts:\n');
-    for (const artifact of session.artifacts) {
+    for (const artifact of payload.artifacts) {
       process.stdout.write(`- ${artifact.type}: ${artifact.path}\n`);
     }
   }
@@ -1199,7 +1219,10 @@ function outputSessionTree(tree, asJson) {
 }
 
 function renderSessionTree(node, prefix, isLastChild, lines) {
-  const label = `${node.session_id}  ${node.command}  ${node.status}`;
+  const threadLabel = node.thread_kind_label || node.thread_kind
+    ? `  ${node.thread_kind_label || node.thread_kind}${node.session_role ? ` • role ${node.session_role}` : ''}`
+    : '';
+  const label = `${node.session_id}  ${node.command}  ${node.status}${threadLabel}`;
   if (!prefix) {
     lines.push(label);
   } else {
@@ -1210,4 +1233,31 @@ function renderSessionTree(node, prefix, isLastChild, lines) {
   node.children.forEach((child, index) => {
     renderSessionTree(child, childPrefix, index === node.children.length - 1, lines);
   });
+}
+
+function buildSessionCliPayload(session, fallback = null) {
+  return {
+    ...session,
+    ...buildSessionPresentation(session, fallback)
+  };
+}
+
+function buildSessionPresentation(session, fallback = null) {
+  const contract = inferSessionContract(session, fallback);
+  return {
+    session_contract: contract,
+    thread_kind: contract?.thread_kind || '',
+    thread_kind_label: formatSessionThreadKindLabel(contract?.thread_kind || ''),
+    session_role: contract?.role || '',
+    session_scope: contract?.scope || '',
+    session_layer: contract?.layer || ''
+  };
+}
+
+function formatSessionListLine(session) {
+  const payload = buildSessionCliPayload(session);
+  const threadLabel = payload.thread_kind_label || payload.session_role
+    ? `  ${payload.thread_kind_label || payload.thread_kind || 'unknown'}${payload.session_role ? ` • role ${payload.session_role}` : ''}`
+    : '';
+  return `${payload.session_id}  ${payload.command}  ${payload.status}  ${payload.updated_at}${threadLabel}`;
 }

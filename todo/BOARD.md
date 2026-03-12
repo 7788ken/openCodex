@@ -99,7 +99,7 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 - `T012` — Telegram CTO delegation loop implemented as a transitional bridge
 - `T013` — mostly implemented in the Telegram CTO runtime; the remaining gap is a fully standalone host supervisor runtime beyond the listener-owned loop
 - `T014` — mostly implemented with shared child-session contract metadata across core commands; legacy/fallback paths still need cleanup
-- `T015` — mostly implemented in service/tray workflow and dispatch views; older records still rely on inferred separation
+- `T015` — mostly implemented in session/service/tray workflow and dispatch views; older records still rely on inferred separation
 - `T016` — mostly implemented in the Telegram CTO chat/exploration path
 - `T018` — implemented
 - `T019` — implemented

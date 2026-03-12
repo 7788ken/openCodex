@@ -28,6 +28,7 @@ The control surfaces need to reflect the supervisor model directly.
 
 - Mostly implemented.
 - The tray/service surface already exposes main-thread counts, child-thread counts, rerouted-task counts, workflow history, and task history.
+- The `session` CLI surface now also exposes explicit thread metadata for list/show/tree views, so host workflows and child sessions are not only separated in the tray-facing payloads.
 - Workflow history, workflow detail, dispatch history, and dispatch detail payloads now expose explicit supervisor/child metadata such as `thread_kind`, `thread_kind_label`, `session_role`, `session_scope`, `session_layer`, and `execution_surface`.
 - Telegram workflow and service detail views can now distinguish host workflows, child sessions, and rerouted host-executor work without relying only on command names or labels.
 - The remaining gap is backward compatibility: older session artifacts and any producer that predates `session_contract` still need inference/backfill, so the separation is not yet guaranteed for every historical record.
