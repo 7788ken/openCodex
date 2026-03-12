@@ -406,6 +406,10 @@ async function deriveCtoRepair(cwd, session, lineage) {
     const resolvedChild = await resolveRepairSnapshot(cwd, childSession, lineage);
     child.status = resolvedChild.status || child.status || 'unknown';
     child.command = resolvedChild.command || child.command || 'run';
+    child.session_contract = child.session_contract
+      || buildSessionContractSnapshot(resolvedChild)
+      || buildSessionContractSnapshot(childSession)
+      || null;
   }
 
   const misroutedChatRepair = repairMisroutedCasualChatWorkflow(session, workflowState);
@@ -553,6 +557,10 @@ async function repairCtoWorkflowTask(cwd, task, childSessionById, childSessionBy
   if (childMetadata) {
     childMetadata.status = resolvedChild.status || childMetadata.status || 'unknown';
     childMetadata.command = resolvedChild.command || childMetadata.command || 'run';
+    childMetadata.session_contract = childMetadata.session_contract
+      || buildSessionContractSnapshot(resolvedChild)
+      || buildSessionContractSnapshot(childSession)
+      || null;
   }
   syncCtoTaskFromChild(task, resolvedChild);
 }

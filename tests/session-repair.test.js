@@ -320,6 +320,14 @@ test('session repair completes stale cto workflows from finished child sessions'
     working_directory: cwd,
     codex_cli_version: 'codex-cli 0.111.0',
     input: { prompt: 'child', arguments: {} },
+    session_contract: {
+      schema: 'opencodex/session-contract/v1',
+      layer: 'child',
+      thread_kind: 'child_session',
+      role: 'worker',
+      scope: 'telegram_cto',
+      supervisor_session_id: ctoSessionId
+    },
     summary: {
       title: 'Child task completed',
       result: 'Recovered child completion summary.',
@@ -345,6 +353,7 @@ test('session repair completes stale cto workflows from finished child sessions'
   const repairedWorkflowState = JSON.parse(await readFile(workflowStatePath, 'utf8'));
   assert.equal(repairedSession.status, 'completed');
   assert.equal(repairedSession.summary.title, 'CTO workflow completed');
+  assert.equal(repairedSession.child_sessions[0].session_contract?.role, 'worker');
   assert.equal(repairedWorkflowState.status, 'completed');
   assert.equal(repairedWorkflowState.tasks[0].status, 'completed');
   assert.equal(repairedWorkflowState.tasks[0].result, 'Recovered child completion summary.');
