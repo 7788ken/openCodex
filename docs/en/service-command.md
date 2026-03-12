@@ -33,8 +33,10 @@ The first version supports Telegram CTO service management only:
 
 - a `launchd` plist under `~/Library/LaunchAgents`
 - a wrapper shell script that starts `opencodex im telegram listen --cto`
+- a second periodic `launchd` plist and wrapper shell script that run a one-shot Telegram supervisor tick
 - a protected environment file with the Telegram bot token and inherited proxy settings
 - persistent stdout and stderr logs for the background listener
+- persistent stdout and stderr logs for the periodic supervisor tick
 - an optional stay-open macOS menu bar app when `--install-menubar` is enabled
 - a detached default workspace under `~/.opencodex/workspaces/telegram-cto` when `--cwd` is omitted
 - a set of service-local CTO soul files under the service state directory:
@@ -87,6 +89,8 @@ If the new workspace has no `.opencodex/sessions` tree yet, openCodex also copie
 - `--launch-agent-dir <dir>`
 - `--applications-dir <dir>`
 - `--json`
+
+`telegram start`, `stop`, and `restart` now manage both installed agents together: the long-poll listener and the periodic supervisor tick.
 
 ### `telegram supervise`
 

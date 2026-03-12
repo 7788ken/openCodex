@@ -64,6 +64,7 @@ test('service telegram install writes launchd files with full-access as the defa
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.installed, true);
   assert.equal(payload.loaded, false);
+  assert.equal(payload.supervisor_loaded, false);
   assert.equal(payload.profile, 'full-access');
   assert.equal(payload.launcher_scope, 'project_checkout');
   assert.match(payload.launcher_warning, /development checkout/);
@@ -71,11 +72,15 @@ test('service telegram install writes launchd files with full-access as the defa
   const config = JSON.parse(await readFile(path.join(stateDir, 'service.json'), 'utf8'));
   const envFile = await readFile(path.join(stateDir, 'telegram.env'), 'utf8');
   const wrapper = await readFile(path.join(stateDir, 'telegram-listener.sh'), 'utf8');
+  const supervisorWrapper = await readFile(path.join(stateDir, 'telegram-supervisor.sh'), 'utf8');
   const plist = await readFile(path.join(launchAgentDir, 'com.opencodex.telegram.cto.plist'), 'utf8');
+  const supervisorPlist = await readFile(path.join(launchAgentDir, 'com.opencodex.telegram.cto.supervisor.plist'), 'utf8');
 
   assert.equal(config.chat_id, '1379564094');
   assert.equal(config.profile, 'full-access');
   assert.equal(config.permission_mode, 'full-access');
+  assert.equal(config.supervisor_label, 'com.opencodex.telegram.cto.supervisor');
+  assert.equal(config.supervisor_interval_seconds, 60);
   assert.deepEqual(config.settings, {
     ui_language: 'en',
     badge_mode: 'tasks',
@@ -96,9 +101,12 @@ test('service telegram install writes launchd files with full-access as the defa
   assert.ok(envFile.includes(`export OPENCODEX_SERVICE_STATE_DIR='${stateDir}'`));
   assert.match(envFile, /OPENCODEX_HOST_EXECUTOR_ENABLED='1'/);
   assert.match(wrapper, /im telegram listen/);
+  assert.match(supervisorWrapper, /im telegram supervise/);
   assert.match(wrapper, /--cto/);
   assert.match(wrapper, /--profile 'full-access'/);
   assert.match(plist, /com\.opencodex\.telegram\.cto/);
+  assert.match(supervisorPlist, /com\.opencodex\.telegram\.cto\.supervisor/);
+  assert.match(supervisorPlist, /<key>StartInterval<\/key>\s*<integer>60<\/integer>/);
 });
 
 test('service telegram install defaults to a user workspace outside the repository when --cwd is omitted', async () => {
@@ -212,6 +220,9 @@ test('service telegram status includes workflow counts and latest workflow detai
   assert.equal(payload.refresh_interval_seconds, 15);
   assert.equal(payload.show_workflow_ids, false);
   assert.equal(payload.show_paths, false);
+  assert.equal(payload.supervisor_loaded, false);
+  assert.equal(payload.supervisor_state, 'stopped');
+  assert.equal(payload.supervisor_interval_seconds, 60);
   assert.equal(payload.cto_soul_source, 'file');
   assert.match(payload.cto_soul_path, /state\/cto-soul\.md$/);
   assert.equal(payload.cto_chat_soul_source, 'file');
@@ -242,6 +253,7 @@ test('service telegram status includes workflow counts and latest workflow detai
   assert.equal(humanStatus.code, 0);
   assert.match(humanStatus.stdout, /Show Workflow IDs: off/);
   assert.match(humanStatus.stdout, /Show Paths: off/);
+  assert.match(humanStatus.stdout, /Supervisor Loaded: no/);
   assert.match(humanStatus.stdout, /Latest Workflow Status: waiting/);
   assert.doesNotMatch(humanStatus.stdout, /Latest Workflow: cto-/);
   assert.doesNotMatch(humanStatus.stdout, /Latest Listener Session:/);
@@ -734,7 +746,9 @@ test('service telegram set-profile updates the wrapper and restarts a loaded ser
     OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
   });
   assert.equal(start.code, 0);
-  assert.equal(JSON.parse(start.stdout).loaded, true);
+  const startPayload = JSON.parse(start.stdout);
+  assert.equal(startPayload.loaded, true);
+  assert.equal(startPayload.supervisor_loaded, true);
 
   const setProfile = await runCli([
     'service', 'telegram', 'set-profile',
@@ -748,6 +762,7 @@ test('service telegram set-profile updates the wrapper and restarts a loaded ser
   assert.equal(setProfile.code, 0);
   const setProfilePayload = JSON.parse(setProfile.stdout);
   assert.equal(setProfilePayload.loaded, true);
+  assert.equal(setProfilePayload.supervisor_loaded, true);
   assert.equal(setProfilePayload.profile, 'safe');
   assert.equal(setProfilePayload.permission_mode, 'safe');
   assert.equal(setProfilePayload.previous_profile, 'full-access');
@@ -768,7 +783,9 @@ test('service telegram set-profile updates the wrapper and restarts a loaded ser
   });
   const statusPayload = JSON.parse(status.stdout);
   assert.equal(statusPayload.loaded, true);
+  assert.equal(statusPayload.supervisor_loaded, true);
   assert.equal(statusPayload.state, 'running');
+  assert.equal(statusPayload.supervisor_state, 'running');
   assert.equal(statusPayload.pid, 4242);
   assert.equal(statusPayload.permission_mode, 'safe');
 
@@ -781,7 +798,9 @@ test('service telegram set-profile updates the wrapper and restarts a loaded ser
     OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
   });
   assert.equal(stop.code, 0);
-  assert.equal(JSON.parse(stop.stdout).loaded, false);
+  const stopPayload = JSON.parse(stop.stdout);
+  assert.equal(stopPayload.loaded, false);
+  assert.equal(stopPayload.supervisor_loaded, false);
 
   const uninstall = await runCli([
     'service', 'telegram', 'uninstall',

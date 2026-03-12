@@ -14,6 +14,7 @@
 - Follow-up implementation also closed the planning-stage restart gap: a rehydrated Telegram CTO workflow can now wait for its planner child session, reuse the returned plan, and continue execution after listener restart.
 - Added a one-shot host-supervisor path outside Telegram polling: `im telegram supervise` can now resume persisted CTO workflows without starting the long-poll listener, and `service telegram supervise` reuses the installed service config to run the same tick.
 - Service status/tray surfaces now also track the latest supervisor-tick session separately from the long-lived listener session, and the tray app can trigger `service telegram supervise` directly.
+- The installed Telegram service now provisions and manages a second periodic launchd agent for supervisor ticks, so `start` / `stop` / `restart` no longer control only the listener process.
 - Added shared `session-contract` helpers and wired them through `im`, `auto`, `run`, `review`, `session-store`, child-session capture, and service payloads so host/child role metadata is machine-readable.
 - Service workflow/dispatch history and detail payloads now expose `thread_kind`, `thread_kind_label`, `session_role`, `session_scope`, `session_layer`, `execution_surface`, and `session_contract`.
 - The legacy `session` CLI now also surfaces the same host/child thread metadata in `list`, `show`, `latest`, and `tree` output, including fallback child-session contract hints carried by parent workflow records.

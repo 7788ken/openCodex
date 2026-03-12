@@ -29,6 +29,7 @@ const DEFAULT_MENU_BAR_APP_NAME = 'OpenCodex Tray.app';
 const SERVICE_CONFIG_FILE = 'service.json';
 const DEFAULT_POLL_TIMEOUT = 30;
 const DEFAULT_PROFILE = 'full-access';
+const DEFAULT_SUPERVISOR_INTERVAL_SECONDS = 60;
 const DEFAULT_SERVICE_WORKSPACE_RELATIVE_PATH = path.join('.opencodex', 'workspaces', 'telegram-cto');
 const DEFAULT_SERVICE_CTO_SOUL_FILE = 'cto-soul.md';
 const DEFAULT_SERVICE_SETTINGS = Object.freeze({
@@ -287,11 +288,7 @@ async function runTelegramServiceInstall(args) {
   await ensureServiceWorkspaceReady(service);
   await materializeServiceCtoSoul(service);
   await writeServiceEnvironment(service, botToken);
-
-  await writeFile(service.wrapperPath, buildWrapperScript(service), 'utf8');
-  await chmod(service.wrapperPath, 0o755);
-
-  await writeFile(service.plistPath, buildLaunchAgentPlist(service), 'utf8');
+  await writeServiceLaunchers(service);
 
   if (options['install-menubar']) {
     await compileMenuBarApp(service);
@@ -313,13 +310,19 @@ async function runTelegramServiceInstall(args) {
     action: 'install',
     installed: true,
     loaded: launchState.loaded,
+    supervisor_loaded: launchState.supervisor_loaded,
     label: service.label,
+    supervisor_label: service.supervisorLabel,
     plist_path: service.plistPath,
+    supervisor_plist_path: service.supervisorPlistPath,
     state_dir: service.stateDir,
     menubar_installed: await pathExists(service.menubarAppPath),
     menubar_app_path: service.menubarAppPath,
     stdout_path: service.stdoutPath,
     stderr_path: service.stderrPath,
+    supervisor_stdout_path: service.supervisorStdoutPath,
+    supervisor_stderr_path: service.supervisorStderrPath,
+    supervisor_interval_seconds: service.supervisorIntervalSeconds,
     cwd: service.cwd,
     workspace_scope: service.workspaceScope,
     workspace_warning: service.workspaceWarning,
@@ -476,16 +479,15 @@ async function runTelegramServiceSetProfile(args) {
 
   service.profile = nextProfile;
   await writeServiceEnvironment(service, botToken, existingEnvironment);
-  await writeFile(service.wrapperPath, buildWrapperScript(service), 'utf8');
-  await chmod(service.wrapperPath, 0o755);
-  await writeFile(service.plistPath, buildLaunchAgentPlist(service), 'utf8');
+  await writeServiceLaunchers(service);
   await writeJson(service.configPath, buildServiceConfig(service, {
     ...existingConfig,
     installed_at: existingConfig.installed_at || new Date().toISOString(),
     updated_at: new Date().toISOString()
   }));
 
-  const wasLoaded = (await inspectService({ ...service, profile: previousProfile })).loaded;
+  const previousState = await inspectService({ ...service, profile: previousProfile });
+  const wasLoaded = previousState.loaded || previousState.supervisor_loaded;
   let payload = await inspectService(service);
   if (wasLoaded) {
     await stopService({ ...service, profile: previousProfile }, { quietIfStopped: true });
@@ -538,10 +540,7 @@ async function runTelegramServiceSetWorkspace(args) {
   const existingEnvironment = await loadServiceEnvironment(service);
   const botToken = resolveInstalledServiceBotToken(existingEnvironment);
   await writeServiceEnvironment(service, botToken, existingEnvironment);
-
-  await writeFile(service.wrapperPath, buildWrapperScript(service), 'utf8');
-  await chmod(service.wrapperPath, 0o755);
-  await writeFile(service.plistPath, buildLaunchAgentPlist(service), 'utf8');
+  await writeServiceLaunchers(service);
   await writeJson(service.configPath, buildServiceConfig(service, {
     ...existingConfig,
     installed_at: existingConfig.installed_at || new Date().toISOString(),
@@ -553,11 +552,12 @@ async function runTelegramServiceSetWorkspace(args) {
     await compileMenuBarApp(service);
   }
 
-  const wasLoaded = (await inspectService({
+  const previousState = await inspectService({
     ...service,
     cwd: previousWorkspace.cwd,
     workspaceScope: previousWorkspace.workspaceScope
-  })).loaded;
+  });
+  const wasLoaded = previousState.loaded || previousState.supervisor_loaded;
   let payload = await inspectService(service);
   if (wasLoaded) {
     await stopService({
@@ -607,8 +607,7 @@ async function runTelegramServiceRelink(args) {
 
   await materializeServiceCtoSoul(service);
   await writeServiceEnvironment(service, botToken, existingEnvironment);
-  await writeFile(service.wrapperPath, buildWrapperScript(service), 'utf8');
-  await chmod(service.wrapperPath, 0o755);
+  await writeServiceLaunchers(service);
   await writeJson(service.configPath, buildServiceConfig(service, {
     ...existingConfig,
     installed_at: existingConfig.installed_at || new Date().toISOString(),
@@ -620,12 +619,13 @@ async function runTelegramServiceRelink(args) {
     await compileMenuBarApp(service);
   }
 
-  const wasLoaded = (await inspectService({
+  const previousState = await inspectService({
     ...service,
     nodePath: previousLauncher.nodePath,
     cliPath: previousLauncher.cliPath,
     launcherScope: previousLauncher.launcherScope
-  })).loaded;
+  });
+  const wasLoaded = previousState.loaded || previousState.supervisor_loaded;
   let payload = await inspectService(service);
   if (wasLoaded) {
     await stopService({
@@ -800,8 +800,10 @@ async function runTelegramServiceUninstall(args) {
     action: 'uninstall',
     installed: false,
     loaded: false,
+    supervisor_loaded: false,
     label: service.label,
     plist_path: service.plistPath,
+    supervisor_plist_path: service.supervisorPlistPath,
     state_dir: service.stateDir,
     menubar_installed: await pathExists(service.menubarAppPath),
     menubar_app_path: service.menubarAppPath
@@ -828,6 +830,7 @@ function resolveTelegramServiceSettings(options) {
     homeDir,
     cwd: workspace.cwd,
     label,
+    supervisorLabel: `${label}.supervisor`,
     chatId,
     pollTimeout,
     profile,
@@ -839,8 +842,13 @@ function resolveTelegramServiceSettings(options) {
     plistPath: path.join(launchAgentDir, `${label}.plist`),
     envPath: path.join(stateDir, 'telegram.env'),
     wrapperPath: path.join(stateDir, 'telegram-listener.sh'),
+    supervisorPlistPath: path.join(launchAgentDir, `${label}.supervisor.plist`),
+    supervisorWrapperPath: path.join(stateDir, 'telegram-supervisor.sh'),
     stdoutPath: path.join(stateDir, 'service.stdout.log'),
     stderrPath: path.join(stateDir, 'service.stderr.log'),
+    supervisorStdoutPath: path.join(stateDir, 'supervisor.stdout.log'),
+    supervisorStderrPath: path.join(stateDir, 'supervisor.stderr.log'),
+    supervisorIntervalSeconds: DEFAULT_SUPERVISOR_INTERVAL_SECONDS,
     menubarAppPath: path.join(applicationsDir, DEFAULT_MENU_BAR_APP_NAME),
     menubarSourcePath: path.join(stateDir, 'OpenCodexTray.applescript'),
     ctoSoulPath: resolveServiceCtoSoulPath(options, stateDir),
@@ -871,6 +879,7 @@ async function loadInstalledService(options) {
       ...service,
       cwd: workspacePath,
       label: config.label || service.label,
+      supervisorLabel: config.supervisor_label || service.supervisorLabel,
       chatId: config.chat_id || service.chatId,
       pollTimeout: Number.isInteger(config.poll_timeout) ? config.poll_timeout : service.pollTimeout,
       profile: config.profile || config.permission_mode || service.profile,
@@ -882,8 +891,15 @@ async function loadInstalledService(options) {
       plistPath: config.plist_path || service.plistPath,
       envPath: config.env_path || service.envPath,
       wrapperPath: config.wrapper_path || service.wrapperPath,
+      supervisorPlistPath: config.supervisor_plist_path || service.supervisorPlistPath,
+      supervisorWrapperPath: config.supervisor_wrapper_path || service.supervisorWrapperPath,
       stdoutPath: config.stdout_path || service.stdoutPath,
       stderrPath: config.stderr_path || service.stderrPath,
+      supervisorStdoutPath: config.supervisor_stdout_path || service.supervisorStdoutPath,
+      supervisorStderrPath: config.supervisor_stderr_path || service.supervisorStderrPath,
+      supervisorIntervalSeconds: Number.isInteger(config.supervisor_interval_seconds)
+        ? config.supervisor_interval_seconds
+        : service.supervisorIntervalSeconds,
       menubarAppPath: config.menubar_app_path || service.menubarAppPath,
       menubarSourcePath: config.menubar_source_path || service.menubarSourcePath,
       ctoSoulPath: config.cto_soul_path || service.ctoSoulPath,
@@ -1051,6 +1067,7 @@ function buildServiceConfig(service, overrides = {}) {
     ...overrides,
     provider: 'telegram',
     label: service.label,
+    supervisor_label: service.supervisorLabel,
     cwd: service.cwd,
     chat_id: service.chatId,
     poll_timeout: service.pollTimeout,
@@ -1063,8 +1080,13 @@ function buildServiceConfig(service, overrides = {}) {
     plist_path: service.plistPath,
     env_path: service.envPath,
     wrapper_path: service.wrapperPath,
+    supervisor_plist_path: service.supervisorPlistPath,
+    supervisor_wrapper_path: service.supervisorWrapperPath,
     stdout_path: service.stdoutPath,
     stderr_path: service.stderrPath,
+    supervisor_stdout_path: service.supervisorStdoutPath,
+    supervisor_stderr_path: service.supervisorStderrPath,
+    supervisor_interval_seconds: service.supervisorIntervalSeconds,
     menubar_app_path: service.menubarAppPath,
     menubar_source_path: service.menubarSourcePath,
     cto_soul_path: service.ctoSoulPath,
@@ -1240,6 +1262,7 @@ function formatPermissionMode(profileName) {
 
 async function inspectService(service) {
   const installed = await pathExists(service.plistPath);
+  const supervisorInstalled = await pathExists(service.supervisorPlistPath);
   const menubarInstalled = await pathExists(service.menubarAppPath);
   const ctoSoul = await loadCtoSoulDocument(service.cwd, { path: service.ctoSoulPath });
   const ctoChatSoul = await loadCtoSoulDocument(service.cwd, { path: service.ctoSoulPath, variant: 'chat' });
@@ -1253,13 +1276,21 @@ async function inspectService(service) {
       ok: true,
       installed: false,
       loaded: false,
+      supervisor_loaded: false,
       state: 'missing',
+      supervisor_state: supervisorInstalled ? 'stopped' : 'missing',
       pid: null,
+      supervisor_pid: null,
       label: service.label,
+      supervisor_label: service.supervisorLabel,
       plist_path: service.plistPath,
+      supervisor_plist_path: service.supervisorPlistPath,
       state_dir: service.stateDir,
       stdout_path: service.stdoutPath,
       stderr_path: service.stderrPath,
+      supervisor_stdout_path: service.supervisorStdoutPath,
+      supervisor_stderr_path: service.supervisorStderrPath,
+      supervisor_interval_seconds: service.supervisorIntervalSeconds,
       menubar_installed: menubarInstalled,
       menubar_app_path: service.menubarAppPath,
       cwd: service.cwd,
@@ -1289,24 +1320,28 @@ async function inspectService(service) {
     };
   }
 
-  const launchctl = resolveLaunchctlBin();
-  const domainTarget = buildLaunchdTarget(service.label);
-  const result = await runCommandCapture(launchctl, ['print', domainTarget], { cwd: service.cwd });
-  const rawOutput = `${result.stdout || ''}${result.stderr || ''}`;
-  const pidMatch = rawOutput.match(/pid\s*=\s*(\d+)/);
-  const stateMatch = rawOutput.match(/state\s*=\s*([^\n]+)/);
+  const listenerState = await inspectLaunchdUnit(service.cwd, service.label);
+  const supervisorState = await inspectLaunchdUnit(service.cwd, service.supervisorLabel);
 
   return {
     ok: true,
     installed: true,
-    loaded: result.code === 0,
-    state: result.code === 0 ? (stateMatch?.[1]?.trim() || 'loaded') : 'stopped',
-    pid: pidMatch ? Number.parseInt(pidMatch[1], 10) : null,
+    loaded: listenerState.loaded,
+    supervisor_loaded: supervisorState.loaded,
+    state: listenerState.state,
+    supervisor_state: supervisorState.state,
+    pid: listenerState.pid,
+    supervisor_pid: supervisorState.pid,
     label: service.label,
+    supervisor_label: service.supervisorLabel,
     plist_path: service.plistPath,
+    supervisor_plist_path: service.supervisorPlistPath,
     state_dir: service.stateDir,
     stdout_path: service.stdoutPath,
     stderr_path: service.stderrPath,
+    supervisor_stdout_path: service.supervisorStdoutPath,
+    supervisor_stderr_path: service.supervisorStderrPath,
+    supervisor_interval_seconds: service.supervisorIntervalSeconds,
     menubar_installed: menubarInstalled,
     menubar_app_path: service.menubarAppPath,
     cwd: service.cwd,
@@ -1332,7 +1367,8 @@ async function inspectService(service) {
     cto_worker_agent_soul_path: ctoWorkerAgentSoul.path,
     cto_worker_agent_soul_source: ctoWorkerAgentSoul.builtin ? 'builtin' : 'file',
     ...flattenServiceSettings(service.settings),
-    launchctl_output: rawOutput.trim(),
+    launchctl_output: listenerState.output,
+    supervisor_launchctl_output: supervisorState.output,
     ...workflowStats
   };
 }
@@ -1776,20 +1812,15 @@ function normalizeDispatchStatus(status) {
 
 async function startService(service) {
   const current = await inspectService(service);
-  if (current.loaded) {
+  if (current.loaded && current.supervisor_loaded) {
     return current;
   }
 
-  const launchctl = resolveLaunchctlBin();
-  const domain = buildLaunchdDomain();
-  const bootstrap = await runCommandCapture(launchctl, ['bootstrap', domain, service.plistPath], { cwd: service.cwd });
-  if (bootstrap.code !== 0) {
-    throw new Error(`launchctl bootstrap failed: ${pickCommandFailure(bootstrap)}`);
+  if (!current.loaded) {
+    await startLaunchdUnit(service.cwd, service.label, service.plistPath);
   }
-
-  const kickstart = await runCommandCapture(launchctl, ['kickstart', '-k', buildLaunchdTarget(service.label)], { cwd: service.cwd });
-  if (kickstart.code !== 0) {
-    throw new Error(`launchctl kickstart failed: ${pickCommandFailure(kickstart)}`);
+  if (!current.supervisor_loaded) {
+    await startLaunchdUnit(service.cwd, service.supervisorLabel, service.supervisorPlistPath);
   }
 
   return inspectService(service);
@@ -1797,20 +1828,57 @@ async function startService(service) {
 
 async function stopService(service, options = {}) {
   const current = await inspectService(service);
-  if (!current.loaded) {
+  if (!current.loaded && !current.supervisor_loaded) {
     if (options.quietIfStopped) {
       return current;
     }
     return current;
   }
 
-  const launchctl = resolveLaunchctlBin();
-  const bootout = await runCommandCapture(launchctl, ['bootout', buildLaunchdTarget(service.label)], { cwd: service.cwd });
-  if (bootout.code !== 0) {
-    throw new Error(`launchctl bootout failed: ${pickCommandFailure(bootout)}`);
+  if (current.loaded) {
+    await stopLaunchdUnit(service.cwd, service.label);
+  }
+  if (current.supervisor_loaded) {
+    await stopLaunchdUnit(service.cwd, service.supervisorLabel);
   }
 
   return inspectService(service);
+}
+
+async function inspectLaunchdUnit(cwd, label) {
+  const launchctl = resolveLaunchctlBin();
+  const result = await runCommandCapture(launchctl, ['print', buildLaunchdTarget(label)], { cwd });
+  const rawOutput = `${result.stdout || ''}${result.stderr || ''}`.trim();
+  const pidMatch = rawOutput.match(/pid\s*=\s*(\d+)/);
+  const stateMatch = rawOutput.match(/state\s*=\s*([^\n]+)/);
+  return {
+    loaded: result.code === 0,
+    state: result.code === 0 ? (stateMatch?.[1]?.trim() || 'loaded') : 'stopped',
+    pid: pidMatch ? Number.parseInt(pidMatch[1], 10) : null,
+    output: rawOutput
+  };
+}
+
+async function startLaunchdUnit(cwd, label, plistPath) {
+  const launchctl = resolveLaunchctlBin();
+  const domain = buildLaunchdDomain();
+  const bootstrap = await runCommandCapture(launchctl, ['bootstrap', domain, plistPath], { cwd });
+  if (bootstrap.code !== 0) {
+    throw new Error(`launchctl bootstrap failed for ${label}: ${pickCommandFailure(bootstrap)}`);
+  }
+
+  const kickstart = await runCommandCapture(launchctl, ['kickstart', '-k', buildLaunchdTarget(label)], { cwd });
+  if (kickstart.code !== 0) {
+    throw new Error(`launchctl kickstart failed for ${label}: ${pickCommandFailure(kickstart)}`);
+  }
+}
+
+async function stopLaunchdUnit(cwd, label) {
+  const launchctl = resolveLaunchctlBin();
+  const bootout = await runCommandCapture(launchctl, ['bootout', buildLaunchdTarget(label)], { cwd });
+  if (bootout.code !== 0) {
+    throw new Error(`launchctl bootout failed for ${label}: ${pickCommandFailure(bootout)}`);
+  }
 }
 
 function renderServiceOutput(payload, json, title) {
@@ -1832,12 +1900,22 @@ function renderServiceOutput(payload, json, title) {
   const lines = [title, ''];
   lines.push(`Installed: ${payload.installed ? 'yes' : 'no'}`);
   lines.push(`Loaded: ${payload.loaded ? 'yes' : 'no'}`);
+  lines.push(`Supervisor Loaded: ${payload.supervisor_loaded ? 'yes' : 'no'}`);
   lines.push(`Label: ${payload.label}`);
+  if (payload.supervisor_label) {
+    lines.push(`Supervisor Label: ${payload.supervisor_label}`);
+  }
   if (payload.state) {
     lines.push(`State: ${payload.state}`);
   }
+  if (payload.supervisor_state) {
+    lines.push(`Supervisor State: ${payload.supervisor_state}`);
+  }
   if (payload.pid) {
     lines.push(`PID: ${payload.pid}`);
+  }
+  if (payload.supervisor_pid) {
+    lines.push(`Supervisor PID: ${payload.supervisor_pid}`);
   }
   if (payload.chat_id) {
     lines.push(`Chat: ${payload.chat_id}`);
@@ -1867,6 +1945,9 @@ function renderServiceOutput(payload, json, title) {
   lines.push(`UI Language: ${payload.ui_language || DEFAULT_SERVICE_SETTINGS.ui_language}`);
   lines.push(`Badge Mode: ${payload.badge_mode || DEFAULT_SERVICE_SETTINGS.badge_mode}`);
   lines.push(`Refresh Interval: ${payload.refresh_interval_seconds || DEFAULT_SERVICE_SETTINGS.refresh_interval_seconds}`);
+  if (payload.supervisor_interval_seconds) {
+    lines.push(`Supervisor Interval: ${payload.supervisor_interval_seconds}s`);
+  }
   lines.push(`Show Workflow IDs: ${payload.show_workflow_ids === false ? 'off' : 'on'}`);
   lines.push(`Show Paths: ${payload.show_paths === false ? 'off' : 'on'}`);
   if (shouldShowSoulDetails && payload.cto_soul_source) {
@@ -1953,9 +2034,18 @@ function renderServiceOutput(payload, json, title) {
   }
   if (showPaths) {
     lines.push(`Plist: ${payload.plist_path}`);
+    if (payload.supervisor_plist_path) {
+      lines.push(`Supervisor Plist: ${payload.supervisor_plist_path}`);
+    }
     lines.push(`State Dir: ${payload.state_dir}`);
     lines.push(`Stdout Log: ${payload.stdout_path}`);
     lines.push(`Stderr Log: ${payload.stderr_path}`);
+    if (payload.supervisor_stdout_path) {
+      lines.push(`Supervisor Stdout Log: ${payload.supervisor_stdout_path}`);
+    }
+    if (payload.supervisor_stderr_path) {
+      lines.push(`Supervisor Stderr Log: ${payload.supervisor_stderr_path}`);
+    }
   }
   lines.push(`Menu Bar App: ${payload.menubar_installed ? 'installed' : 'missing'}`);
   if (showPaths && payload.menubar_app_path) {
@@ -2657,6 +2747,16 @@ function buildEnvironmentFile(environment) {
   return `${lines.join('\n')}\n`;
 }
 
+async function writeServiceLaunchers(service) {
+  await writeFile(service.wrapperPath, buildWrapperScript(service), 'utf8');
+  await chmod(service.wrapperPath, 0o755);
+  await writeFile(service.plistPath, buildLaunchAgentPlist(service), 'utf8');
+
+  await writeFile(service.supervisorWrapperPath, buildSupervisorWrapperScript(service), 'utf8');
+  await chmod(service.supervisorWrapperPath, 0o755);
+  await writeFile(service.supervisorPlistPath, buildSupervisorLaunchAgentPlist(service), 'utf8');
+}
+
 function buildWrapperScript(service) {
   return [
     '#!/bin/zsh',
@@ -2664,6 +2764,16 @@ function buildWrapperScript(service) {
     `source ${shellQuote(service.envPath)}`,
     `cd ${shellQuote(service.cwd)}`,
     `exec ${shellQuote(service.nodePath)} ${shellQuote(service.cliPath)} im telegram listen --cwd ${shellQuote(service.cwd)} --chat-id ${shellQuote(service.chatId)} --poll-timeout ${shellQuote(String(service.pollTimeout))} --cto --profile ${shellQuote(service.profile)}`
+  ].join('\n') + '\n';
+}
+
+function buildSupervisorWrapperScript(service) {
+  return [
+    '#!/bin/zsh',
+    'set -euo pipefail',
+    `source ${shellQuote(service.envPath)}`,
+    `cd ${shellQuote(service.cwd)}`,
+    `exec ${shellQuote(service.nodePath)} ${shellQuote(service.cliPath)} im telegram supervise --cwd ${shellQuote(service.cwd)} --profile ${shellQuote(service.profile)}`
   ].join('\n') + '\n';
 }
 
@@ -2692,6 +2802,34 @@ function buildLaunchAgentPlist(service) {
   <string>Background</string>
   <key>ThrottleInterval</key>
   <integer>5</integer>
+</dict>
+</plist>
+`;
+}
+
+function buildSupervisorLaunchAgentPlist(service) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${escapeXml(service.supervisorLabel)}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${escapeXml(service.supervisorWrapperPath)}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>${service.supervisorIntervalSeconds}</integer>
+  <key>WorkingDirectory</key>
+  <string>${escapeXml(service.cwd)}</string>
+  <key>StandardOutPath</key>
+  <string>${escapeXml(service.supervisorStdoutPath)}</string>
+  <key>StandardErrorPath</key>
+  <string>${escapeXml(service.supervisorStderrPath)}</string>
+  <key>ProcessType</key>
+  <string>Background</string>
 </dict>
 </plist>
 `;

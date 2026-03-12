@@ -33,8 +33,10 @@
 
 - 放到 `~/Library/LaunchAgents` 下面的 `launchd` plist
 - 一个启动 `opencodex im telegram listen --cto` 的 wrapper shell script
+- 第二个周期性执行 one-shot Telegram supervisor tick 的 `launchd` plist 和 wrapper shell script
 - 一个带 Telegram bot token 与代理变量的受保护 env 文件
 - 后台监听器的持久 stdout / stderr 日志
+- 周期性 supervisor tick 的持久 stdout / stderr 日志
 - 在开启 `--install-menubar` 时，额外生成一个 stay-open 的 macOS 菜单栏 app
 - 当未提供 `--cwd` 时，自动创建一个独立默认 workspace：`~/.opencodex/workspaces/telegram-cto`
 - 一组 service-local 的 CTO soul 文件，默认放在 service state dir 下面：
@@ -87,6 +89,8 @@
 - `--launch-agent-dir <dir>`
 - `--applications-dir <dir>`
 - `--json`
+
+`telegram start`、`stop` 和 `restart` 现在会一起管理这两个已安装 agent：长轮询 listener 和周期性的 supervisor tick。
 
 ### `telegram supervise`
 
