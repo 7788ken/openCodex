@@ -796,8 +796,36 @@ test('session repair converts stale auto sessions into a resumable partial summa
       { type: 'auto_log', path: path.join(autoArtifactsDir, 'auto-log.txt') }
     ],
     child_sessions: [
-      { label: 'run', iteration: 1, command: 'run', session_id: runSessionId, status: 'completed' },
-      { label: 'review', iteration: 1, command: 'review', session_id: reviewSessionId, status: 'completed' }
+      {
+        label: 'run',
+        iteration: 1,
+        command: 'run',
+        session_id: runSessionId,
+        status: 'completed',
+        session_contract: {
+          schema: 'opencodex/session-contract/v1',
+          layer: 'child',
+          thread_kind: 'child_session',
+          role: 'executor',
+          scope: 'auto',
+          supervisor_session_id: autoSessionId
+        }
+      },
+      {
+        label: 'review',
+        iteration: 1,
+        command: 'review',
+        session_id: reviewSessionId,
+        status: 'completed',
+        session_contract: {
+          schema: 'opencodex/session-contract/v1',
+          layer: 'child',
+          thread_kind: 'child_session',
+          role: 'reviewer',
+          scope: 'auto',
+          supervisor_session_id: autoSessionId
+        }
+      }
     ],
     iteration_count: 1
   });
@@ -851,6 +879,8 @@ test('session repair converts stale auto sessions into a resumable partial summa
   assert.match(repaired.summary.result, /remaining review finding|review finding\(s\) remain/i);
   assert.deepEqual(repaired.summary.findings, ['There is still one blocking issue to fix.']);
   assert.deepEqual(repaired.child_sessions.map((child) => child.status), ['completed', 'completed']);
+  assert.equal(repaired.child_sessions[0].session_contract?.role, 'executor');
+  assert.equal(repaired.child_sessions[1].session_contract?.role, 'reviewer');
 });
 
 function runCli(args) {

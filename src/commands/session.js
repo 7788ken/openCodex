@@ -3,7 +3,7 @@ import { parseOptions } from '../lib/args.js';
 import { listSessions, loadSession, saveSession, getSessionDir } from '../lib/session-store.js';
 import { readJson, readTextIfExists, writeJson } from '../lib/fs.js';
 import { buildTelegramCtoSessionSummary, classifyTelegramCtoMessageIntent, finalizeWorkflowStatus, summarizeWorkflowCounts } from '../lib/cto-workflow.js';
-import { formatSessionThreadKindLabel, inferSessionContract } from '../lib/session-contract.js';
+import { buildSessionContractSnapshot, formatSessionThreadKindLabel, inferSessionContract } from '../lib/session-contract.js';
 import { buildSummaryFromMessage } from './run.js';
 import { buildReviewSummary } from './review.js';
 import { renderHumanSummary } from '../lib/summary.js';
@@ -766,7 +766,8 @@ async function deriveAutoRepair(cwd, session, lineage) {
     iteration: getAutoIteration(child),
     command: child.command,
     session_id: child.session_id,
-    status: child.status
+    status: child.status,
+    session_contract: child.repair_session_contract || buildSessionContractSnapshot(child) || null
   }));
 
   if (lastChild?.status === 'failed') {
@@ -931,7 +932,8 @@ async function collectAutoChildSessions(cwd, session, lineage) {
     const resolvedChild = await resolveRepairSnapshot(cwd, {
       ...child,
       repair_label: metadata.label || child.command,
-      repair_iteration: metadata.iteration
+      repair_iteration: metadata.iteration,
+      repair_session_contract: metadata.session_contract || buildSessionContractSnapshot(child) || null
     }, lineage);
     repairedChildren.push(resolvedChild);
   }
