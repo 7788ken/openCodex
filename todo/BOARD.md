@@ -97,10 +97,10 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 - `T010` — remote mobile bridge MVP implemented
 - `T011` — Telegram IM connector MVP implemented
 - `T012` — Telegram CTO delegation loop implemented as a transitional bridge
-- `T013` — planned
-- `T014` — planned
-- `T015` — planned
-- `T016` — planned
+- `T013` — mostly implemented in the Telegram CTO runtime; planning-stage recovery and a fully standalone host supervisor runtime still pending
+- `T014` — mostly implemented with shared child-session contract metadata across core commands; legacy/fallback paths still need cleanup
+- `T015` — mostly implemented in service/tray workflow and dispatch views; older records still rely on inferred separation
+- `T016` — mostly implemented in the Telegram CTO chat/exploration path
 - `T018` — implemented
 - `T019` — implemented
-- `T017` — detached install layout documented; initial installer skeleton implemented
+- `T017` — detached install boundary, bundle/install/status flow, and bootstrap installer implemented; broader packaging polish still pending

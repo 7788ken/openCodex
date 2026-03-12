@@ -176,18 +176,25 @@ test('im telegram listen --cto orchestrates a workflow and returns structured pr
   assert.equal(imSession.command, 'im');
   assert.equal(imSession.input.arguments.delegate_mode, 'cto');
   assert.equal(imSession.input.arguments.profile, 'full-access');
+  assert.equal(imSession.session_contract.thread_kind, 'service_listener');
+  assert.equal(imSession.session_contract.role, 'telegram_cto_listener');
   assert.ok(imSession.artifacts.some((artifact) => artifact.type === 'telegram_runs'));
   assert.ok(imSession.artifacts.some((artifact) => artifact.type === 'child_session'));
   assert.ok(ctoSession.child_sessions.some((entry) => /Plan workflow/.test(entry.label) && entry.agent_name_zh === '阿周'));
+  assert.ok(ctoSession.child_sessions.some((entry) => entry.session_contract?.role === 'planner'));
   assert.ok(ctoSession.child_sessions.some((entry) => /^Task /.test(entry.label) && entry.agent_name_zh));
+  assert.ok(ctoSession.child_sessions.some((entry) => entry.session_contract?.role === 'worker' && entry.task_id));
 
   assert.equal(ctoSession.command, 'cto');
   assert.equal(ctoSession.parent_session_id, imSessionId);
+  assert.equal(ctoSession.session_contract.thread_kind, 'host_workflow');
+  assert.equal(ctoSession.session_contract.role, 'cto_supervisor');
   assert.equal(ctoSession.summary.status, 'completed');
   assert.equal(workflowState.status, 'completed');
   assert.equal(workflowState.tasks.length, 2);
   assert.deepEqual(workflowState.tasks.map((task) => task.id), ['inspect-repo', 'summarize-findings']);
   assert.ok(workflowState.tasks.every((task) => task.status === 'completed'));
+  assert.ok(workflowState.tasks.every((task) => task.session_id));
 });
 
 test('im telegram listen prunes old ended service sessions without touching the chat main line', async (t) => {
@@ -1466,6 +1473,174 @@ test('im telegram listen --cto keeps later messages non-blocking while a slow wo
 
   child.kill('SIGTERM');
   await waitForExit(child);
+});
+
+test('im telegram listen --cto resumes a running workflow after listener restart', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-restart-'));
+  const telegram = await startTelegramMockServer({
+    updates: []
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  await writeSessionFixture(cwd, {
+    session_id: 'run-restart-slow',
+    command: 'run',
+    status: 'completed',
+    created_at: '2026-03-12T08:00:00.000Z',
+    updated_at: '2026-03-12T08:00:01.000Z',
+    input: {
+      prompt: 'Slow task',
+      arguments: {
+        profile: 'full-access'
+      }
+    },
+    summary: {
+      title: 'Mock slow task completed',
+      result: 'The mock slow worker finished successfully.',
+      status: 'completed',
+      highlights: ['Slow mock task completed.'],
+      next_steps: [],
+      risks: [],
+      validation: [],
+      changed_files: ['src/mock-slow.js'],
+      findings: []
+    }
+  });
+
+  await writeSessionFixture(cwd, {
+    session_id: 'cto-20260312-080000-restart',
+    command: 'cto',
+    status: 'running',
+    created_at: '2026-03-12T08:00:00.000Z',
+    updated_at: '2026-03-12T08:00:01.000Z',
+    input: {
+      prompt: 'restart chain',
+      arguments: {
+        provider: 'telegram',
+        chat_id: '123456'
+      }
+    },
+    child_sessions: [
+      {
+        session_id: 'run-restart-slow',
+        label: 'Task slow-task · 阿岚',
+        task_id: 'slow-task',
+        session_contract: {
+          schema: 'opencodex/session-contract/v1',
+          layer: 'child',
+          thread_kind: 'child_session',
+          role: 'worker',
+          scope: 'telegram_cto',
+          supervisor_session_id: 'cto-20260312-080000-restart'
+        }
+      }
+    ],
+    summary: {
+      title: 'CTO workflow running',
+      result: 'Workflow is running with 1 active task(s).',
+      status: 'running',
+      highlights: [],
+      next_steps: []
+    }
+  }, [
+    {
+      name: 'cto-workflow.json',
+      type: 'cto_workflow',
+      description: 'Telegram CTO workflow state and task graph.',
+      json: {
+        workflow_session_id: 'cto-20260312-080000-restart',
+        source_message_id: 711,
+        source_update_id: 311,
+        chat_id: '123456',
+        sender_display: 'Li Jianqian',
+        goal_text: 'restart chain',
+        status: 'running',
+        pending_question_zh: '',
+        created_at: '2026-03-12T08:00:00.000Z',
+        updated_at: '2026-03-12T08:00:01.000Z',
+        task_counter: 2,
+        user_messages: [
+          {
+            provider: 'telegram',
+            update_id: 311,
+            message_id: 711,
+            created_at: '2026-03-12T08:00:00.000Z',
+            chat_id: '123456',
+            sender_display: 'Li Jianqian',
+            text: 'restart chain'
+          }
+        ],
+        tasks: [
+          {
+            id: 'slow-task',
+            title: 'Slow task',
+            worker_prompt: 'MOCK_WORKER slow-500',
+            depends_on: [],
+            status: 'running',
+            session_id: 'run-restart-slow',
+            summary_status: '',
+            result: '',
+            next_steps: [],
+            changed_files: [],
+            updated_at: '2026-03-12T08:00:01.000Z'
+          },
+          {
+            id: 'fast-task',
+            title: 'Fast task',
+            worker_prompt: 'MOCK_WORKER fast',
+            depends_on: ['slow-task'],
+            status: 'queued',
+            session_id: '',
+            summary_status: '',
+            result: '',
+            next_steps: [],
+            changed_files: [],
+            updated_at: '2026-03-12T08:00:01.000Z'
+          }
+        ]
+      }
+    }
+  ]);
+
+  const secondListener = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!secondListener.killed) {
+      secondListener.kill('SIGTERM');
+    }
+  });
+
+  let secondStdout = '';
+  secondListener.stdout.on('data', (chunk) => {
+    secondStdout += chunk.toString();
+  });
+
+  await waitForCondition(() => secondStdout.includes('Resuming CTO workflow cto-20260312-080000-restart after listener restart'), 'restart resume log');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 711 && /已经处理完了。/.test(message.text)), 'restart final reply');
+
+  const resumedWorkflow = await waitForCtoWorkflowState(cwd, (state) => String(state?.workflow_session_id || '') === 'cto-20260312-080000-restart' && state.status === 'completed', 'completed resumed workflow');
+  assert.equal(resumedWorkflow.sessionId, 'cto-20260312-080000-restart');
+  assert.deepEqual(resumedWorkflow.state.tasks.map((task) => task.status), ['completed', 'completed']);
+  assert.ok(resumedWorkflow.state.tasks.every((task) => task.session_id));
+
+  secondListener.kill('SIGTERM');
+  await waitForExit(secondListener);
 });
 
 test('im telegram listen --cto reports workflow status instead of dispatching a new workflow for status questions', async (t) => {
@@ -2747,6 +2922,10 @@ async function writeSessionFixture(cwd, session, artifactFiles = []) {
 }
 
 function extractSessionId(stdout) {
+  const imMatches = [...stdout.matchAll(/Session:\s+(im-[^\s]+)/g)];
+  if (imMatches.length) {
+    return imMatches.at(-1)?.[1] || '';
+  }
   const match = stdout.match(/Session:\s+([^\s]+)/);
   return match ? match[1] : '';
 }

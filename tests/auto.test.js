@@ -33,7 +33,11 @@ test('auto runs repair, run, and review in one unattended workflow', async () =>
   const autoSession = sessions.find((session) => session.command === 'auto');
   const childSessions = sessions.filter((session) => session.command !== 'auto');
   assert.equal(autoSession.summary.status, 'partial');
+  assert.equal(autoSession.session_contract.thread_kind, 'host_workflow');
+  assert.equal(autoSession.session_contract.role, 'auto_orchestrator');
   assert.equal(autoSession.child_sessions.length, 2);
+  assert.ok(autoSession.child_sessions.some((child) => child.session_contract?.role === 'executor'));
+  assert.ok(autoSession.child_sessions.some((child) => child.session_contract?.role === 'reviewer'));
   assert.ok(autoSession.artifacts.some((artifact) => artifact.type === 'step_output'));
   for (const child of childSessions) {
     assert.equal(child.parent_session_id, autoSession.session_id);

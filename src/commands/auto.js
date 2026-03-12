@@ -5,6 +5,7 @@ import { appendFile, writeFile } from 'node:fs/promises';
 import { parseOptions } from '../lib/args.js';
 import { createSession, getSessionDir, listSessions, loadSession, saveSession } from '../lib/session-store.js';
 import { readJson } from '../lib/fs.js';
+import { applySessionContract, buildSessionContract, buildSessionContractEnv, buildSessionContractSnapshot } from '../lib/session-contract.js';
 import { renderHumanSummary } from '../lib/summary.js';
 
 const OPTION_SPEC = {
@@ -70,6 +71,13 @@ export async function runAutoCommand(args) {
   if (resumeSource) {
     session.parent_session_id = resumeSource.session_id;
   }
+  applySessionContract(session, buildSessionContract({
+    layer: 'host',
+    thread_kind: 'host_workflow',
+    role: 'auto_orchestrator',
+    scope: 'auto',
+    supervisor_session_id: resumeSource?.session_id || ''
+  }));
   const initialIterationCount = getInitialIterationCount(resumeSource);
   session.status = 'running';
   session.summary = buildInitialSummary({ cwd, maxIterations, runRetries, shouldRunReview, resumeSource, initialIterationCount });
@@ -161,7 +169,15 @@ export async function runAutoCommand(args) {
         outputPath: reviewOutputPath,
         env: {
           OPENCODEX_PARENT_SESSION_ID: session.session_id,
-          OPENCODEX_AUTO_ITERATION: String(nextIteration)
+          OPENCODEX_AUTO_ITERATION: String(nextIteration),
+          OPENCODEX_EMIT_EARLY_SESSION_ID: '1',
+          ...buildSessionContractEnv({
+            layer: 'child',
+            thread_kind: 'child_session',
+            role: 'reviewer',
+            scope: 'auto',
+            supervisor_session_id: session.session_id
+          })
         }
       });
       const reviewSession = await recordStep(session, {
@@ -360,7 +376,15 @@ async function executeRunIteration({ cwd, currentPrompt, iteration, logPath, pro
       env: {
         OPENCODEX_PARENT_SESSION_ID: parentSessionId,
         OPENCODEX_AUTO_ITERATION: String(iteration),
-        OPENCODEX_AUTO_ATTEMPT: String(attempt)
+        OPENCODEX_AUTO_ATTEMPT: String(attempt),
+        OPENCODEX_EMIT_EARLY_SESSION_ID: '1',
+        ...buildSessionContractEnv({
+          layer: 'child',
+          thread_kind: 'child_session',
+          role: 'executor',
+          scope: 'auto',
+          supervisor_session_id: parentSessionId
+        })
       }
     });
 
@@ -507,7 +531,8 @@ async function recordStep(session, { label, iteration, sessionId, cwd, highlight
     iteration,
     command: childSession.command,
     session_id: childSession.session_id,
-    status: childSession.status
+    status: childSession.status,
+    session_contract: buildSessionContractSnapshot(childSession)
   });
   if (outputPath) {
     session.artifacts.push({

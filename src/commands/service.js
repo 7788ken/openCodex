@@ -20,6 +20,7 @@ import {
   resolveCtoSubagentSoulPath,
   resolveCtoSoulVariantPath
 } from '../lib/cto-workflow.js';
+import { formatSessionThreadKindLabel, inferSessionContract } from '../lib/session-contract.js';
 import { getSessionDir, listSessions } from '../lib/session-store.js';
 
 const CLI_PATH = fileURLToPath(new URL('../../bin/opencodex.js', import.meta.url));
@@ -1438,6 +1439,74 @@ function normalizeChildSessionRefs(childSessions) {
   return childSessions.filter((entry) => typeof entry?.session_id === 'string' && entry.session_id);
 }
 
+function buildSessionPresentation(session, fallback = null) {
+  const contract = inferSessionContract(session, fallback);
+  return {
+    session_contract: contract,
+    thread_kind: contract?.thread_kind || '',
+    thread_kind_label: formatSessionThreadKindLabel(contract?.thread_kind || ''),
+    session_role: contract?.role || '',
+    session_scope: contract?.scope || '',
+    session_layer: contract?.layer || ''
+  };
+}
+
+function normalizeChildSessionTaskId(entry) {
+  if (typeof entry?.task_id === 'string' && entry.task_id.trim()) {
+    return entry.task_id.trim();
+  }
+
+  const match = String(entry?.label || '').match(/^(?:Task|Host executor)\s+(.+?)(?:\s+·\s+.+)?$/i);
+  return match?.[1]?.trim() || '';
+}
+
+function buildWorkflowChildSessionMap(session) {
+  return new Map(
+    normalizeChildSessionRefs(session?.child_sessions)
+      .map((entry) => [normalizeChildSessionTaskId(entry), entry])
+      .filter(([taskId]) => taskId)
+  );
+}
+
+function buildDispatchPresentation({ task, childEntry = null }) {
+  if (typeof task?.summary_status === 'string' && task.summary_status.trim() === 'rerouted') {
+    return {
+      execution_surface: 'host_executor',
+      session_contract: null,
+      thread_kind: 'host_executor',
+      thread_kind_label: formatSessionThreadKindLabel('host_executor'),
+      session_role: 'worker',
+      session_scope: 'telegram_cto',
+      session_layer: 'host'
+    };
+  }
+
+  if (typeof task?.session_id === 'string' && task.session_id) {
+    const childContract = childEntry?.session_contract && typeof childEntry.session_contract === 'object'
+      ? childEntry.session_contract
+      : null;
+    return {
+      execution_surface: 'child_session',
+      session_contract: childContract,
+      thread_kind: childContract?.thread_kind || 'child_session',
+      thread_kind_label: formatSessionThreadKindLabel(childContract?.thread_kind || 'child_session'),
+      session_role: childContract?.role || 'worker',
+      session_scope: childContract?.scope || 'telegram_cto',
+      session_layer: childContract?.layer || 'child'
+    };
+  }
+
+  return {
+    execution_surface: 'host_workflow',
+    session_contract: null,
+    thread_kind: 'host_workflow',
+    thread_kind_label: formatSessionThreadKindLabel('host_workflow'),
+    session_role: 'cto_supervisor',
+    session_scope: 'telegram_cto',
+    session_layer: 'host'
+  };
+}
+
 function collectChildSessionStats({ sessions, trackedSessions, fallbackActiveChildCount = 0 }) {
   const trackedSessionIds = new Set((trackedSessions || [])
     .map((session) => typeof session?.session_id === 'string' ? session.session_id : '')
@@ -1528,6 +1597,7 @@ function buildWorkflowHistoryRecord(workflowInfo) {
     return null;
   }
 
+  const presentation = buildSessionPresentation(session);
   const counts = summarizeWorkflowTaskCounts(workflowState);
   const status = normalizeWorkflowHistoryStatus(workflowState?.status || session.status);
   const goal = typeof workflowState?.goal_text === 'string' && workflowState.goal_text
@@ -1549,6 +1619,12 @@ function buildWorkflowHistoryRecord(workflowInfo) {
     path: pathValue,
     session_path: workflowInfo?.sessionPath || '',
     workflow_state_path: workflowInfo?.workflowStatePath || '',
+    thread_kind: presentation.thread_kind,
+    thread_kind_label: presentation.thread_kind_label,
+    session_role: presentation.session_role,
+    session_scope: presentation.session_scope,
+    session_layer: presentation.session_layer,
+    session_contract: presentation.session_contract,
     child_thread_count: childThreadCount,
     task_total_count: counts.total,
     running_task_count: counts.running,
@@ -1586,6 +1662,7 @@ function buildDispatchRecordsFromWorkflowInfo(cwd, workflowInfo) {
     return [];
   }
 
+  const childSessionByTaskId = buildWorkflowChildSessionMap(session);
   return workflowState.tasks
     .filter((task) => isDispatchRecord(task))
     .map((task) => {
@@ -1596,6 +1673,7 @@ function buildDispatchRecordsFromWorkflowInfo(cwd, workflowInfo) {
       const taskId = typeof task?.id === 'string' ? task.id : '';
       const title = typeof task?.title === 'string' ? task.title : '';
       const rerouteRecordPath = typeof task?.reroute_record_path === 'string' ? task.reroute_record_path : '';
+      const presentation = buildDispatchPresentation({ task, childEntry: childSessionByTaskId.get(taskId) });
       return {
         workflow_session_id: session.session_id,
         task_id: taskId,
@@ -1605,6 +1683,13 @@ function buildDispatchRecordsFromWorkflowInfo(cwd, workflowInfo) {
         path: rerouteRecordPath || childSessionPath || fallbackPath,
         reroute_job_id: typeof task?.reroute_job_id === 'string' ? task.reroute_job_id : '',
         reroute_record_path: rerouteRecordPath,
+        execution_surface: presentation.execution_surface,
+        thread_kind: presentation.thread_kind,
+        thread_kind_label: presentation.thread_kind_label,
+        session_role: presentation.session_role,
+        session_scope: presentation.session_scope,
+        session_layer: presentation.session_layer,
+        session_contract: presentation.session_contract,
         updated_at: typeof task?.updated_at === 'string' && task.updated_at ? task.updated_at : (workflowState?.updated_at || session.updated_at || ''),
         label: `[${status}] ${truncateInline(taskId || title || 'task', 32)} — ${truncateInline(title || taskId || 'Untitled task', 72)}`
       };
@@ -1826,6 +1911,9 @@ function renderWorkflowHistoryOutput(payload, json, title) {
   if (Array.isArray(payload.items)) {
     payload.items.forEach((item, index) => {
       lines.push(`Workflow ${index + 1}: ${item.label}`);
+      if (item.thread_kind_label || item.session_role) {
+        lines.push(`Workflow ${index + 1} Thread: ${item.thread_kind_label || item.thread_kind || 'unknown'}${item.session_role ? ` • role ${item.session_role}` : ''}`);
+      }
       if (item.updated_at) {
         lines.push(`Workflow ${index + 1} Updated: ${item.updated_at}`);
       }
@@ -1872,6 +1960,8 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
   const lastMessage = (await readTextIfExists(lastMessagePath)) || '';
   const recentActivity = summarizeRecentEvents((await readTextIfExists(eventsPath)) || '');
   const taskCounts = summarizeWorkflowTaskCounts(workflowState);
+  const presentation = buildSessionPresentation(workflowSession);
+  const childSessionByTaskId = buildWorkflowChildSessionMap(workflowSession);
   const tasks = Array.isArray(workflowState?.tasks)
     ? workflowState.tasks.map((task) => {
         const sessionId = typeof task?.session_id === 'string' ? task.session_id : '';
@@ -1880,6 +1970,7 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
         const title = typeof task?.title === 'string' && task.title ? task.title : (taskId || 'Untitled task');
         const status = getWorkflowTaskDisplayStatus(task);
         const rerouteRecordPath = typeof task?.reroute_record_path === 'string' ? task.reroute_record_path : '';
+        const taskPresentation = buildDispatchPresentation({ task, childEntry: childSessionByTaskId.get(taskId) });
         return {
           task_id: taskId,
           title,
@@ -1888,6 +1979,13 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
           path: rerouteRecordPath || childSessionPath,
           reroute_job_id: typeof task?.reroute_job_id === 'string' ? task.reroute_job_id : '',
           reroute_record_path: rerouteRecordPath,
+          execution_surface: taskPresentation.execution_surface,
+          thread_kind: taskPresentation.thread_kind,
+          thread_kind_label: taskPresentation.thread_kind_label,
+          session_role: taskPresentation.session_role,
+          session_scope: taskPresentation.session_scope,
+          session_layer: taskPresentation.session_layer,
+          session_contract: taskPresentation.session_contract,
           updated_at: typeof task?.updated_at === 'string' && task.updated_at ? task.updated_at : '',
           label: `[${status}] ${truncateInline(taskId || title || 'task', 32)} — ${truncateInline(title || taskId || 'Untitled task', 72)}`
         };
@@ -1903,6 +2001,12 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
     index,
     workflow_session_id: workflowSessionId,
     status: normalizedStatus,
+    thread_kind: presentation.thread_kind,
+    thread_kind_label: presentation.thread_kind_label,
+    session_role: presentation.session_role,
+    session_scope: presentation.session_scope,
+    session_layer: presentation.session_layer,
+    session_contract: presentation.session_contract,
     goal,
     inferred_intent: inferredIntent.kind,
     inferred_intent_zh: inferredIntent.label_zh,
@@ -1964,6 +2068,9 @@ function renderWorkflowDetailOutput(payload, json, title) {
     lines.push(`Workflow: ${payload.workflow_session_id}`);
   }
   lines.push(`Status: ${payload.status || 'unknown'}`);
+  if (payload.thread_kind_label || payload.session_role) {
+    lines.push(`Thread: ${payload.thread_kind_label || payload.thread_kind || 'unknown'}${payload.session_role ? ` • role ${payload.session_role}` : ''}`);
+  }
   if (payload.goal) {
     lines.push(`Goal: ${truncateInline(payload.goal, 160)}`);
   }
@@ -2125,6 +2232,15 @@ async function buildDispatchDetailPayload(cwd, dispatch, index) {
     typeof dispatch?.path === 'string' ? dispatch.path : ''
   ]);
   const displayStatus = getWorkflowTaskDisplayStatus(workflowTask || dispatch);
+  const presentation = rerouteRecord
+    ? buildDispatchPresentation({ task: { ...workflowTask, summary_status: 'rerouted', session_id: sessionId } })
+    : buildSessionPresentation(session, {
+      layer: 'child',
+      thread_kind: 'child_session',
+      role: session?.command === 'review' ? 'reviewer' : 'worker',
+      scope: 'telegram_cto',
+      supervisor_session_id: workflowSessionId
+    });
 
   return {
     ok: true,
@@ -2138,7 +2254,14 @@ async function buildDispatchDetailPayload(cwd, dispatch, index) {
     task_id: typeof dispatch?.task_id === 'string' ? dispatch.task_id : '',
     title: typeof dispatch?.title === 'string' && dispatch.title ? dispatch.title : (summary.title || ''),
     status: displayStatus || (typeof dispatch?.status === 'string' && dispatch.status ? dispatch.status : (summary.status || session?.status || 'unknown')),
+    execution_surface: rerouteRecord ? 'host_executor' : 'child_session',
     session_id: sessionId,
+    thread_kind: presentation.thread_kind || (rerouteRecord ? 'host_executor' : 'child_session'),
+    thread_kind_label: presentation.thread_kind_label || formatSessionThreadKindLabel(rerouteRecord ? 'host_executor' : 'child_session'),
+    session_role: presentation.session_role || (session?.command === 'review' ? 'reviewer' : 'worker'),
+    session_scope: presentation.session_scope || 'telegram_cto',
+    session_layer: presentation.session_layer || (rerouteRecord ? 'host' : 'child'),
+    session_contract: presentation.session_contract || null,
     reroute_job_id: typeof dispatch?.reroute_job_id === 'string' && dispatch.reroute_job_id
       ? dispatch.reroute_job_id
       : (typeof workflowTask?.reroute_job_id === 'string' ? workflowTask.reroute_job_id : ''),
@@ -2185,6 +2308,10 @@ function renderDispatchDetailOutput(payload, json, title) {
     lines.push(`Title: ${truncateInline(payload.title, 160)}`);
   }
   lines.push(`Status: ${payload.status || 'unknown'}`);
+  if (payload.thread_kind_label || payload.session_role || payload.execution_surface) {
+    lines.push(`Execution Surface: ${payload.execution_surface || payload.thread_kind_label || payload.thread_kind || 'unknown'}`);
+    lines.push(`Session Thread: ${payload.thread_kind_label || payload.thread_kind || 'unknown'}${payload.session_role ? ` • role ${payload.session_role}` : ''}`);
+  }
   if (payload.updated_at) {
     lines.push(`Updated: ${payload.updated_at}`);
   }

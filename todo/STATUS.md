@@ -2,10 +2,19 @@
 
 ## 2026-03-12
 
+- Audited the `todo/` board against the current codebase and corrected several overstated or stale status labels.
+- Initially marked `T013`, `T014`, and `T015` as only partially implemented during the doc audit: the host-supervisor direction was real, but the runtime/contract/UI closure still lagged the design docs.
+- Marked `T016` as mostly implemented in the Telegram CTO path rather than still being purely planned.
+- Updated `T017` to reflect the real detached-install state: bundle/install/status flow, relink path, and bootstrap installer now exist, even though broader packaging polish is still pending.
 - Added `T018` and fixed Telegram CTO follow-up status binding so colloquial questions like `这个任务完成没有？` now report the latest relevant workflow instead of starting a new empty workflow.
 - Added `T019` and expanded host-executor reroute detection so sandbox-blocked `partial` export tasks can continue automatically on the host executor.
 - Telegram CTO regression coverage now includes colloquial waiting-workflow follow-ups and a Downloads-style export task that first hits `Operation not permitted` and then completes after reroute.
 - Validation passed for the Telegram CTO follow-up/reroute fixes: `node --test tests/cto-workflow.test.js` and `node --test tests/im.test.js`.
+- Follow-up implementation closed the ordinary running-workflow restart gap in the Telegram CTO listener, so rehydrated workflows can now resume queued downstream tasks and finish after listener restart.
+- Added shared `session-contract` helpers and wired them through `im`, `auto`, `run`, `review`, `session-store`, child-session capture, and service payloads so host/child role metadata is machine-readable.
+- Service workflow/dispatch history and detail payloads now expose `thread_kind`, `thread_kind_label`, `session_role`, `session_scope`, `session_layer`, `execution_surface`, and `session_contract`.
+- Reclassified `T013`, `T014`, and `T015` to mostly implemented after the runtime, contract, and UI-separation follow-up landed; the remaining gaps are planning-stage recovery and legacy-session backfill.
+- Validation passed for the follow-up supervisor/contract work: `node --test tests/auto.test.js tests/im.test.js tests/service.test.js` and `node --test tests/run.test.js tests/review.test.js`.
 
 ## 2026-03-10
 

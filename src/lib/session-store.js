@@ -1,6 +1,7 @@
 import { mkdir, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { readJson, toIsoString, writeJson } from './fs.js';
+import { applySessionContract, readSessionContractFromEnv } from './session-contract.js';
 
 const TERMINAL_SESSION_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
@@ -16,7 +17,7 @@ export function createSessionId() {
 
 export function createSession({ command, cwd, input, codexCliVersion }) {
   const now = toIsoString();
-  return {
+  const session = {
     session_id: `${command}-${createSessionId()}`,
     command,
     status: 'queued',
@@ -34,6 +35,11 @@ export function createSession({ command, cwd, input, codexCliVersion }) {
     },
     artifacts: []
   };
+
+  const contract = readSessionContractFromEnv(process.env);
+  applySessionContract(session, contract);
+
+  return session;
 }
 
 export function getSessionDir(cwd, sessionId) {

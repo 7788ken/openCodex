@@ -132,6 +132,28 @@ function buildPlannerPayload(prompt) {
     };
   }
 
+  if (prompt.includes('restart chain')) {
+    return {
+      mode: 'execute',
+      summary_zh: '已拆分为可恢复的串行工作流。',
+      question_zh: '',
+      tasks: [
+        {
+          id: 'slow-task',
+          title: 'Slow task',
+          worker_prompt: 'MOCK_WORKER slow-500',
+          depends_on: []
+        },
+        {
+          id: 'fast-task',
+          title: 'Fast task',
+          worker_prompt: 'MOCK_WORKER fast',
+          depends_on: ['slow-task']
+        }
+      ]
+    };
+  }
+
   if (prompt.includes('下载文件夹') || /save(?: the)? .*downloads/i.test(prompt)) {
     return {
       mode: 'execute',

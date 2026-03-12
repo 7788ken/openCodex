@@ -4,6 +4,7 @@ import { parseOptions } from '../lib/args.js';
 import { getCodexBin, runCommandCapture } from '../lib/codex.js';
 import { writeJson } from '../lib/fs.js';
 import { resolveCodexProfile } from '../lib/profile.js';
+import { applySessionContract, buildSessionContractFromEnv, isTruthyEnv } from '../lib/session-contract.js';
 import { createSession, saveSession } from '../lib/session-store.js';
 import { renderHumanSummary } from '../lib/summary.js';
 
@@ -48,7 +49,9 @@ export async function runReviewCommand(args) {
   if (process.env.OPENCODEX_AUTO_ATTEMPT) {
     session.auto_attempt = Number.parseInt(process.env.OPENCODEX_AUTO_ATTEMPT, 10) || process.env.OPENCODEX_AUTO_ATTEMPT;
   }
+  applySessionContract(session, buildSessionContractFromEnv());
   session.status = 'running';
+  const shouldEmitEarlySessionId = isTruthyEnv(process.env.OPENCODEX_EMIT_EARLY_SESSION_ID);
 
   const sessionDir = await saveSession(cwd, session);
   const reportPath = path.join(sessionDir, 'artifacts', 'review-report.txt');
@@ -75,6 +78,10 @@ export async function runReviewCommand(args) {
     }
   ];
   await saveSession(cwd, session);
+
+  if (shouldEmitEarlySessionId) {
+    process.stdout.write(`Session: ${session.session_id}\n`);
+  }
 
   const result = await runCommandCapture(codexBin, codexArgs, { cwd });
 
@@ -118,7 +125,9 @@ export async function runReviewCommand(args) {
   await saveSession(cwd, session);
 
   process.stdout.write(renderHumanSummary(summary));
-  process.stdout.write(`\nSession: ${session.session_id}\n`);
+  if (!shouldEmitEarlySessionId) {
+    process.stdout.write(`\nSession: ${session.session_id}\n`);
+  }
 
   if (summary.status === 'failed') {
     process.exitCode = 1;

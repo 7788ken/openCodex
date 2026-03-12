@@ -23,3 +23,11 @@ Without that contract, prompts, status semantics, and adoption rules will stay a
 - Structured outputs are sufficient for host-level adoption and routing decisions.
 - Session records can tell whether a child acted as planner, reviewer, or helper.
 - No child session is treated as the supervisor of record.
+
+## Current Status
+
+- Mostly implemented.
+- Telegram CTO planner, reply, and worker prompts already describe sandbox children as advisors or helpers under the host supervisor.
+- A shared machine-readable `opencodex/session-contract/v1` layer now exists and is emitted across `im`, `auto`, `run`, and `review`, with session creation also able to inherit the contract from environment variables.
+- Child-session records and service payloads now preserve role/thread metadata such as `thread_kind`, `role`, `scope`, `layer`, and `supervisor_session_id`.
+- The remaining gap is historical consistency: legacy records and a few fallback paths still rely on inferred metadata instead of every producer persisting the full contract end to end.

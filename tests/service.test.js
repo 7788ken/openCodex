@@ -199,6 +199,9 @@ test('service telegram status includes workflow counts and latest workflow detai
   assert.equal(payload.recent_dispatches.length, 5);
   assert.match(payload.recent_dispatches[0].label, /^\[(completed|running)\]/);
   assert.match(payload.recent_dispatches[0].path, /\.opencodex\/sessions\/.*\/session\.json$/);
+  assert.equal(payload.recent_dispatches[0].thread_kind, 'child_session');
+  assert.equal(payload.recent_dispatches[0].thread_kind_label, 'child session');
+  assert.equal(payload.recent_dispatches[0].execution_surface, 'child_session');
   assert.equal(payload.active_main_thread_count, 1);
   assert.equal(payload.main_thread_count, 2);
   assert.equal(payload.active_child_thread_count, 1);
@@ -456,11 +459,18 @@ test('service telegram workflow-detail returns workflow execution details for UI
   assert.equal(payload.pending_question, '请确认是否继续发布');
   assert.equal(payload.main_thread_session_id, 'im-20260309-100100-listener');
   assert.match(payload.main_thread_session_path, /im-20260309-100100-listener\/session\.json$/);
+  assert.equal(payload.thread_kind, 'host_workflow');
+  assert.equal(payload.thread_kind_label, 'host workflow');
+  assert.equal(payload.session_role, 'cto_supervisor');
   assert.equal(payload.task_counts.total, 3);
   assert.equal(payload.task_counts.queued, 2);
   assert.equal(payload.task_counts.completed, 1);
   assert.equal(payload.tasks.length, 3);
   assert.match(payload.tasks[0].label, /^\[completed\]/);
+  assert.equal(payload.tasks[0].thread_kind, 'child_session');
+  assert.equal(payload.tasks[0].session_role, 'worker');
+  assert.equal(payload.tasks[1].thread_kind, 'host_workflow');
+  assert.equal(payload.tasks[1].execution_surface, 'host_workflow');
   assert.match(payload.workflow_state_path, /cto-workflow\.json$/);
   assert.match(payload.session_path, /cto-20260309-100500-waiting\/session\.json$/);
 });
@@ -523,7 +533,11 @@ test('service telegram dispatch-detail returns task execution details for UI vie
   assert.equal(payload.task_id, 'prepare-release');
   assert.equal(payload.title, 'Prepare release');
   assert.equal(payload.status, 'completed');
+  assert.equal(payload.execution_surface, 'child_session');
   assert.equal(payload.session_id, 'run-task-2');
+  assert.equal(payload.thread_kind, 'child_session');
+  assert.equal(payload.thread_kind_label, 'child session');
+  assert.equal(payload.session_role, 'worker');
   assert.match(payload.result, /Release checklist prepared/);
   assert.match(payload.workflow_goal, /Deploy change after confirmation/);
   assert.match(payload.pending_question, /请确认是否继续发布/);
@@ -581,6 +595,8 @@ test('service telegram surfaces rerouted host-executor tasks in status, history,
   assert.equal(statusPayload.recent_dispatches[reroutedIndex].status, 'rerouted');
   assert.equal(statusPayload.recent_dispatches[reroutedIndex].path, jobPath);
   assert.match(statusPayload.recent_dispatches[reroutedIndex].label, /^\[rerouted\]/);
+  assert.equal(statusPayload.recent_dispatches[reroutedIndex].thread_kind, 'host_executor');
+  assert.equal(statusPayload.recent_dispatches[reroutedIndex].execution_surface, 'host_executor');
 
   const workflowDetail = await runCli([
     'service', 'telegram', 'workflow-detail',
@@ -597,6 +613,8 @@ test('service telegram surfaces rerouted host-executor tasks in status, history,
   assert.equal(workflowPayload.workflow_session_id, 'cto-20260309-101000-rerouted');
   assert.equal(workflowPayload.task_counts.rerouted, 1);
   assert.match(workflowPayload.tasks[0].label, /^\[rerouted\]/);
+  assert.equal(workflowPayload.tasks[0].thread_kind, 'host_executor');
+  assert.equal(workflowPayload.tasks[0].execution_surface, 'host_executor');
 
   const detail = await runCli([
     'service', 'telegram', 'dispatch-detail',
@@ -612,6 +630,9 @@ test('service telegram surfaces rerouted host-executor tasks in status, history,
   const detailPayload = JSON.parse(detail.stdout);
   assert.equal(detailPayload.task_id, 'reroute-docs');
   assert.equal(detailPayload.status, 'rerouted');
+  assert.equal(detailPayload.execution_surface, 'host_executor');
+  assert.equal(detailPayload.thread_kind, 'host_executor');
+  assert.equal(detailPayload.thread_kind_label, 'host executor');
   assert.equal(detailPayload.record_path, jobPath);
   assert.equal(detailPayload.session_id, 'run-task-7-source');
   assert.match(detailPayload.result, /host executor queue/);
