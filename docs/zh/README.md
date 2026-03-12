@@ -2,6 +2,66 @@
 
 这里存放 openCodex 的中文文档。
 
+## 安装指南
+
+### 前置条件
+
+- `Node.js 20+`
+- 已安装并登录 `Codex CLI`
+- 如果要使用当前的 detached app + `launchd` 服务流程，建议在 macOS 上操作
+
+### 方案一：直接从源码运行
+
+适合先试用 openCodex，或者直接在仓库里开发。
+
+```bash
+git clone https://github.com/7788ken/openCodex.git
+cd openCodex
+node --version
+node ./bin/opencodex.js doctor
+node ./bin/opencodex.js run "summarize this repository"
+```
+
+当前还没有单独的 build 步骤。
+CLI 直接运行仓库里的源码。
+
+### 方案二：安装成 detached runtime
+
+适合长期使用，不希望 CLI、App 和长期服务继续绑定当前源码目录。
+
+```bash
+git clone https://github.com/7788ken/openCodex.git
+cd openCodex
+node ./bin/opencodex.js doctor
+node ./bin/opencodex.js install bundle
+node ./bin/opencodex.js install detached --bundle ./dist/opencodex-runtime-<version>-<timestamp>.tgz
+node ./bin/opencodex.js install status
+open "$HOME/Applications/OpenCodex.app"
+```
+
+当前 detached 安装默认会落到：
+
+- runtime 根目录：`~/Library/Application Support/OpenCodex`
+- CLI shim：`~/.local/bin/opencodex`
+- App：`~/Applications/OpenCodex.app`
+
+### 开发快捷方式
+
+如果你就是想让安装后的 App 和 CLI 继续跟着当前源码变动，可以用：
+
+```bash
+node ./bin/opencodex.js install detached --link-source
+```
+
+这只是开发模式。
+长期服务默认还是应该指向 detached installed runtime，而不是源码目录。
+
+### 相关文档
+
+- `install-command.md` — 安装命令、参数和输出说明
+- `install-layout.md` — detached runtime 的目录布局和升级方式
+- `../../README.md` — 仓库根 README，包含命令概览和快速开始
+
 ## 当前文档
 
 - `project-overview.md` — 项目定位、范围与原则。

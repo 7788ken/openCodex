@@ -2,6 +2,66 @@
 
 This folder contains the English documentation for openCodex.
 
+## Installation Guide
+
+### Prerequisites
+
+- Node.js 20 or newer
+- Codex CLI installed and already logged in
+- macOS if you want the current detached app + `launchd` service flow
+
+### Option 1: Run From Source
+
+Use this when you want to evaluate or develop openCodex from the repository checkout.
+
+```bash
+git clone https://github.com/7788ken/openCodex.git
+cd openCodex
+node --version
+node ./bin/opencodex.js doctor
+node ./bin/opencodex.js run "summarize this repository"
+```
+
+There is no separate build step yet.
+The CLI runs directly from the source checkout.
+
+### Option 2: Install A Detached Runtime
+
+Use this when you want the CLI, app shell, and long-lived services to stop depending on the current checkout.
+
+```bash
+git clone https://github.com/7788ken/openCodex.git
+cd openCodex
+node ./bin/opencodex.js doctor
+node ./bin/opencodex.js install bundle
+node ./bin/opencodex.js install detached --bundle ./dist/opencodex-runtime-<version>-<timestamp>.tgz
+node ./bin/opencodex.js install status
+open "$HOME/Applications/OpenCodex.app"
+```
+
+The detached install currently defaults to:
+
+- runtime root: `~/Library/Application Support/OpenCodex`
+- CLI shim: `~/.local/bin/opencodex`
+- app shell: `~/Applications/OpenCodex.app`
+
+### Development Shortcut
+
+If you intentionally want the installed app shell and CLI shim to keep following your live checkout while you iterate locally, use:
+
+```bash
+node ./bin/opencodex.js install detached --link-source
+```
+
+This is for development only.
+Long-lived services should normally point at a detached installed runtime instead of a source checkout.
+
+### Related Docs
+
+- `install-command.md` — command flags, outputs, and install flows
+- `install-layout.md` — detached runtime layout and upgrade model
+- `../README.md` — repository-level quick start and command overview
+
 ## Available Documents
 
 - `project-overview.md` — project vision, scope, and principles.
