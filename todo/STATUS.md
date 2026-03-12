@@ -11,6 +11,7 @@
 - Telegram CTO regression coverage now includes colloquial waiting-workflow follow-ups and a Downloads-style export task that first hits `Operation not permitted` and then completes after reroute.
 - Validation passed for the Telegram CTO follow-up/reroute fixes: `node --test tests/cto-workflow.test.js` and `node --test tests/im.test.js`.
 - Follow-up implementation closed the ordinary running-workflow restart gap in the Telegram CTO listener, so rehydrated workflows can now resume queued downstream tasks and finish after listener restart.
+- Follow-up implementation also closed the planning-stage restart gap: a rehydrated Telegram CTO workflow can now wait for its planner child session, reuse the returned plan, and continue execution after listener restart.
 - Added shared `session-contract` helpers and wired them through `im`, `auto`, `run`, `review`, `session-store`, child-session capture, and service payloads so host/child role metadata is machine-readable.
 - Service workflow/dispatch history and detail payloads now expose `thread_kind`, `thread_kind_label`, `session_role`, `session_scope`, `session_layer`, `execution_surface`, and `session_contract`.
 - Reclassified `T013`, `T014`, and `T015` to mostly implemented after the runtime, contract, and UI-separation follow-up landed; the remaining gaps are planning-stage recovery and legacy-session backfill.

@@ -936,127 +936,22 @@ async function processTelegramCtoWorkflow({
       runsPath,
       logPath
     });
-
-    if (runtime.state.status === 'cancelled') {
-      await persistTelegramWorkflowRuntime(cwd, runtime);
-      await persistListenerSession();
-      workflowRuntimes.delete(runtime.session.session_id);
-      await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} cancelled before plan commit\n`, 'utf8');
-      process.stdout.write(`CTO workflow ${runtime.session.session_id} cancelled before plan commit\n`);
-      return;
-    }
-
-    appendPlanTasksToWorkflow(runtime.state, planResult.plan);
-    await persistTelegramWorkflowRuntime(cwd, runtime);
-    await persistListenerSession();
-
-    if (planResult.plan.mode === 'confirm') {
-      if (runtime.state.status === 'cancelled') {
-        await persistTelegramWorkflowRuntime(cwd, runtime);
-        await persistListenerSession();
-        workflowRuntimes.delete(runtime.session.session_id);
-        return;
-      }
-
-      const questionReply = await sendTelegramTextMessage({
-        apiBaseUrl,
-        botToken,
-        chatId: triggerMessage.chat_id,
-        text: buildTelegramCtoQuestionText(runtime.state),
-        replyToMessageId: triggerMessage.message_id
-      });
-      await appendTelegramReply(repliesPath, questionReply);
-      noteTelegramChatAssistantReply(triggerMessage.chat_state, {
-        text: questionReply.text,
-        mode: 'workflow',
-        workflowSessionId: runtime.session.session_id,
-        pendingQuestion: runtime.state.pending_question_zh || ''
-      });
-      await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} waiting for user confirmation\n`, 'utf8');
-      process.stdout.write(`CTO workflow ${runtime.session.session_id} is waiting for confirmation\n`);
-      return;
-    }
-
-    await executeTelegramCtoTasks({
+    await continueTelegramCtoWorkflowFromPlan({
       cwd,
       profile,
-      message: rootMessage,
+      rootMessage,
+      triggerMessage,
       runtime,
-      runsPath,
-      logPath,
-      hostExecutor
-    });
-
-    if (runtime.state.status === 'cancelled') {
-      await persistTelegramWorkflowRuntime(cwd, runtime);
-      await persistListenerSession();
-      workflowRuntimes.delete(runtime.session.session_id);
-      await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} cancelled during execution\n`, 'utf8');
-      process.stdout.write(`CTO workflow ${runtime.session.session_id} cancelled during execution\n`);
-      return;
-    }
-
-    finalizeWorkflowStatus(runtime.state);
-    await persistTelegramWorkflowRuntime(cwd, runtime);
-    await persistListenerSession();
-
-    if (hasReroutedWorkflowTasks(runtime.state)) {
-      const rerouteReply = await sendTelegramTextMessage({
-        apiBaseUrl,
-        botToken,
-        chatId: triggerMessage.chat_id,
-        text: buildTelegramCtoRerouteText(runtime.state),
-        replyToMessageId: triggerMessage.message_id
-      });
-      await appendTelegramReply(repliesPath, rerouteReply);
-      noteTelegramChatAssistantReply(triggerMessage.chat_state, {
-        text: rerouteReply.text,
-        mode: 'workflow',
-        workflowSessionId: runtime.session.session_id
-      });
-      await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} rerouted work to the host executor
-`, 'utf8');
-      process.stdout.write(`CTO workflow ${runtime.session.session_id} rerouted work to the host executor
-`);
-      return;
-    }
-
-    if (runtime.state.status === 'waiting_for_user') {
-      const questionReply = await sendTelegramTextMessage({
-        apiBaseUrl,
-        botToken,
-        chatId: triggerMessage.chat_id,
-        text: buildTelegramCtoQuestionText(runtime.state),
-        replyToMessageId: triggerMessage.message_id
-      });
-      await appendTelegramReply(repliesPath, questionReply);
-      noteTelegramChatAssistantReply(triggerMessage.chat_state, {
-        text: questionReply.text,
-        mode: 'workflow',
-        workflowSessionId: runtime.session.session_id,
-        pendingQuestion: runtime.state.pending_question_zh || ''
-      });
-      await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} paused for confirmation after task execution\n`, 'utf8');
-      process.stdout.write(`CTO workflow ${runtime.session.session_id} paused for confirmation\n`);
-      return;
-    }
-
-    const finalReply = await sendTelegramTextMessage({
       apiBaseUrl,
       botToken,
-      chatId: triggerMessage.chat_id,
-      text: buildTelegramCtoFinalText(runtime.state),
-      replyToMessageId: triggerMessage.message_id
+      repliesPath,
+      runsPath,
+      logPath,
+      workflowRuntimes,
+      persistListenerSession,
+      hostExecutor,
+      plan: planResult.plan
     });
-    await appendTelegramReply(repliesPath, finalReply);
-    noteTelegramChatAssistantReply(triggerMessage.chat_state, {
-      text: finalReply.text,
-      mode: 'workflow',
-      workflowSessionId: runtime.session.session_id
-    });
-    await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} finished with status ${runtime.state.status}\n`, 'utf8');
-    process.stdout.write(`CTO workflow ${runtime.session.session_id} finished with status ${runtime.state.status}\n`);
-    workflowRuntimes.delete(runtime.session.session_id);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     runtime.state.status = 'failed';
@@ -1193,6 +1088,142 @@ async function planTelegramCtoWorkflow({ cwd, message, triggerMessage, continuat
   await appendFile(runsPath, `${JSON.stringify(runRecord)}\n`, 'utf8');
   await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} planned ${plan.tasks.length} task(s) via ${sessionId || 'no-session'}\n`, 'utf8');
   return { plan, sessionId };
+}
+
+async function continueTelegramCtoWorkflowFromPlan({
+  cwd,
+  profile,
+  rootMessage,
+  triggerMessage,
+  runtime,
+  apiBaseUrl,
+  botToken,
+  repliesPath,
+  runsPath,
+  logPath,
+  workflowRuntimes,
+  persistListenerSession,
+  hostExecutor,
+  plan
+}) {
+  if (runtime.state.status === 'cancelled') {
+    await persistTelegramWorkflowRuntime(cwd, runtime);
+    await persistListenerSession();
+    workflowRuntimes.delete(runtime.session.session_id);
+    await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} cancelled before plan commit\n`, 'utf8');
+    process.stdout.write(`CTO workflow ${runtime.session.session_id} cancelled before plan commit\n`);
+    return;
+  }
+
+  appendPlanTasksToWorkflow(runtime.state, plan);
+  await persistTelegramWorkflowRuntime(cwd, runtime);
+  await persistListenerSession();
+
+  if (plan.mode === 'confirm') {
+    if (runtime.state.status === 'cancelled') {
+      await persistTelegramWorkflowRuntime(cwd, runtime);
+      await persistListenerSession();
+      workflowRuntimes.delete(runtime.session.session_id);
+      return;
+    }
+
+    const questionReply = await sendTelegramTextMessage({
+      apiBaseUrl,
+      botToken,
+      chatId: triggerMessage.chat_id,
+      text: buildTelegramCtoQuestionText(runtime.state),
+      replyToMessageId: triggerMessage.message_id
+    });
+    await appendTelegramReply(repliesPath, questionReply);
+    noteTelegramChatAssistantReply(triggerMessage.chat_state, {
+      text: questionReply.text,
+      mode: 'workflow',
+      workflowSessionId: runtime.session.session_id,
+      pendingQuestion: runtime.state.pending_question_zh || ''
+    });
+    await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} waiting for user confirmation\n`, 'utf8');
+    process.stdout.write(`CTO workflow ${runtime.session.session_id} is waiting for confirmation\n`);
+    return;
+  }
+
+  await executeTelegramCtoTasks({
+    cwd,
+    profile,
+    message: rootMessage,
+    runtime,
+    runsPath,
+    logPath,
+    hostExecutor
+  });
+
+  if (runtime.state.status === 'cancelled') {
+    await persistTelegramWorkflowRuntime(cwd, runtime);
+    await persistListenerSession();
+    workflowRuntimes.delete(runtime.session.session_id);
+    await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} cancelled during execution\n`, 'utf8');
+    process.stdout.write(`CTO workflow ${runtime.session.session_id} cancelled during execution\n`);
+    return;
+  }
+
+  finalizeWorkflowStatus(runtime.state);
+  await persistTelegramWorkflowRuntime(cwd, runtime);
+  await persistListenerSession();
+
+  if (hasReroutedWorkflowTasks(runtime.state)) {
+    const rerouteReply = await sendTelegramTextMessage({
+      apiBaseUrl,
+      botToken,
+      chatId: triggerMessage.chat_id,
+      text: buildTelegramCtoRerouteText(runtime.state),
+      replyToMessageId: triggerMessage.message_id
+    });
+    await appendTelegramReply(repliesPath, rerouteReply);
+    noteTelegramChatAssistantReply(triggerMessage.chat_state, {
+      text: rerouteReply.text,
+      mode: 'workflow',
+      workflowSessionId: runtime.session.session_id
+    });
+    await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} rerouted work to the host executor\n`, 'utf8');
+    process.stdout.write(`CTO workflow ${runtime.session.session_id} rerouted work to the host executor\n`);
+    return;
+  }
+
+  if (runtime.state.status === 'waiting_for_user') {
+    const questionReply = await sendTelegramTextMessage({
+      apiBaseUrl,
+      botToken,
+      chatId: triggerMessage.chat_id,
+      text: buildTelegramCtoQuestionText(runtime.state),
+      replyToMessageId: triggerMessage.message_id
+    });
+    await appendTelegramReply(repliesPath, questionReply);
+    noteTelegramChatAssistantReply(triggerMessage.chat_state, {
+      text: questionReply.text,
+      mode: 'workflow',
+      workflowSessionId: runtime.session.session_id,
+      pendingQuestion: runtime.state.pending_question_zh || ''
+    });
+    await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} paused for confirmation after task execution\n`, 'utf8');
+    process.stdout.write(`CTO workflow ${runtime.session.session_id} paused for confirmation\n`);
+    return;
+  }
+
+  const finalReply = await sendTelegramTextMessage({
+    apiBaseUrl,
+    botToken,
+    chatId: triggerMessage.chat_id,
+    text: buildTelegramCtoFinalText(runtime.state),
+    replyToMessageId: triggerMessage.message_id
+  });
+  await appendTelegramReply(repliesPath, finalReply);
+  noteTelegramChatAssistantReply(triggerMessage.chat_state, {
+    text: finalReply.text,
+    mode: 'workflow',
+    workflowSessionId: runtime.session.session_id
+  });
+  await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} finished with status ${runtime.state.status}\n`, 'utf8');
+  process.stdout.write(`CTO workflow ${runtime.session.session_id} finished with status ${runtime.state.status}\n`);
+  workflowRuntimes.delete(runtime.session.session_id);
 }
 
 async function executeTelegramCtoTasks({ cwd, profile, message, runtime, runsPath, logPath, hostExecutor }) {
@@ -2833,6 +2864,9 @@ function shouldRehydrateTelegramWorkflow(session, workflowState) {
   }
 
   const stateStatus = String(workflowState.status || '').trim();
+  if (stateStatus === 'planning') {
+    return true;
+  }
   if (session.status === 'partial' && stateStatus === 'waiting_for_user') {
     return true;
   }
@@ -2865,6 +2899,62 @@ function buildRehydratedTelegramRootMessage(session, workflowState) {
   };
 }
 
+function buildRehydratedTelegramTriggerMessage(runtime) {
+  const latestMessage = Array.isArray(runtime?.state?.user_messages) && runtime.state.user_messages.length > 0
+    ? runtime.state.user_messages.at(-1)
+    : null;
+  const rootMessage = runtime?.rootMessage || {};
+  return {
+    provider: 'telegram',
+    update_id: latestMessage?.update_id || rootMessage.update_id || runtime?.state?.source_update_id || 0,
+    message_id: latestMessage?.message_id || rootMessage.message_id || runtime?.state?.source_message_id || 0,
+    created_at: latestMessage?.created_at || rootMessage.created_at || runtime?.state?.updated_at || runtime?.state?.created_at || toIsoString(),
+    chat_id: rootMessage.chat_id || runtime?.state?.chat_id || '',
+    chat_type: rootMessage.chat_type || 'private',
+    chat_title: rootMessage.chat_title || '',
+    sender_id: rootMessage.sender_id || '',
+    sender_username: rootMessage.sender_username || '',
+    sender_display: rootMessage.sender_display || runtime?.state?.sender_display || 'telegram-user',
+    text: latestMessage?.text || runtime?.state?.latest_user_message || rootMessage.text || runtime?.state?.goal_text || '',
+    chat_state: null
+  };
+}
+
+function buildRehydratedTelegramContinuationMessage(runtime, triggerMessage) {
+  if (!runtime?.state || !triggerMessage) {
+    return null;
+  }
+
+  const sourceUpdateId = String(runtime.state.source_update_id || runtime.rootMessage?.update_id || '');
+  const triggerUpdateId = String(triggerMessage.update_id || '');
+  if (!triggerUpdateId || triggerUpdateId === sourceUpdateId) {
+    return null;
+  }
+  return triggerMessage;
+}
+
+function findLatestTelegramPlannerChildSession(session) {
+  const childSessions = Array.isArray(session?.child_sessions) ? session.child_sessions : [];
+  for (let index = childSessions.length - 1; index >= 0; index -= 1) {
+    const entry = childSessions[index];
+    const role = String(entry?.session_contract?.role || '').trim();
+    if (role === 'planner') {
+      return entry;
+    }
+    if (/^(?:Plan|Continue) workflow\b/i.test(String(entry?.label || ''))) {
+      return entry;
+    }
+  }
+  return null;
+}
+
+function resolveSessionArtifactPath(session, type, fallbackPath = '') {
+  const artifact = Array.isArray(session?.artifacts)
+    ? session.artifacts.find((item) => item?.type === type && typeof item.path === 'string' && item.path)
+    : null;
+  return artifact?.path || fallbackPath;
+}
+
 function resumeRehydratedTelegramCtoWorkflows({
   cwd,
   profile,
@@ -2879,27 +2969,180 @@ function resumeRehydratedTelegramCtoWorkflows({
   trackWorkflowPromise
 }) {
   for (const runtime of workflowRuntimes.values()) {
-    if (!runtime?.rehydrated || runtime?.resumePromise || runtime?.state?.status !== 'running' || hasReroutedWorkflowTasks(runtime.state)) {
+    if (!runtime?.rehydrated || runtime?.resumePromise) {
       continue;
     }
 
-    runtime.resumePromise = resumeTelegramRunningWorkflow({
-      cwd,
-      profile,
-      runtime,
-      repliesPath,
-      runsPath,
-      logPath,
-      apiBaseUrl,
-      botToken,
-      persistListenerSession,
-      hostExecutor,
-      workflowRuntimes
-    }).finally(() => {
+    const workflowStatus = String(runtime?.state?.status || '').trim();
+    let resumePromise = null;
+    if (workflowStatus === 'planning') {
+      resumePromise = resumeTelegramPlanningWorkflow({
+        cwd,
+        profile,
+        runtime,
+        repliesPath,
+        runsPath,
+        logPath,
+        apiBaseUrl,
+        botToken,
+        persistListenerSession,
+        hostExecutor,
+        workflowRuntimes
+      });
+    } else if (workflowStatus === 'running' && !hasReroutedWorkflowTasks(runtime.state)) {
+      resumePromise = resumeTelegramRunningWorkflow({
+        cwd,
+        profile,
+        runtime,
+        repliesPath,
+        runsPath,
+        logPath,
+        apiBaseUrl,
+        botToken,
+        persistListenerSession,
+        hostExecutor,
+        workflowRuntimes
+      });
+    }
+
+    if (!resumePromise) {
+      continue;
+    }
+
+    runtime.resumePromise = resumePromise.finally(() => {
       runtime.resumePromise = null;
     });
     trackWorkflowPromise(runtime.resumePromise);
   }
+}
+
+async function resumeTelegramPlanningWorkflow({
+  cwd,
+  profile,
+  runtime,
+  repliesPath,
+  runsPath,
+  logPath,
+  apiBaseUrl,
+  botToken,
+  persistListenerSession,
+  hostExecutor,
+  workflowRuntimes
+}) {
+  const triggerMessage = buildRehydratedTelegramTriggerMessage(runtime);
+  const continuationMessage = buildRehydratedTelegramContinuationMessage(runtime, triggerMessage);
+  const plannerEntry = findLatestTelegramPlannerChildSession(runtime.session);
+  if (!plannerEntry?.session_id) {
+    runtime.rehydrated = false;
+    await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} re-planning after listener restart without a recoverable planner child session\n`, 'utf8');
+    process.stdout.write(`Re-planning CTO workflow ${runtime.session.session_id} after listener restart\n`);
+    await processTelegramCtoWorkflow({
+      cwd,
+      profile,
+      rootMessage: runtime.rootMessage,
+      triggerMessage,
+      runtime,
+      apiBaseUrl,
+      botToken,
+      repliesPath,
+      runsPath,
+      logPath,
+      workflowRuntimes,
+      persistListenerSession,
+      hostExecutor,
+      continuationMessage
+    });
+    return;
+  }
+
+  let plannerSession = null;
+  try {
+    plannerSession = await loadSession(cwd, plannerEntry.session_id);
+  } catch {
+    plannerSession = null;
+  }
+
+  if (!plannerSession) {
+    return;
+  }
+
+  const plannerEntryBefore = JSON.stringify({
+    command: plannerEntry.command,
+    status: plannerEntry.status,
+    session_contract: plannerEntry.session_contract || null
+  });
+  plannerEntry.command = plannerSession.command || plannerEntry.command || 'run';
+  plannerEntry.status = plannerSession.status || plannerEntry.status || 'unknown';
+  plannerEntry.session_contract = buildSessionContractSnapshot(plannerSession) || plannerEntry.session_contract || null;
+  if (plannerEntryBefore !== JSON.stringify({
+    command: plannerEntry.command,
+    status: plannerEntry.status,
+    session_contract: plannerEntry.session_contract || null
+  })) {
+    await persistTelegramWorkflowRuntime(cwd, runtime);
+    await persistListenerSession();
+  }
+
+  const plannerStatus = String(plannerSession.summary?.status || plannerSession.status || '').trim();
+  if (plannerStatus === 'running' || plannerStatus === 'queued') {
+    return;
+  }
+
+  if (plannerStatus !== 'completed') {
+    runtime.rehydrated = false;
+    runtime.state.status = 'failed';
+    runtime.state.pending_question_zh = '';
+    runtime.state.updated_at = toIsoString();
+    await persistTelegramWorkflowRuntime(cwd, runtime);
+    await persistListenerSession();
+    workflowRuntimes.delete(runtime.session.session_id);
+
+    const errorMessage = plannerSession.summary?.result
+      || `Planner session ${plannerSession.session_id} finished with status ${plannerStatus || 'unknown'}.`;
+    const failureReply = await sendTelegramTextMessage({
+      apiBaseUrl,
+      botToken,
+      chatId: triggerMessage.chat_id,
+      text: buildTelegramCtoFailureText(errorMessage),
+      replyToMessageId: triggerMessage.message_id
+    });
+    await appendTelegramReply(repliesPath, failureReply);
+    await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} failed while recovering planning state: ${errorMessage}\n`, 'utf8');
+    process.stdout.write(`CTO workflow ${runtime.session.session_id} failed while recovering planning state: ${errorMessage}\n`);
+    return;
+  }
+
+  const lastMessagePath = resolveSessionArtifactPath(
+    plannerSession,
+    'last_message',
+    path.join(getSessionDir(cwd, plannerSession.session_id), 'last-message.txt')
+  );
+  const rawPlanText = (await readTextIfExists(lastMessagePath)) || '';
+  const plan = normalizeTelegramCtoPlan(
+    tryParseJson(rawPlanText),
+    continuationMessage ? continuationMessage.text : triggerMessage.text,
+    runtime.state
+  );
+
+  runtime.rehydrated = false;
+  await appendFile(logPath, `[${toIsoString()}] resuming planning workflow ${runtime.session.session_id} after listener restart\n`, 'utf8');
+  process.stdout.write(`Resuming CTO planning workflow ${runtime.session.session_id} after listener restart\n`);
+  await continueTelegramCtoWorkflowFromPlan({
+    cwd,
+    profile,
+    rootMessage: runtime.rootMessage,
+    triggerMessage,
+    runtime,
+    apiBaseUrl,
+    botToken,
+    repliesPath,
+    runsPath,
+    logPath,
+    workflowRuntimes,
+    persistListenerSession,
+    hostExecutor,
+    plan
+  });
 }
 
 async function resumeTelegramRunningWorkflow({

@@ -1643,6 +1643,198 @@ test('im telegram listen --cto resumes a running workflow after listener restart
   await waitForExit(secondListener);
 });
 
+test('im telegram listen --cto resumes a planning workflow after listener restart once the planner session completes', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-plan-restart-'));
+  const telegram = await startTelegramMockServer({
+    updates: []
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  await writeSessionFixture(cwd, {
+    session_id: 'run-restart-planner',
+    command: 'run',
+    status: 'running',
+    created_at: '2026-03-12T08:10:00.000Z',
+    updated_at: '2026-03-12T08:10:01.000Z',
+    input: {
+      prompt: 'restart chain',
+      arguments: {
+        profile: 'safe'
+      }
+    },
+    summary: {
+      title: 'Planner running',
+      result: 'Planner is still running.',
+      status: 'running',
+      highlights: [],
+      next_steps: []
+    }
+  });
+
+  await writeSessionFixture(cwd, {
+    session_id: 'cto-20260312-081000-plan-restart',
+    command: 'cto',
+    status: 'running',
+    created_at: '2026-03-12T08:10:00.000Z',
+    updated_at: '2026-03-12T08:10:01.000Z',
+    input: {
+      prompt: 'restart chain',
+      arguments: {
+        provider: 'telegram',
+        chat_id: '123456'
+      }
+    },
+    child_sessions: [
+      {
+        session_id: 'run-restart-planner',
+        label: 'Plan workflow 411 · 阿周',
+        update_id: 411,
+        session_contract: {
+          schema: 'opencodex/session-contract/v1',
+          layer: 'child',
+          thread_kind: 'child_session',
+          role: 'planner',
+          scope: 'telegram_cto',
+          supervisor_session_id: 'cto-20260312-081000-plan-restart'
+        }
+      }
+    ],
+    summary: {
+      title: 'CTO workflow running',
+      result: 'Workflow is still planning.',
+      status: 'running',
+      highlights: [],
+      next_steps: []
+    }
+  }, [
+    {
+      name: 'cto-workflow.json',
+      type: 'cto_workflow',
+      description: 'Telegram CTO workflow state and task graph.',
+      json: {
+        workflow_session_id: 'cto-20260312-081000-plan-restart',
+        source_message_id: 811,
+        source_update_id: 411,
+        chat_id: '123456',
+        sender_display: 'Li Jianqian',
+        goal_text: 'restart chain',
+        latest_user_message: 'restart chain',
+        status: 'planning',
+        plan_mode: 'execute',
+        plan_summary_zh: '',
+        pending_question_zh: '',
+        created_at: '2026-03-12T08:10:00.000Z',
+        updated_at: '2026-03-12T08:10:01.000Z',
+        task_counter: 0,
+        user_messages: [
+          {
+            provider: 'telegram',
+            update_id: 411,
+            message_id: 811,
+            created_at: '2026-03-12T08:10:00.000Z',
+            chat_id: '123456',
+            sender_display: 'Li Jianqian',
+            text: 'restart chain'
+          }
+        ],
+        tasks: []
+      }
+    }
+  ]);
+
+  const listener = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!listener.killed) {
+      listener.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  listener.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+
+  await delay(150);
+  await writeSessionFixture(cwd, {
+    session_id: 'run-restart-planner',
+    command: 'run',
+    status: 'completed',
+    created_at: '2026-03-12T08:10:00.000Z',
+    updated_at: '2026-03-12T08:10:02.000Z',
+    input: {
+      prompt: 'restart chain',
+      arguments: {
+        profile: 'safe'
+      }
+    },
+    summary: {
+      title: 'Planner completed',
+      result: 'Planner finished and returned a recoverable plan.',
+      status: 'completed',
+      highlights: [],
+      next_steps: [],
+      risks: [],
+      validation: [],
+      changed_files: [],
+      findings: []
+    }
+  }, [
+    {
+      name: 'last-message.txt',
+      type: 'last_message',
+      description: 'Planner output for restart recovery.',
+      text: `${JSON.stringify({
+        mode: 'execute',
+        summary_zh: '已拆分为可恢复的串行工作流。',
+        question_zh: '',
+        tasks: [
+          {
+            id: 'slow-task',
+            title: 'Slow task',
+            worker_prompt: 'MOCK_WORKER slow-500',
+            depends_on: []
+          },
+          {
+            id: 'fast-task',
+            title: 'Fast task',
+            worker_prompt: 'MOCK_WORKER fast',
+            depends_on: ['slow-task']
+          }
+        ]
+      }, null, 2)}\n`
+    }
+  ]);
+
+  await waitForCondition(() => stdout.includes('Resuming CTO planning workflow cto-20260312-081000-plan-restart after listener restart'), 'planning restart resume log');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 811 && /已经处理完了。/.test(message.text)), 'planning restart final reply');
+
+  const resumedWorkflow = await waitForCtoWorkflowState(cwd, (state) => String(state?.workflow_session_id || '') === 'cto-20260312-081000-plan-restart' && state.status === 'completed', 'completed planning workflow');
+  assert.equal(resumedWorkflow.sessionId, 'cto-20260312-081000-plan-restart');
+  assert.deepEqual(resumedWorkflow.state.tasks.map((task) => task.status), ['completed', 'completed']);
+  assert.deepEqual(resumedWorkflow.state.tasks.map((task) => task.id), ['slow-task', 'fast-task']);
+  assert.ok(resumedWorkflow.state.tasks.every((task) => task.session_id));
+
+  listener.kill('SIGTERM');
+  await waitForExit(listener);
+});
+
 test('im telegram listen --cto reports workflow status instead of dispatching a new workflow for status questions', async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-status-'));
   const telegram = await startTelegramMockServer({
