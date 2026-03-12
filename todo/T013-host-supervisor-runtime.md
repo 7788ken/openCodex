@@ -30,5 +30,6 @@ That makes the identity boundary blurry.
 - Mostly implemented.
 - The CTO prompts, workflow wording, and control-surface docs now consistently describe the CTO as a host-level supervisor instead of a sandbox child identity.
 - Telegram CTO workflow state is stored in host-owned `cto` session artifacts, and the listener can now rehydrate waiting-for-user, planning, rerouted, and ordinary `running` workflows on restart.
+- There is now also a one-shot host-supervisor entrypoint outside the polling loop: `im telegram supervise`, with `service telegram supervise` as the installed-service wrapper.
 - Child Codex sessions are captured as subordinate planner/reply/worker records under the host workflow instead of defining the supervisor identity themselves.
-- The remaining gap is that the supervisor lifecycle is still anchored to the Telegram listener process rather than an independent host runtime, so the architecture is not yet a fully standalone supervisor service.
+- The remaining gap is that the supervisor lifecycle is not yet an always-on dedicated runtime of its own; the long-lived path still depends on the Telegram listener service, and the new supervisor tick is an explicit one-shot entrypoint rather than a standalone daemon.

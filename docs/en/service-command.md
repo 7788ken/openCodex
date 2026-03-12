@@ -18,6 +18,7 @@ The first version supports Telegram CTO service management only:
 - `opencodex service telegram set-workspace`
 - `opencodex service telegram relink`
 - `opencodex service telegram set-setting`
+- `opencodex service telegram supervise`
 - `opencodex service telegram send-status`
 - `opencodex service telegram workflow-history`
 - `opencodex service telegram workflow-detail`
@@ -86,6 +87,16 @@ If the new workspace has no `.opencodex/sessions` tree yet, openCodex also copie
 - `--launch-agent-dir <dir>`
 - `--applications-dir <dir>`
 - `--json`
+
+### `telegram supervise`
+
+- `--state-dir <dir>`
+- `--launch-agent-dir <dir>`
+- `--applications-dir <dir>`
+- `--json`
+
+`telegram supervise` runs one installed-service host-supervisor tick by reusing the saved workspace, profile, and Telegram bot environment.
+Unlike `start` / `restart`, it does not boot the long-poll listener; it only resumes already persisted CTO workflows and queued host-executor work once.
 
 ### `telegram workflow-history`
 

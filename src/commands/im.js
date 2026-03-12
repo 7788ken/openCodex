@@ -92,11 +92,19 @@ const TELEGRAM_SEND_OPTION_SPEC = {
   json: { type: 'boolean' }
 };
 
+const TELEGRAM_SUPERVISE_OPTION_SPEC = {
+  cwd: { type: 'string' },
+  'bot-token': { type: 'string' },
+  'api-base-url': { type: 'string' },
+  profile: { type: 'string' },
+  json: { type: 'boolean' }
+};
+
 export async function runImCommand(args) {
   const [provider, subcommand, ...rest] = args;
 
   if (!provider || provider === '--help' || provider === '-h') {
-    process.stdout.write('Usage:\n  opencodex im telegram listen [--cwd <dir>] [--bot-token <token>] [--chat-id <id>] [--poll-timeout <seconds>] [--clear-webhook] [--cto] [--profile <name>]\n  opencodex im telegram inbox [--cwd <dir>] [--limit <n>] [--json]\n  opencodex im telegram send --chat-id <id> [--cwd <dir>] [--bot-token <token>] [--reply-to-message-id <id>] <text>\n');
+    process.stdout.write('Usage:\n  opencodex im telegram listen [--cwd <dir>] [--bot-token <token>] [--chat-id <id>] [--poll-timeout <seconds>] [--clear-webhook] [--cto] [--profile <name>]\n  opencodex im telegram supervise [--cwd <dir>] [--bot-token <token>] [--profile <name>] [--json]\n  opencodex im telegram inbox [--cwd <dir>] [--limit <n>] [--json]\n  opencodex im telegram send --chat-id <id> [--cwd <dir>] [--bot-token <token>] [--reply-to-message-id <id>] <text>\n');
     return;
   }
 
@@ -111,6 +119,11 @@ export async function runImCommand(args) {
 
   if (subcommand === 'inbox') {
     await runTelegramInbox(rest);
+    return;
+  }
+
+  if (subcommand === 'supervise') {
+    await runTelegramSupervise(rest);
     return;
   }
 
@@ -566,6 +579,199 @@ async function runTelegramListen(args) {
 
   if (stoppedBySignal) {
     process.exit(0);
+  }
+}
+
+async function runTelegramSupervise(args) {
+  const { options, positionals } = parseOptions(args, TELEGRAM_SUPERVISE_OPTION_SPEC);
+  if (positionals.length) {
+    throw new Error('`opencodex im telegram supervise` does not accept positional arguments');
+  }
+
+  const cwd = path.resolve(options.cwd || process.cwd());
+  const botToken = resolveTelegramBotToken(options['bot-token']);
+  const apiBaseUrl = resolveTelegramApiBaseUrl(options['api-base-url']);
+  const delegateProfile = typeof options.profile === 'string' && options.profile.trim()
+    ? options.profile.trim()
+    : 'full-access';
+  const me = await callTelegramApi(apiBaseUrl, botToken, 'getMe');
+
+  const session = createSession({
+    command: 'im',
+    cwd,
+    codexCliVersion: 'telegram-bot-api',
+    input: {
+      prompt: '',
+      arguments: {
+        provider: 'telegram',
+        mode: 'supervise',
+        bot_token: '[redacted]',
+        delegate_mode: 'cto',
+        profile: delegateProfile
+      }
+    }
+  });
+  applySessionContract(session, buildSessionContract({
+    layer: 'host',
+    thread_kind: 'service_listener',
+    role: 'telegram_cto_listener',
+    scope: 'telegram_cto'
+  }));
+  session.status = 'running';
+  session.child_sessions = [];
+
+  const sessionDir = await saveSession(cwd, session);
+  const repliesPath = path.join(sessionDir, 'artifacts', 'telegram-replies.jsonl');
+  const statePath = path.join(sessionDir, 'artifacts', 'telegram-state.json');
+  const logPath = path.join(sessionDir, 'artifacts', 'telegram-log.txt');
+  const runsPath = path.join(sessionDir, 'artifacts', 'telegram-runs.jsonl');
+  const workflowRuntimes = new Map();
+  const chatStates = new Map();
+  const hostExecutor = isHostExecutorEnabled()
+    ? await ensureHostExecutorState(resolveHostExecutorRoot({ cwd }))
+    : null;
+  let finalized = false;
+
+  await rehydratePendingTelegramCtoWorkflows(cwd, workflowRuntimes);
+
+  const writeSupervisorState = async () => {
+    await writeJson(statePath, createTelegramListenerStatePayload({
+      me,
+      lastOffset: 0,
+      allowedChatId: '',
+      delegateMode: 'cto',
+      delegateProfile,
+      workflows: workflowRuntimes.values(),
+      chatStates: chatStates.values()
+    }));
+  };
+
+  const persistSupervisorSession = async () => {
+    session.updated_at = toIsoString();
+    session.summary = buildTelegramSupervisorSummary({
+      me,
+      delegateProfile,
+      workflowRuntimes,
+      childSessionCount: Array.isArray(session.child_sessions) ? session.child_sessions.length : 0,
+      hostExecutorEnabled: Boolean(hostExecutor)
+    });
+    await saveSession(cwd, session);
+    await writeSupervisorState();
+  };
+
+  const trackedPromises = new Set();
+  const trackWorkflowPromise = (promise) => {
+    trackedPromises.add(promise);
+    promise.catch(async (error) => {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      await appendFile(logPath, `[${toIsoString()}] cto workflow error: ${errorMessage}\n`, 'utf8');
+      process.stdout.write(`CTO workflow error: ${errorMessage}\n`);
+    }).finally(async () => {
+      trackedPromises.delete(promise);
+      try {
+        await persistSupervisorSession();
+      } catch {
+      }
+    });
+  };
+
+  session.summary = buildTelegramSupervisorSummary({
+    me,
+    delegateProfile,
+    workflowRuntimes,
+    childSessionCount: session.child_sessions.length,
+    hostExecutorEnabled: Boolean(hostExecutor)
+  });
+  session.artifacts = [
+    { type: 'telegram_replies', path: repliesPath, description: 'Telegram replies stored as JSONL.' },
+    { type: 'telegram_state', path: statePath, description: 'Telegram supervisor state for the active IM session.' },
+    { type: 'telegram_log', path: logPath, description: 'Telegram supervisor lifecycle log.' },
+    { type: 'telegram_runs', path: runsPath, description: 'Delegated CTO planning and task runs triggered from host supervision.' }
+  ];
+  await writeFile(logPath, '', 'utf8');
+  await writeFile(runsPath, '', 'utf8');
+  await persistSupervisorSession();
+
+  const finalize = async (status, result) => {
+    if (finalized) {
+      return;
+    }
+    finalized = true;
+    session.status = status;
+    session.updated_at = toIsoString();
+    session.summary = buildTelegramSupervisorFinalSummary({
+      me,
+      delegateProfile,
+      workflowRuntimes,
+      childSessionCount: Array.isArray(session.child_sessions) ? session.child_sessions.length : 0,
+      hostExecutorEnabled: Boolean(hostExecutor),
+      status,
+      result
+    });
+    await saveSession(cwd, session);
+    await writeSupervisorState();
+  };
+
+  try {
+    process.stdout.write('Telegram supervisor tick started\n');
+    process.stdout.write(`Bot: @${me.username || 'unknown'}\n`);
+    process.stdout.write(`Delegate mode: CTO via Codex CLI (${delegateProfile})\n`);
+    process.stdout.write(`Session: ${session.session_id}\n`);
+
+    resumeRehydratedTelegramCtoWorkflows({
+      cwd,
+      profile: delegateProfile,
+      workflowRuntimes,
+      repliesPath,
+      runsPath,
+      logPath,
+      apiBaseUrl,
+      botToken,
+      persistListenerSession: persistSupervisorSession,
+      hostExecutor,
+      trackWorkflowPromise
+    });
+    await Promise.allSettled([...trackedPromises]);
+
+    if (hostExecutor) {
+      await processTelegramHostExecutorQueue({
+        cwd,
+        profile: delegateProfile,
+        hostExecutor,
+        workflowRuntimes,
+        repliesPath,
+        runsPath,
+        logPath,
+        apiBaseUrl,
+        botToken,
+        persistListenerSession: persistSupervisorSession
+      });
+    }
+
+    await persistSupervisorSession();
+    const summaryLine = buildTelegramSupervisorResultLine({
+      workflowsRemaining: workflowRuntimes.size,
+      hostExecutorEnabled: Boolean(hostExecutor)
+    });
+    await appendFile(logPath, `[${toIsoString()}] supervisor tick finished: ${summaryLine}\n`, 'utf8');
+    process.stdout.write(`${summaryLine}\n`);
+    await finalize('completed', summaryLine);
+
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify({
+        ok: true,
+        session_id: session.session_id,
+        bot_username: me.username || '',
+        profile: delegateProfile,
+        host_executor_enabled: Boolean(hostExecutor),
+        remaining_workflow_count: workflowRuntimes.size
+      }, null, 2)}\n`);
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await appendFile(logPath, `[${toIsoString()}] supervisor tick failed: ${errorMessage}\n`, 'utf8');
+    await finalize('failed', `Telegram supervisor tick failed: ${errorMessage}`);
+    throw error;
   }
 }
 
@@ -1997,6 +2203,32 @@ function buildTelegramListenSummary({ me, pollTimeout, allowedChatId, updateCoun
   };
 }
 
+function buildTelegramSupervisorSummary({ me, delegateProfile, workflowRuntimes, childSessionCount, hostExecutorEnabled }) {
+  const workflowItems = Array.from(workflowRuntimes || []);
+  const waitingCount = workflowItems.filter(([, runtime]) => runtime?.state?.status === 'waiting_for_user').length;
+  return {
+    title: 'Telegram supervisor running',
+    result: buildTelegramSupervisorResultLine({
+      workflowsRemaining: workflowItems.length,
+      waitingCount,
+      hostExecutorEnabled
+    }),
+    status: 'running',
+    highlights: [
+      `Bot: @${me.username || 'unknown'}`,
+      `Delegate mode: cto (${delegateProfile})`,
+      `Rehydrated workflows: ${workflowItems.length}`,
+      `Waiting workflows: ${waitingCount}`,
+      `Host executor: ${hostExecutorEnabled ? 'enabled' : 'disabled'}`,
+      `Child sessions: ${childSessionCount || 0}`
+    ],
+    next_steps: workflowItems.length > 0
+      ? ['Run another supervisor tick later if planning or running child sessions are still in flight.']
+      : ['No rehydrated Telegram CTO workflow required immediate supervision.'],
+    findings: []
+  };
+}
+
 function buildTelegramFinalSummary({ me, pollTimeout, allowedChatId, updateCount, lastMessage, status, result, delegateMode, delegateProfile, childSessionCount }) {
   const highlights = [
     `Bot: @${me.username || 'unknown'}`,
@@ -2022,6 +2254,49 @@ function buildTelegramFinalSummary({ me, pollTimeout, allowedChatId, updateCount
       : ['Inspect the telegram session artifacts and verify the bot token or webhook settings.'],
     findings: []
   };
+}
+
+function buildTelegramSupervisorFinalSummary({
+  me,
+  delegateProfile,
+  workflowRuntimes,
+  childSessionCount,
+  hostExecutorEnabled,
+  status,
+  result
+}) {
+  const workflowItems = Array.from(workflowRuntimes || []);
+  const waitingCount = workflowItems.filter(([, runtime]) => runtime?.state?.status === 'waiting_for_user').length;
+  return {
+    title: status === 'completed' ? 'Telegram supervisor completed' : 'Telegram supervisor failed',
+    result,
+    status,
+    highlights: [
+      `Bot: @${me.username || 'unknown'}`,
+      `Delegate mode: cto (${delegateProfile})`,
+      `Remaining workflows: ${workflowItems.length}`,
+      `Waiting workflows: ${waitingCount}`,
+      `Host executor: ${hostExecutorEnabled ? 'enabled' : 'disabled'}`,
+      `Child sessions: ${childSessionCount || 0}`
+    ],
+    next_steps: status === 'completed'
+      ? ['Run another supervisor tick later if some Telegram CTO workflows are still active.']
+      : ['Inspect the telegram supervisor session artifacts and workflow records for the failure cause.'],
+    findings: []
+  };
+}
+
+function buildTelegramSupervisorResultLine({ workflowsRemaining, waitingCount = 0, hostExecutorEnabled = false }) {
+  const base = workflowsRemaining > 0
+    ? `Telegram supervisor tick completed with ${workflowsRemaining} workflow(s) still active.`
+    : 'Telegram supervisor tick completed with no active rehydrated workflow remaining.';
+  const waitingSuffix = waitingCount > 0
+    ? ` Waiting for CEO input: ${waitingCount}.`
+    : '';
+  const hostSuffix = hostExecutorEnabled
+    ? ' Host executor queue was checked.'
+    : '';
+  return `${base}${waitingSuffix}${hostSuffix}`.trim();
 }
 
 function createTelegramListenerStatePayload({ me, lastOffset, allowedChatId, delegateMode, delegateProfile, workflows, chatStates }) {

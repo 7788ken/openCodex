@@ -18,6 +18,7 @@
 - `opencodex service telegram set-workspace`
 - `opencodex service telegram relink`
 - `opencodex service telegram set-setting`
+- `opencodex service telegram supervise`
 - `opencodex service telegram send-status`
 - `opencodex service telegram workflow-history`
 - `opencodex service telegram workflow-detail`
@@ -86,6 +87,16 @@
 - `--launch-agent-dir <dir>`
 - `--applications-dir <dir>`
 - `--json`
+
+### `telegram supervise`
+
+- `--state-dir <dir>`
+- `--launch-agent-dir <dir>`
+- `--applications-dir <dir>`
+- `--json`
+
+`telegram supervise` 会复用已安装 service 保存下来的 workspace、profile 和 Telegram bot 环境，执行一次宿主 supervisor tick。
+它不会像 `start` / `restart` 那样启动长轮询 listener，而是只把已经落盘的 CTO workflow 和排队中的 host-executor 工作推进一轮。
 
 ### `telegram workflow-history`
 

@@ -12,12 +12,13 @@
 - Validation passed for the Telegram CTO follow-up/reroute fixes: `node --test tests/cto-workflow.test.js` and `node --test tests/im.test.js`.
 - Follow-up implementation closed the ordinary running-workflow restart gap in the Telegram CTO listener, so rehydrated workflows can now resume queued downstream tasks and finish after listener restart.
 - Follow-up implementation also closed the planning-stage restart gap: a rehydrated Telegram CTO workflow can now wait for its planner child session, reuse the returned plan, and continue execution after listener restart.
+- Added a one-shot host-supervisor path outside Telegram polling: `im telegram supervise` can now resume persisted CTO workflows without starting the long-poll listener, and `service telegram supervise` reuses the installed service config to run the same tick.
 - Added shared `session-contract` helpers and wired them through `im`, `auto`, `run`, `review`, `session-store`, child-session capture, and service payloads so host/child role metadata is machine-readable.
 - Service workflow/dispatch history and detail payloads now expose `thread_kind`, `thread_kind_label`, `session_role`, `session_scope`, `session_layer`, `execution_surface`, and `session_contract`.
 - The legacy `session` CLI now also surfaces the same host/child thread metadata in `list`, `show`, `latest`, and `tree` output, including fallback child-session contract hints carried by parent workflow records.
 - `session repair` now keeps and backfills `session_contract` metadata when rebuilding stale auto/cto child-session records, reducing one of the remaining fallback/inference gaps in historical session data.
 - Reclassified `T013`, `T014`, and `T015` to mostly implemented after the runtime, contract, and UI-separation follow-up landed; the remaining gaps are a fully standalone host supervisor runtime plus legacy-session backfill.
-- Validation passed for the follow-up supervisor/contract work: `node --test tests/auto.test.js tests/im.test.js tests/service.test.js` and `node --test tests/run.test.js tests/review.test.js`.
+- Validation passed for the follow-up supervisor/contract work: `node --test tests/auto.test.js tests/im.test.js tests/service.test.js`, `node --test tests/run.test.js tests/review.test.js`, `node --test tests/session-cli.test.js tests/session-repair.test.js`, and focused `im/service` supervisor coverage stayed green.
 
 ## 2026-03-10
 

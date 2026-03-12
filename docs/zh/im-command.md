@@ -10,6 +10,7 @@
 第一版只支持 Telegram：
 
 - `opencodex im telegram listen`
+- `opencodex im telegram supervise`
 - `opencodex im telegram inbox`
 - `opencodex im telegram send`
 
@@ -31,6 +32,7 @@
 - 让这条连接继续出现在正常的 session store 中
 
 `telegram inbox` 会从最新一条 Telegram IM session 里读取最近消息。
+`telegram supervise` 会执行一次宿主 supervisor tick，但不会启动 Telegram 长轮询；这样已经落盘的 CTO workflow 和 host-executor job 也能脱离监听循环继续推进。
 `telegram send` 则可以把回复消息发回指定的 Telegram chat。
 
 ## 输入
@@ -54,6 +56,13 @@
 - `--limit <n>`
 - `--json`
 
+### `telegram supervise`
+
+- `--cwd <dir>`
+- `--bot-token <token>` 或 `OPENCODEX_TELEGRAM_BOT_TOKEN`
+- `--profile <name>`；默认值：`full-access`
+- `--json`
+
 ### `telegram send`
 
 - `--cwd <dir>`
@@ -73,6 +82,13 @@
 - `telegram-runs.jsonl` — 开启 `--cto` 后的 CTO 规划与任务执行记录
 
 在 `--cto` 模式下，具备明确执行意图的入站 Telegram 消息会生成专用的 `cto` 工作流 session。状态/历史/控制/轻聊天这类追问会以内联方式处理，不会新建或续跑工作流。工作流下面可以再挂规划和执行用的 `run` 子 session，也可以在需要时进入“等待 CEO 确认”状态，并在同一个 chat 的下一条 Telegram 回复里继续推进。
+
+每条 `telegram supervise` session 会保存：
+
+- `telegram-replies.jsonl` — 这次 supervisor tick 里发出的 CEO-facing 回复
+- `telegram-state.json` — 本次 tick 看到的 rehydrated workflow 快照
+- `telegram-log.txt` — supervisor 生命周期日志
+- `telegram-runs.jsonl` — 本次 tick 里触发的 CTO 规划与任务执行记录
 
 ## 安全说明
 

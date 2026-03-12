@@ -10,6 +10,7 @@ The first provider is Telegram because it supports long polling from the local m
 The first version supports Telegram only:
 
 - `opencodex im telegram listen`
+- `opencodex im telegram supervise`
 - `opencodex im telegram inbox`
 - `opencodex im telegram send`
 
@@ -31,6 +32,7 @@ The first version supports Telegram only:
 - keeps the bridge visible in the normal session store
 
 `telegram inbox` reads the latest stored messages from the newest Telegram IM session.
+`telegram supervise` runs one host-supervisor tick without starting Telegram polling, so already persisted CTO workflows and host-executor jobs can continue independently of the long-poll loop.
 `telegram send` sends a reply message back to a specific Telegram chat.
 
 ## Inputs
@@ -54,6 +56,13 @@ This prevents arbitrary Telegram users from driving the local machine.
 - `--limit <n>`
 - `--json`
 
+### `telegram supervise`
+
+- `--cwd <dir>`
+- `--bot-token <token>` or `OPENCODEX_TELEGRAM_BOT_TOKEN`
+- `--profile <name>`; default: `full-access`
+- `--json`
+
 ### `telegram send`
 
 - `--cwd <dir>`
@@ -73,6 +82,13 @@ Each Telegram listen session stores:
 - `telegram-runs.jsonl` — delegated CTO planner and task run records when `--cto` is enabled
 
 In `--cto` mode, actionable inbound Telegram messages create dedicated `cto` workflow sessions under the same local session store. Status/history/control/casual-chat follow-ups can be handled inline without creating or resuming a workflow. A workflow can contain planner and worker `run` child sessions, remain waiting for a CEO confirmation, and resume from the next Telegram reply in the same chat.
+
+Each `telegram supervise` session stores:
+
+- `telegram-replies.jsonl` — any CEO-facing reply sent during the supervisor tick
+- `telegram-state.json` — the rehydrated workflow snapshot observed by the tick
+- `telegram-log.txt` — supervisor lifecycle log
+- `telegram-runs.jsonl` — delegated CTO planner and task run records triggered during the tick
 
 ## Security Notes
 

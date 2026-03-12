@@ -156,6 +156,7 @@ export async function runServiceCommand(args) {
       '  opencodex service telegram set-workspace --cwd <dir> [--json]\n' +
       '  opencodex service telegram relink --cli-path <path> [--json]\n' +
       '  opencodex service telegram set-setting --key <name> --value <value> [--json]\n' +
+      '  opencodex service telegram supervise [--json]\n' +
       '  opencodex service telegram send-status [--json]\n' +
       '  opencodex service telegram workflow-history [--limit <n>] [--json]\n' +
       '  opencodex service telegram workflow-detail --index <n> [--json]\n' +
@@ -213,6 +214,11 @@ export async function runServiceCommand(args) {
 
   if (subcommand === 'set-setting') {
     await runTelegramServiceSetSetting(rest);
+    return;
+  }
+
+  if (subcommand === 'supervise') {
+    await runTelegramServiceSupervise(rest);
     return;
   }
 
@@ -405,6 +411,44 @@ async function runTelegramServiceSetSetting(args) {
     setting_key: settingKey,
     setting_value: settingValue
   }, options.json, 'Telegram CTO tray setting updated');
+}
+
+async function runTelegramServiceSupervise(args) {
+  const { options, positionals } = parseOptions(args, TELEGRAM_SERVICE_OPTION_SPEC);
+  if (positionals.length) {
+    throw new Error('`opencodex service telegram supervise` does not accept positional arguments');
+  }
+
+  const service = await loadInstalledService(options);
+  const environment = await loadServiceEnvironment(service);
+  const botToken = (environment.OPENCODEX_TELEGRAM_BOT_TOKEN || '').trim();
+  if (!botToken) {
+    throw new Error('Telegram bot token is missing from the installed service environment file. Reinstall the service or update the token.');
+  }
+
+  const result = await runCommandCapture(service.nodePath, [
+    service.cliPath,
+    'im', 'telegram', 'supervise',
+    '--cwd', service.cwd,
+    '--bot-token', botToken,
+    '--profile', service.profile
+  ], {
+    cwd: service.cwd,
+    env: { ...process.env, ...environment }
+  });
+  if (result.code !== 0) {
+    throw new Error(`Telegram supervisor tick failed: ${pickCommandFailure(result)}`);
+  }
+
+  const payload = await inspectService(service);
+  renderServiceOutput({
+    ...payload,
+    ok: true,
+    action: 'supervise',
+    supervised: true,
+    supervisor_session_id: extractCommandSessionId(result.stdout),
+    supervisor_output: pickLastMeaningfulLine(result.stdout) || ''
+  }, options.json, 'Telegram CTO supervisor tick completed');
 }
 
 async function runTelegramServiceSetProfile(args) {
@@ -3832,6 +3876,19 @@ function buildLaunchdTarget(label) {
 
 function pickCommandFailure(result) {
   return String(result.stderr || result.stdout || 'Unknown command error').trim() || 'Unknown command error';
+}
+
+function extractCommandSessionId(stdoutText) {
+  const match = String(stdoutText || '').match(/Session:\s+([^\s]+)/);
+  return match ? match[1] : '';
+}
+
+function pickLastMeaningfulLine(text) {
+  const lines = String(text || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.at(-1) || '';
 }
 
 async function openPath(targetPath) {

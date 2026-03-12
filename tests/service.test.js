@@ -1333,6 +1333,171 @@ test('service telegram send-status sends the current workflow snapshot back to T
   await telegram.close();
 });
 
+test('service telegram supervise runs a one-shot host supervisor tick from the installed service config', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-supervise-'));
+  const cwd = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+  const launchctlState = path.join(root, 'launchctl-state.json');
+  const launchctl = await writeMockLaunchctl(path.join(root, 'mock-launchctl.js'), launchctlState);
+  const telegram = await startTelegramMockServer({ updates: [] });
+
+  await mkdir(cwd, { recursive: true });
+
+  await runCli([
+    'service', 'telegram', 'install',
+    '--allow-project-cli',
+    '--cwd', cwd,
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  await writeSessionFixture(cwd, {
+    session_id: 'run-supervise-slow',
+    command: 'run',
+    status: 'completed',
+    created_at: '2026-03-12T08:20:00.000Z',
+    updated_at: '2026-03-12T08:20:01.000Z',
+    input: {
+      prompt: 'Slow task',
+      arguments: {
+        profile: 'full-access'
+      }
+    },
+    summary: {
+      title: 'Mock slow task completed',
+      result: 'The mock slow worker finished successfully.',
+      status: 'completed',
+      highlights: ['Slow mock task completed.'],
+      next_steps: [],
+      risks: [],
+      validation: [],
+      changed_files: ['src/mock-slow.js'],
+      findings: []
+    }
+  });
+
+  await writeSessionFixture(cwd, {
+    session_id: 'cto-20260312-082000-supervise',
+    command: 'cto',
+    status: 'running',
+    created_at: '2026-03-12T08:20:00.000Z',
+    updated_at: '2026-03-12T08:20:01.000Z',
+    input: {
+      prompt: 'restart chain',
+      arguments: {
+        provider: 'telegram',
+        chat_id: '1379564094'
+      }
+    },
+    child_sessions: [
+      {
+        session_id: 'run-supervise-slow',
+        label: 'Task slow-task · 阿岚',
+        task_id: 'slow-task',
+        session_contract: {
+          schema: 'opencodex/session-contract/v1',
+          layer: 'child',
+          thread_kind: 'child_session',
+          role: 'worker',
+          scope: 'telegram_cto',
+          supervisor_session_id: 'cto-20260312-082000-supervise'
+        }
+      }
+    ],
+    summary: {
+      title: 'CTO workflow running',
+      result: 'Workflow is running with 1 active task(s).',
+      status: 'running',
+      highlights: [],
+      next_steps: []
+    },
+    workflow_state: {
+      workflow_session_id: 'cto-20260312-082000-supervise',
+      source_message_id: 911,
+      source_update_id: 511,
+      chat_id: '1379564094',
+      sender_display: 'Li Jianqian',
+      goal_text: 'restart chain',
+      status: 'running',
+      pending_question_zh: '',
+      created_at: '2026-03-12T08:20:00.000Z',
+      updated_at: '2026-03-12T08:20:01.000Z',
+      task_counter: 2,
+      user_messages: [
+        {
+          provider: 'telegram',
+          update_id: 511,
+          message_id: 911,
+          created_at: '2026-03-12T08:20:00.000Z',
+          chat_id: '1379564094',
+          sender_display: 'Li Jianqian',
+          text: 'restart chain'
+        }
+      ],
+      tasks: [
+        {
+          id: 'slow-task',
+          title: 'Slow task',
+          worker_prompt: 'MOCK_WORKER slow-500',
+          depends_on: [],
+          status: 'running',
+          session_id: 'run-supervise-slow',
+          summary_status: '',
+          result: '',
+          next_steps: [],
+          changed_files: [],
+          updated_at: '2026-03-12T08:20:01.000Z'
+        },
+        {
+          id: 'fast-task',
+          title: 'Fast task',
+          worker_prompt: 'MOCK_WORKER fast',
+          depends_on: ['slow-task'],
+          status: 'queued',
+          session_id: '',
+          summary_status: '',
+          result: '',
+          next_steps: [],
+          changed_files: [],
+          updated_at: '2026-03-12T08:20:01.000Z'
+        }
+      ]
+    }
+  });
+
+  const result = await runCli([
+    'service', 'telegram', 'supervise',
+    '--state-dir', stateDir,
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState,
+    OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+    OPENCODEX_CODEX_BIN: path.resolve('tests/fixtures/mock-codex.js')
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.action, 'supervise');
+  assert.equal(payload.supervised, true);
+  assert.match(payload.supervisor_session_id, /^im-/);
+  assert.equal(payload.running_workflow_count, 0);
+  assert.equal(payload.waiting_workflow_count, 0);
+  assert.equal(payload.latest_workflow_status, 'completed');
+  assert.ok(telegram.state.sentMessages.some((message) => message.reply_to_message_id === 911 && /已经处理完了。/.test(message.text)));
+
+  await telegram.close();
+});
+
 test('service telegram install can compile the menu bar app and expose workflow actions in the source script', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-menubar-'));
   const cwd = path.join(root, 'repo');
