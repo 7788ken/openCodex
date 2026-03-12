@@ -6,6 +6,7 @@ import { access, lstat, mkdtemp, mkdir, readFile, realpath, writeFile } from 'no
 import { spawn } from 'node:child_process';
 
 const cli = path.resolve('bin/opencodex.js');
+const bootstrapScript = path.resolve('scripts/install-opencodex.sh');
 
 test('install detached creates a versioned runtime, CLI shim, and app shell', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-install-'));
@@ -240,9 +241,73 @@ test('install status reports the detached runtime and shim', async () => {
   assert.match(payload.app_source_path, /OpenCodex\.applescript$/);
 });
 
+test('bootstrap install script installs a detached runtime from an existing checkout', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-bootstrap-script-'));
+  const homeDir = path.join(root, 'home');
+  const doctorCwd = path.join(root, 'doctor-cwd');
+  const installRoot = path.join(root, 'OpenCodex');
+  const binDir = path.join(root, 'bin');
+  const applicationsDir = path.join(root, 'Applications');
+  const bundlePath = path.join(root, 'dist', 'opencodex-runtime-bootstrap.tgz');
+  const mockBinDir = path.join(root, 'mock-bin');
+
+  await mkdir(homeDir, { recursive: true });
+  await mkdir(doctorCwd, { recursive: true });
+  await mkdir(mockBinDir, { recursive: true });
+
+  const osacompile = await writeMockOsacompile(path.join(root, 'mock-osacompile.js'));
+  const mockCodex = await writeMockCodexCli(path.join(mockBinDir, 'codex'));
+
+  const result = await runShellScript(bootstrapScript, {
+    HOME: homeDir,
+    PATH: `${path.dirname(mockCodex)}:${process.env.PATH}`,
+    OPENCODEX_SOURCE_DIR: path.resolve('.'),
+    OPENCODEX_DOCTOR_CWD: doctorCwd,
+    OPENCODEX_INSTALL_ROOT: installRoot,
+    OPENCODEX_BIN_DIR: binDir,
+    OPENCODEX_APPLICATIONS_DIR: applicationsDir,
+    OPENCODEX_BUNDLE_PATH: bundlePath,
+    OPENCODEX_INSTALL_NAME: 'bootstrap-runtime',
+    OPENCODEX_OSACOMPILE_BIN: osacompile
+  });
+
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Bootstrap install completed/);
+  await access(path.join(binDir, 'opencodex'));
+  await access(path.join(installRoot, 'current', 'bin', 'opencodex.js'));
+  await access(path.join(applicationsDir, 'OpenCodex.app', 'Contents', 'Info.plist'));
+
+  const installState = JSON.parse(await readFile(path.join(installRoot, 'install-state.json'), 'utf8'));
+  assert.equal(installState.install_name, 'bootstrap-runtime');
+  assert.equal(installState.installed, true);
+});
+
 function runCli(args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [cli, ...args], {
+      env: { ...process.env, ...extraEnv },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+function runShellScript(scriptPath, extraEnv = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('bash', [scriptPath], {
       env: { ...process.env, ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -278,6 +343,28 @@ if (!outputPath) {
 mkdirSync(path.join(outputPath, 'Contents'), { recursive: true });
 writeFileSync(path.join(outputPath, 'Contents', 'Info.plist'), '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>LSMinimumSystemVersionByArchitecture</key><dict><key>x86_64</key><string>10.6</string></dict></dict></plist>');
 process.exit(0);
+`;
+  await writeFile(filePath, source, { mode: 0o755 });
+  return filePath;
+}
+
+async function writeMockCodexCli(filePath) {
+  const source = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  console.log('codex-cli 0.111.0');
+  process.exit(0);
+}
+if (args[0] === 'login' && args[1] === 'status') {
+  console.log('Logged in using an API key - sk-test');
+  process.exit(0);
+}
+if (args[0] === 'mcp' && args[1] === 'list' && args[2] === '--json') {
+  console.log('[]');
+  process.exit(0);
+}
+console.error('unsupported mock codex command');
+process.exit(1);
 `;
   await writeFile(filePath, source, { mode: 0o755 });
   return filePath;

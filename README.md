@@ -54,6 +54,27 @@ See `docs/en/install-layout.md` for the current packaging direction.
 - Codex CLI installed and already logged in
 - macOS if you want to use the current detached app + `launchd` service flow
 
+### One-Command Bootstrap
+
+If you want Codex or a terminal to install openCodex in one shot, use:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/7788ken/openCodex/main/scripts/install-opencodex.sh | bash
+```
+
+This bootstrap script will:
+
+- clone openCodex
+- run `doctor`
+- build a runtime bundle
+- install a detached runtime, CLI shim, and app shell
+
+If you already have a local checkout and want to reuse it instead of cloning again:
+
+```bash
+OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
+```
+
 ### Run From Source
 
 Use this path when you are developing openCodex itself.
@@ -97,6 +118,7 @@ node ./bin/opencodex.js install detached --link-source
 
 This is for development only.
 Long-lived services should normally point at a detached installed runtime instead of a source checkout.
+The bootstrap script is meant for detached installs, not `--link-source` development setups.
 
 ## Quick Start
 

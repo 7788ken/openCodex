@@ -10,6 +10,27 @@
 - 已安装并登录 `Codex CLI`
 - 如果要使用当前的 detached app + `launchd` 服务流程，建议在 macOS 上操作
 
+### 一键安装
+
+如果你希望给 Codex 或终端一条命令，就把 openCodex 装好，可以直接用：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/7788ken/openCodex/main/scripts/install-opencodex.sh | bash
+```
+
+这个脚本会自动：
+
+- 拉取 openCodex
+- 执行 `doctor`
+- 打运行时 bundle
+- 安装 detached runtime、CLI shim 和 App 壳
+
+如果你已经在本地有仓库，不想再 clone 一次，也可以直接复用当前 checkout：
+
+```bash
+OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
+```
+
 ### 方案一：直接从源码运行
 
 适合先试用 openCodex，或者直接在仓库里开发。
@@ -55,6 +76,7 @@ node ./bin/opencodex.js install detached --link-source
 
 这只是开发模式。
 长期服务默认还是应该指向 detached installed runtime，而不是源码目录。
+一键安装脚本面向的是 detached install，不是 `--link-source` 这种开发模式。
 
 ### 相关文档
 

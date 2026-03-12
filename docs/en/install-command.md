@@ -16,6 +16,27 @@ The first version supports:
 `detached` installs a versioned runtime tree, rewrites a `current` pointer, creates a user CLI shim, and compiles a thin `OpenCodex.app` shell that points at the same `current` runtime.
 That app shell is intentionally lightweight and delegates work back to the installed CLI runtime.
 
+## Bootstrap Script
+
+For a one-command install from a terminal or Codex session, the repository now ships:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/7788ken/openCodex/main/scripts/install-opencodex.sh | bash
+```
+
+That script defaults to the detached install flow:
+
+1. clone openCodex
+2. run `doctor`
+3. run `opencodex install bundle`
+4. run `opencodex install detached --bundle <path>`
+
+If you already have a local checkout, you can reuse it with:
+
+```bash
+OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
+```
+
 ## Inputs
 
 ### `bundle`

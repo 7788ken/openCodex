@@ -16,6 +16,27 @@
 `detached` 会安装版本化 runtime 目录、重写 `current` 指针、创建用户级 CLI shim，并编译一个指向同一 `current` runtime 的轻量 `OpenCodex.app` 宿主壳。
 这个 App 壳本身不复制业务逻辑，而是把动作回落到已安装 CLI runtime。
 
+## 一键脚本
+
+现在仓库里也提供了一条命令式安装入口，适合直接让终端或 Codex 执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/7788ken/openCodex/main/scripts/install-opencodex.sh | bash
+```
+
+这个脚本默认走 detached install 流程：
+
+1. 拉取 openCodex
+2. 执行 `doctor`
+3. 执行 `opencodex install bundle`
+4. 执行 `opencodex install detached --bundle <path>`
+
+如果你本地已经有 checkout，也可以直接复用：
+
+```bash
+OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
+```
+
 ## 输入
 
 ### `bundle`
