@@ -1490,6 +1490,8 @@ test('service telegram supervise runs a one-shot host supervisor tick from the i
   assert.equal(payload.action, 'supervise');
   assert.equal(payload.supervised, true);
   assert.match(payload.supervisor_session_id, /^im-/);
+  assert.equal(payload.latest_supervisor_session_id, payload.supervisor_session_id);
+  assert.equal(payload.latest_supervisor_status, 'completed');
   assert.equal(payload.running_workflow_count, 0);
   assert.equal(payload.waiting_workflow_count, 0);
   assert.equal(payload.latest_workflow_status, 'completed');

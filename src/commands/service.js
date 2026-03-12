@@ -422,19 +422,25 @@ async function runTelegramServiceSupervise(args) {
   const service = await loadInstalledService(options);
   const environment = await loadServiceEnvironment(service);
   const botToken = (environment.OPENCODEX_TELEGRAM_BOT_TOKEN || '').trim();
+  const apiBaseUrl = (environment.OPENCODEX_TELEGRAM_API_BASE_URL || process.env.OPENCODEX_TELEGRAM_API_BASE_URL || '').trim();
   if (!botToken) {
     throw new Error('Telegram bot token is missing from the installed service environment file. Reinstall the service or update the token.');
   }
 
-  const result = await runCommandCapture(service.nodePath, [
+  const commandArgs = [
     service.cliPath,
     'im', 'telegram', 'supervise',
     '--cwd', service.cwd,
     '--bot-token', botToken,
     '--profile', service.profile
-  ], {
+  ];
+  if (apiBaseUrl) {
+    commandArgs.push('--api-base-url', apiBaseUrl);
+  }
+
+  const result = await runCommandCapture(service.nodePath, commandArgs, {
     cwd: service.cwd,
-    env: { ...process.env, ...environment }
+    env: buildServiceChildEnvironment(environment, apiBaseUrl)
   });
   if (result.code !== 0) {
     throw new Error(`Telegram supervisor tick failed: ${pickCommandFailure(result)}`);
@@ -649,20 +655,26 @@ async function runTelegramServiceSendStatus(args) {
   const payload = await inspectService(service);
   const environment = await loadServiceEnvironment(service);
   const botToken = (environment.OPENCODEX_TELEGRAM_BOT_TOKEN || '').trim();
+  const apiBaseUrl = (environment.OPENCODEX_TELEGRAM_API_BASE_URL || process.env.OPENCODEX_TELEGRAM_API_BASE_URL || '').trim();
   if (!botToken) {
     throw new Error('Telegram bot token is missing from the installed service environment file. Reinstall the service or update the token.');
   }
 
-  const result = await runCommandCapture(service.nodePath, [
+  const commandArgs = [
     service.cliPath,
     'im', 'telegram', 'send',
     '--cwd', service.cwd,
     '--bot-token', botToken,
     '--chat-id', service.chatId,
     buildTelegramServiceStatusReply(payload)
-  ], {
+  ];
+  if (apiBaseUrl) {
+    commandArgs.splice(commandArgs.length - 1, 0, '--api-base-url', apiBaseUrl);
+  }
+
+  const result = await runCommandCapture(service.nodePath, commandArgs, {
     cwd: service.cwd,
-    env: { ...process.env, ...environment }
+    env: buildServiceChildEnvironment(environment, apiBaseUrl)
   });
   if (result.code !== 0) {
     throw new Error(`Telegram status reply failed: ${pickCommandFailure(result)}`);
@@ -1368,7 +1380,8 @@ async function collectWorkflowStats(service) {
 
   const ctoSessions = sessions.filter((session) => session.command === 'cto');
   const latestWorkflow = ctoSessions[0] || null;
-  const latestListener = sessions.find((session) => session.command === 'im' && session.input?.arguments?.provider === 'telegram') || null;
+  const latestListener = sessions.find((session) => session.command === 'im' && session.input?.arguments?.provider === 'telegram' && session.input?.arguments?.mode !== 'supervise') || null;
+  const latestSupervisor = sessions.find((session) => session.command === 'im' && session.input?.arguments?.provider === 'telegram' && session.input?.arguments?.mode === 'supervise') || null;
   const latestWorkflowInfo = latestWorkflow ? await resolveLatestWorkflowInfo(service.cwd, latestWorkflow) : null;
   const workflowInfos = await loadWorkflowInfos(service.cwd, ctoSessions, 24);
   const workflowHistory = buildWorkflowHistoryRecords(workflowInfos);
@@ -1412,6 +1425,10 @@ async function collectWorkflowStats(service) {
     child_thread_count: childSessionStats.total,
     latest_listener_session_id: latestListener?.session_id || '',
     latest_listener_session_path: latestListener ? path.join(getSessionDir(service.cwd, latestListener.session_id), 'session.json') : '',
+    latest_supervisor_session_id: latestSupervisor?.session_id || '',
+    latest_supervisor_session_path: latestSupervisor ? path.join(getSessionDir(service.cwd, latestSupervisor.session_id), 'session.json') : '',
+    latest_supervisor_status: latestSupervisor?.status || '',
+    latest_supervisor_updated_at: latestSupervisor?.updated_at || '',
     latest_workflow_session_id: latestWorkflowInfo?.session_id || '',
     latest_workflow_status: latestWorkflowInfo?.status || '',
     latest_workflow_goal: latestWorkflowInfo?.goal || '',
@@ -1919,6 +1936,12 @@ function renderServiceOutput(payload, json, title) {
   }
   if (showWorkflowIds && payload.latest_listener_session_id) {
     lines.push(`Latest Listener Session: ${payload.latest_listener_session_id}`);
+  }
+  if (showWorkflowIds && payload.latest_supervisor_session_id) {
+    lines.push(`Latest Supervisor Session: ${payload.latest_supervisor_session_id}`);
+  }
+  if (payload.latest_supervisor_status) {
+    lines.push(`Latest Supervisor Status: ${payload.latest_supervisor_status}`);
   }
   if (Array.isArray(payload.recent_dispatches)) {
     payload.recent_dispatches.slice(0, 5).forEach((dispatch, index) => {
@@ -2599,7 +2622,7 @@ function collectServiceEnvironment(botToken, service, existingEnvironment = null
   environment.set('OPENCODEX_HOST_EXECUTOR_ENABLED', '1');
   environment.set('NODE_USE_ENV_PROXY', existingEnvironment?.NODE_USE_ENV_PROXY || process.env.NODE_USE_ENV_PROXY || '1');
 
-  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'OPENCODEX_CODEX_BIN', 'OPENCODEX_HOST_EXECUTOR_SANDBOX_MODE']) {
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'OPENCODEX_CODEX_BIN', 'OPENCODEX_HOST_EXECUTOR_SANDBOX_MODE', 'OPENCODEX_TELEGRAM_API_BASE_URL']) {
     if (typeof existingEnvironment?.[key] === 'string' && existingEnvironment[key].trim()) {
       environment.set(key, existingEnvironment[key]);
       continue;
@@ -2607,6 +2630,11 @@ function collectServiceEnvironment(botToken, service, existingEnvironment = null
     if (typeof process.env[key] === 'string' && process.env[key].trim()) {
       environment.set(key, process.env[key]);
     }
+  }
+
+  const apiBaseUrl = environment.get('OPENCODEX_TELEGRAM_API_BASE_URL') || '';
+  if (apiBaseUrl) {
+    environment.set('NO_PROXY', appendNoProxyHost(environment.get('NO_PROXY') || '', apiBaseUrl));
   }
 
   return environment;
@@ -3013,6 +3041,8 @@ on statusSectionText(statusText, sectionName)
 		set end of workflowLines to "Latest Workflow Pending: " & my lineValue(statusText, "Latest Workflow Pending: ", "")
 		set end of workflowLines to "Latest Workflow Updated: " & my lineValue(statusText, "Latest Workflow Updated: ", "")
 		if workflowIdsVisible then set end of workflowLines to "Latest Listener Session: " & my lineValue(statusText, "Latest Listener Session: ", "")
+		if workflowIdsVisible then set end of workflowLines to "Latest Supervisor Session: " & my lineValue(statusText, "Latest Supervisor Session: ", "")
+		if my lineValue(statusText, "Latest Supervisor Status: ", "") is not "" then set end of workflowLines to "Latest Supervisor Status: " & my lineValue(statusText, "Latest Supervisor Status: ", "")
 		return my joinLines(workflowLines)
 	end if
 	if sectionName is "Settings" then
@@ -3894,6 +3924,35 @@ function pickLastMeaningfulLine(text) {
     .map((line) => line.trim())
     .filter(Boolean);
   return lines.at(-1) || '';
+}
+
+function buildServiceChildEnvironment(environment, apiBaseUrl = '') {
+  const merged = { ...process.env, ...environment };
+  if (apiBaseUrl) {
+    merged.NO_PROXY = appendNoProxyHost(merged.NO_PROXY || '', apiBaseUrl);
+  }
+  return merged;
+}
+
+function appendNoProxyHost(currentValue, apiBaseUrl) {
+  let hostname = '';
+  try {
+    hostname = new URL(apiBaseUrl).hostname || '';
+  } catch {
+    hostname = '';
+  }
+  if (!hostname) {
+    return currentValue;
+  }
+
+  const items = String(currentValue || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (!items.includes(hostname)) {
+    items.push(hostname);
+  }
+  return items.join(',');
 }
 
 async function openPath(targetPath) {
