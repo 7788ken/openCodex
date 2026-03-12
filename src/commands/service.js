@@ -2788,6 +2788,7 @@ on rebuildMenu(statusText)
 	my addMenuItem(my localizedText(statusText, "Edit Worker Agent Soul", "编辑执行子代理灵魂文档"), "openWorkerAgentSoul:")
 	my addMenuItem(my localizedText(statusText, "Restore Default CTO Soul", "恢复默认 CTO 灵魂模板"), "resetCtoSoul:")
 	my addMenuItem(my localizedText(statusText, "Send Status Reply", "发送状态回执"), "sendStatusReply:")
+	my addMenuItem(my localizedText(statusText, "Run Supervisor Tick", "执行 Supervisor Tick"), "superviseWorkflowTick:")
 	my addSeparator()
 	my addMenuItem(my localizedText(statusText, "Quit", "退出"), "quitApp:")
 end rebuildMenu
@@ -3435,6 +3436,10 @@ on sendStatusReply_(sender)
 	end try
 	my refreshStatus()
 end sendStatusReply_
+
+on superviseWorkflowTick_(sender)
+	my runServiceCommand("supervise")
+end superviseWorkflowTick_
 
 on browseDispatchSections(detailText)
 	repeat

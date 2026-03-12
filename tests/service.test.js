@@ -1571,6 +1571,7 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /runServiceCommand\("reset-cto-soul"\)/);
   assert.match(scriptSource, /Restore the default Codex-CLI-based CTO soul templates/);
   assert.match(scriptSource, /Send Status Reply/);
+  assert.match(scriptSource, /Run Supervisor Tick/);
   assert.match(scriptSource, /Running Workflows:/);
   assert.match(scriptSource, /Running Tasks:/);
   assert.match(scriptSource, /Rerouted Tasks:/);
@@ -1632,6 +1633,7 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /runningTaskCount/);
   assert.match(scriptSource, /totalChildCount/);
   assert.match(scriptSource, /service telegram send-status/);
+  assert.match(scriptSource, /my runServiceCommand\("supervise"\)/);
   assert.match(scriptSource, /OC⚡/);
 });
 
