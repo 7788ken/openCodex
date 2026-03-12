@@ -1,5 +1,12 @@
 # Status Log
 
+## 2026-03-12
+
+- Added `T018` and fixed Telegram CTO follow-up status binding so colloquial questions like `这个任务完成没有？` now report the latest relevant workflow instead of starting a new empty workflow.
+- Added `T019` and expanded host-executor reroute detection so sandbox-blocked `partial` export tasks can continue automatically on the host executor.
+- Telegram CTO regression coverage now includes colloquial waiting-workflow follow-ups and a Downloads-style export task that first hits `Operation not permitted` and then completes after reroute.
+- Validation passed for the Telegram CTO follow-up/reroute fixes: `node --test tests/cto-workflow.test.js` and `node --test tests/im.test.js`.
+
 ## 2026-03-10
 
 - Fixed a merge-conflict residue in `src/commands/run.js` that was blocking the CLI from starting.

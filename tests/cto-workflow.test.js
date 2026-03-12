@@ -9,6 +9,7 @@ import {
   buildDefaultCtoPlannerAgentSoulDocument,
   buildDefaultCtoReplyAgentSoulDocument,
   buildTelegramCtoFinalText,
+  buildTelegramCtoQuestionText,
   buildTelegramCtoMainThreadSystemPrompt,
   buildTelegramCtoPlannerPrompt,
   buildDefaultCtoWorkflowSoulDocument,
@@ -180,6 +181,8 @@ test('cto worker prompt assigns a grounded named subagent deterministically', ()
   assert.match(workerPrompt, new RegExp(`Child agent name: ${workerProfile.name_zh}`));
   assert.match(workerPrompt, /Child agent role: implementation partner/);
   assert.match(workerPrompt, /Active child-agent soul document \(prompts\/cto-worker-agent-soul\.md\):/);
+  assert.match(workerPrompt, /summary\.result.*forward almost directly to the CEO/i);
+  assert.match(workerPrompt, /Avoid English boilerplate such as "completed successfully"/i);
   assert.match(workerPrompt, /Worker directive from the CTO main thread:/);
 });
 
@@ -204,6 +207,7 @@ test('cto worker execution prompt wraps child work under the main thread', () =>
   assert.match(prompt, /CEO-facing CTO identity/i);
   assert.match(prompt, /Default to finishing the task end-to-end inside this run/i);
   assert.match(prompt, /Do not hand routine next steps back to the CTO/i);
+  assert.match(prompt, /Keep `summary\.result` within 2 short sentences/i);
   assert.match(prompt, /Worker directive from the CTO main thread:/);
   assert.match(prompt, /Update the IM routing and add regression coverage\./);
 });
@@ -291,6 +295,11 @@ test('cto intent classifier still treats explicit execution requests as directiv
 test('cto intent classifier does not downgrade progress-push directives into status queries', () => {
   const classified = classifyTelegramCtoMessageIntent('继续检查项目进度,推进项目落地,优化框架与用户体验.');
   assert.equal(classified.kind, 'directive');
+});
+
+test('cto intent classifier treats colloquial completion follow-ups as status queries', () => {
+  const classified = classifyTelegramCtoMessageIntent('这个任务完成没有？');
+  assert.equal(classified.kind, 'status_query');
 });
 
 test('cto intent classifier treats location-style greeting as casual chat', () => {
@@ -504,8 +513,144 @@ test('cto cancel helper marks active tasks cancelled and renders a cancelled fin
   assert.equal(workflowState.tasks[0].status, 'cancelled');
   assert.equal(workflowState.tasks[1].status, 'cancelled');
   assert.equal(workflowState.tasks[2].status, 'completed');
-  assert.match(finalText, /这轮先停在这里了/);
+  assert.match(finalText, /这轮先停在这里/);
   assert.match(finalText, /已取消 2 项/);
+});
+
+test('cto waiting reply uses a clear Chinese checklist', () => {
+  const text = buildTelegramCtoQuestionText({
+    pending_question_zh: '请确认是否继续修改本地仓库。',
+    tasks: [
+      { status: 'completed' },
+      { status: 'failed' },
+      { status: 'partial' }
+    ]
+  });
+
+  assert.match(text, /这轮先停一下，等你拍板/);
+  assert.match(text, /- 待确认：请确认是否继续修改本地仓库/);
+  assert.match(text, /- 当前进度：已完成 1 项，失败 1 项，待跟进 1 项/);
+});
+
+test('cto final reply summarizes multiple completed tasks in simple Chinese bullets', () => {
+  const workflowState = {
+    status: 'completed',
+    tasks: [
+      {
+        id: 'task-1',
+        title: 'Inspect repository',
+        status: 'completed',
+        result: 'The mock repository inspection completed successfully.',
+        changed_files: ['src/mock-inspection.js']
+      },
+      {
+        id: 'task-2',
+        title: 'Summarize findings',
+        status: 'completed',
+        result: 'The mock findings summary completed successfully.',
+        changed_files: ['docs/en/mock-summary.md', 'docs/zh/mock-summary.md'],
+        next_steps: ['Share the summary with the CEO.']
+      }
+    ]
+  };
+
+  const finalText = buildTelegramCtoFinalText(workflowState);
+  assert.match(finalText, /^这轮已经处理完了。/);
+  assert.match(finalText, /共完成 2 项。/);
+  assert.match(finalText, /本轮结果：/);
+  assert.match(finalText, /已完成：Inspect repository。已经检查完了。/);
+  assert.match(finalText, /已完成：Summarize findings。已经处理完，结果也整理好了。/);
+  assert.match(finalText, /改动文件：/);
+  assert.match(finalText, /src\/mock-inspection\.js/);
+  assert.match(finalText, /后续建议：/);
+  assert.match(finalText, /把整理好的结果同步给我。/);
+});
+
+test('cto partial final reply keeps blockers and next steps readable', () => {
+  const finalText = buildTelegramCtoFinalText({
+    status: 'partial',
+    tasks: [
+      {
+        id: 'task-1',
+        title: '修正最终回执格式',
+        status: 'completed',
+        result: '已经改成中文短段落和简单列表。'
+      },
+      {
+        id: 'task-2',
+        title: '确认是否保留文件列表',
+        status: 'partial',
+        result: '',
+        next_steps: ['请确认最终回执里是否还要继续带上改动文件列表。']
+      }
+    ]
+  });
+
+  assert.match(finalText, /这轮先做到这里，还没完全收口。/);
+  assert.match(finalText, /当前卡点：/);
+  assert.match(finalText, /待跟进：确认是否保留文件列表。请确认最终回执里是否还要继续带上改动文件列表。/);
+  assert.match(finalText, /已完成部分：/);
+  assert.match(finalText, /已完成：修正最终回执格式。已经改成中文短段落和简单列表。/);
+  assert.match(finalText, /建议下一步：/);
+});
+
+test('cto waiting final reply keeps confirmation and changed files readable', () => {
+  const finalText = buildTelegramCtoFinalText({
+    status: 'waiting_for_user',
+    pending_question_zh: '请确认是否继续按最小改动推进。',
+    tasks: [
+      {
+        id: 'task-1',
+        title: '修正最终回执格式',
+        status: 'completed',
+        result: '已经改成中文短段落和简单列表。',
+        changed_files: ['src/lib/cto-workflow.js']
+      }
+    ]
+  });
+
+  assert.match(finalText, /这轮先做到这里，还差你拍板。/);
+  assert.match(finalText, /需要你确认：/);
+  assert.match(finalText, /请确认是否继续按最小改动推进。/);
+  assert.match(finalText, /已完成部分：/);
+  assert.match(finalText, /改动文件：/);
+  assert.match(finalText, /src\/lib\/cto-workflow\.js/);
+});
+
+test('cto final reply stays compact instead of relying on Telegram truncation', () => {
+  const workflowState = {
+    status: 'completed',
+    tasks: [
+      {
+        id: 'task-1',
+        title: 'Inspect repository',
+        status: 'completed',
+        result: 'A'.repeat(2000)
+      },
+      {
+        id: 'task-2',
+        title: 'Summarize findings',
+        status: 'completed',
+        result: 'B'.repeat(2000)
+      },
+      {
+        id: 'task-3',
+        title: 'Verify reply',
+        status: 'completed',
+        result: 'C'.repeat(2000)
+      },
+      {
+        id: 'task-4',
+        title: 'Ship result',
+        status: 'completed',
+        result: 'D'.repeat(2000)
+      }
+    ]
+  };
+
+  const finalText = buildTelegramCtoFinalText(workflowState);
+  assert.ok(finalText.length < 1200);
+  assert.match(finalText, /另外还有 1 项已完成，这里先不展开。/);
 });
 
 test('cto workflow finalization does not turn failed dependency chains into waiting', () => {

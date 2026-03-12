@@ -188,6 +188,7 @@ openCodex 是架在 Codex CLI 之上的轻量 CLI 层。
 - `--applications-dir <dir>`
 - `--bundle <path>`
 - `--name <id>`
+- `--link-source`
 - `--force`
 - `--json`
 

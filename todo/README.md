@@ -26,3 +26,5 @@ The product focus is orchestration, workflow design, session handling, and multi
 - `T015-supervisor-session-and-ui-separation.md` — make the supervisor/child split visible in history and UI.
 - `T016-cto-conversation-and-research-mode.md` — support chat, discussion, and research before orchestration.
 - `T017-detached-install-layout.md` — define the detached installed runtime layout for App, CLI, and services.
+- `T018-telegram-workflow-reference-follow.md` — bind colloquial Telegram follow-up questions back to the latest relevant CTO workflow.
+- `T019-telegram-host-export-to-downloads.md` — reroute sandbox-blocked partial export tasks into the host executor automatically.

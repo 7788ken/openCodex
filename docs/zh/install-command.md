@@ -31,6 +31,7 @@
 - `--applications-dir <dir>`；默认：`~/Applications`
 - `--bundle <path>`；可选，已打好的 runtime bundle 或已解压 bundle 目录
 - `--name <id>`；可选，安装槽位名
+- `--link-source`；不复制文件，直接把安装槽位链接回当前源码仓库；仅用于开发期
 - `--force`
 - `--json`
 
@@ -58,7 +59,7 @@
 - CLI shim 路径
 - 已安装 App bundle 路径和生成的 AppleScript 源文件路径
 - 已安装 runtime 的 launcher provenance
-- 这次安装是 direct copy 还是 bundle install
+- 这次安装是 direct copy、source link，还是 bundle install
 - 如果使用了 `--bundle`，还会带上 bundle provenance
 
 `status` 会报告 detached runtime、CLI shim 和 App 壳是否存在，以及 `current` 当前解析到哪一个 runtime。
@@ -72,6 +73,8 @@
 2. `opencodex install detached --bundle <path>`
 
 直接在 live checkout 上跑 `install detached` 仍然保留，主要用于本地开发和临时验证，不再是默认推荐的交付路径。
+如果你希望已安装 CLI 和 App 壳直接跟着当前仓库代码走，改完不用反复重新安装，可以使用 `opencodex install detached --link-source`。
+这个模式只适合开发期，本质上仍然是让运行时和当前 checkout 保持耦合。
 
 ## 非目标
 

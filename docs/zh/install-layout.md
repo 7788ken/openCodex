@@ -79,6 +79,7 @@ openCodex 可以同时以两种形态存在：
 仓库 checkout 只用于开发、测试和临时本地实验。
 如果开发者明确需要在本地调试期间让 service 跟随当前 checkout，这种行为必须显式 opt-in，并且在状态里清楚标记为临时耦合。
 直接在当前 checkout 上执行 `install detached` 仍然保留，但它更适合开发期临时验证，不再作为默认的产品安装交付路径。
+如果更在意开发效率，而不是安装隔离，可以使用 `opencodex install detached --link-source`，让已安装 App 和 CLI 直接指向当前仓库，源码修改后立即生效。
 
 ## 非目标
 

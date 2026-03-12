@@ -22,6 +22,7 @@ const DETACHED_INSTALL_OPTION_SPEC = {
   'applications-dir': { type: 'string' },
   bundle: { type: 'string' },
   name: { type: 'string' },
+  'link-source': { type: 'boolean' },
   force: { type: 'boolean' },
   json: { type: 'boolean' }
 };
@@ -46,7 +47,7 @@ export async function runInstallCommand(args) {
     process.stdout.write(
       'Usage:\n' +
       '  opencodex install bundle [--output <path>] [--force] [--json]\n' +
-      '  opencodex install detached [--root <dir>] [--bin-dir <dir>] [--applications-dir <dir>] [--bundle <path>] [--name <id>] [--force] [--json]\n' +
+      '  opencodex install detached [--root <dir>] [--bin-dir <dir>] [--applications-dir <dir>] [--bundle <path>] [--name <id>] [--link-source] [--force] [--json]\n' +
       '  opencodex install status [--root <dir>] [--bin-dir <dir>] [--applications-dir <dir>] [--json]\n'
     );
     return;
@@ -152,7 +153,9 @@ async function runDetachedInstall(args) {
     await installSource.materialize(runtimePath);
     await validateRuntimeRoot(runtimePath);
 
-    await chmod(runtimeCliPath, 0o755);
+    if (!installSource.linkedSource) {
+      await chmod(runtimeCliPath, 0o755);
+    }
     await rewriteCurrentPointer(paths.currentPath, runtimePath, paths.rootDir);
     await writeFile(paths.shimPath, buildCliShim(paths.currentPath), 'utf8');
     await chmod(paths.shimPath, 0o755);
@@ -175,6 +178,7 @@ async function runDetachedInstall(args) {
       install_name: installName,
       version: installSource.version,
       install_source: installSource.installSource,
+      linked_source: Boolean(installSource.linkedSource),
       source_root: installSource.sourceRoot,
       source_scope: installSource.sourceScope,
       bundle_path: installSource.bundlePath,
@@ -185,7 +189,9 @@ async function runDetachedInstall(args) {
         `Add ${paths.binDir} to PATH if \`opencodex\` is not yet discoverable.`,
         `Use \`open ${shellQuote(paths.appPath)}\` to launch the installed app shell.`,
         `Use \`opencodex install status${paths.rootDir ? ` --root ${shellQuote(paths.rootDir)}` : ''}\` to inspect the detached runtime.`,
-        installSource.sourceScope === 'packaged_bundle'
+        installSource.linkedSource
+          ? `This install links back to ${shellQuote(installSource.sourceRoot)}. Source edits take effect immediately without re-running \`opencodex install detached\`.`
+          : installSource.sourceScope === 'packaged_bundle'
           ? `Keep the bundle at ${shellQuote(installSource.bundlePath)} if you want a reproducible handoff artifact for future installs.`
           : 'Prefer `opencodex install bundle` followed by `opencodex install detached --bundle <path>` when preparing a product-like install outside the current checkout.',
         `Use \`opencodex service telegram relink --cli-path ${shellQuote(currentCliPath)}\` to move an existing Telegram service onto the detached runtime.`
@@ -248,6 +254,7 @@ async function runInstallStatus(args) {
     launcher_scope: installed ? describeOpenCodexLauncher(currentCliPath, currentCliPath).launcherScope : '',
     source_root: state?.source_root || '',
     source_scope: state?.source_scope || '',
+    linked_source: Boolean(state?.linked_source),
     bundle_path: state?.bundle_path || '',
     bundle_source_root: state?.bundle_source_root || '',
     bundle_source_scope: state?.bundle_source_scope || ''
@@ -279,24 +286,31 @@ async function resolveInstallSource(options = {}) {
   const bundlePath = typeof options.bundle === 'string' && options.bundle.trim()
     ? options.bundle.trim()
     : '';
+  if (bundlePath && options['link-source']) {
+    throw new Error('`opencodex install detached` cannot combine `--bundle` with `--link-source`.');
+  }
   if (bundlePath) {
     return resolveBundleInstallSource(bundlePath);
   }
-  return resolveCheckoutInstallSource();
+  return resolveCheckoutInstallSource(options);
 }
 
-async function resolveCheckoutInstallSource() {
+async function resolveCheckoutInstallSource(options = {}) {
   const sourcePackage = await readSourcePackage();
   const sourceLauncher = describeOpenCodexLauncher(SOURCE_CLI_PATH, SOURCE_CLI_PATH);
+  const linkedSource = Boolean(options['link-source']);
   return {
     version: sourcePackage.version || '0.0.0',
-    installSource: 'direct_copy',
+    installSource: linkedSource ? 'source_link' : 'direct_copy',
+    linkedSource,
     sourceRoot: SOURCE_ROOT,
     sourceScope: sourceLauncher.launcherScope,
     bundlePath: '',
     bundleSourceRoot: '',
     bundleSourceScope: '',
-    materialize: async (runtimePath) => copyRuntimeTree(SOURCE_ROOT, runtimePath),
+    materialize: async (runtimePath) => linkedSource
+      ? linkRuntimeTree(SOURCE_ROOT, runtimePath)
+      : copyRuntimeTree(SOURCE_ROOT, runtimePath),
     cleanup: async () => {}
   };
 }
@@ -593,6 +607,12 @@ async function copyRuntimeTree(sourceRoot, targetRoot) {
   }
 }
 
+async function linkRuntimeTree(sourceRoot, targetRoot) {
+  await ensureDir(path.dirname(targetRoot));
+  const canonicalSourceRoot = await realpath(sourceRoot);
+  await symlink(canonicalSourceRoot, targetRoot);
+}
+
 function buildBundleManifest({ version, sourceRoot, sourceScope }) {
   return {
     format: BUNDLE_FORMAT,
@@ -655,6 +675,9 @@ function renderInstallOutput(payload, json, title) {
   }
   if (payload.install_source) {
     lines.push(`Install Source: ${payload.install_source}`);
+  }
+  if (payload.linked_source) {
+    lines.push('Linked Source: yes');
   }
   if (payload.root_dir) {
     lines.push(`Root Dir: ${payload.root_dir}`);

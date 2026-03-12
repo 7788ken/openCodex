@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { access, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdtemp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 
 const cli = path.resolve('bin/opencodex.js');
@@ -63,6 +63,56 @@ test('install detached creates a versioned runtime, CLI shim, and app shell', as
   const copiedPackage = JSON.parse(await readFile(path.join(payload.runtime_path, 'package.json'), 'utf8'));
   assert.equal(copiedPackage.name, 'opencodex');
   await access(path.join(payload.runtime_path, 'src', 'main.js'));
+});
+
+test('install detached can link the current checkout for development', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-install-linked-'));
+  const installRoot = path.join(root, 'OpenCodex');
+  const binDir = path.join(root, 'bin');
+  const applicationsDir = path.join(root, 'Applications');
+  const osacompile = await writeMockOsacompile(path.join(root, 'mock-osacompile.js'));
+
+  const result = await runCli([
+    'install', 'detached',
+    '--root', installRoot,
+    '--bin-dir', binDir,
+    '--applications-dir', applicationsDir,
+    '--name', 'linked-runtime',
+    '--link-source',
+    '--json'
+  ], {
+    OPENCODEX_OSACOMPILE_BIN: osacompile
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.install_name, 'linked-runtime');
+  assert.equal(payload.install_source, 'source_link');
+  assert.equal(payload.linked_source, true);
+  assert.equal(payload.source_scope, 'project_checkout');
+  assert.equal(payload.launcher_scope, 'project_checkout');
+  assert.match(payload.runtime_path, /installs\/linked-runtime$/);
+  assert.match(payload.current_cli_path, /current\/bin\/opencodex\.js$/);
+  assert.ok((payload.next_steps[3] || '').includes('Source edits take effect immediately'));
+
+  const runtimeStats = await lstat(payload.runtime_path);
+  assert.equal(runtimeStats.isSymbolicLink(), true);
+  assert.equal(await realpath(payload.runtime_path), path.resolve('.'));
+
+  const status = await runCli([
+    'install', 'status',
+    '--root', installRoot,
+    '--bin-dir', binDir,
+    '--applications-dir', applicationsDir,
+    '--json'
+  ]);
+
+  assert.equal(status.code, 0);
+  const statusPayload = JSON.parse(status.stdout);
+  assert.equal(statusPayload.install_source, 'source_link');
+  assert.equal(statusPayload.linked_source, true);
+  assert.equal(statusPayload.current_target_path, path.resolve('.'));
+  assert.equal(statusPayload.launcher_scope, 'project_checkout');
 });
 
 test('install bundle creates a portable runtime archive with manifest metadata', async () => {

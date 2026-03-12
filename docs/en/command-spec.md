@@ -188,6 +188,7 @@ Create and inspect a detached local runtime so the installed CLI and long-lived 
 - `--applications-dir <dir>`
 - `--bundle <path>`
 - `--name <id>`
+- `--link-source`
 - `--force`
 - `--json`
 

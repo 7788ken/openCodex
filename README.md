@@ -46,6 +46,58 @@ openCodex can ship as a menu bar app and a CLI at the same time, but they should
 The source checkout remains a development workspace only.
 See `docs/en/install-layout.md` for the current packaging direction.
 
+## Installation Guide
+
+### Prerequisites
+
+- Node.js 20 or newer
+- Codex CLI installed and already logged in
+- macOS if you want to use the current detached app + `launchd` service flow
+
+### Run From Source
+
+Use this path when you are developing openCodex itself.
+
+```bash
+git clone https://github.com/7788ken/openCodex.git
+cd openCodex
+node --version
+node ./bin/opencodex.js doctor
+node ./bin/opencodex.js run "summarize this repository"
+```
+
+There is no build step yet.
+The CLI runs directly from the checkout.
+
+### Install A Detached Local Runtime
+
+Use this path when you want the CLI, app shell, and long-lived services to stop depending on the current repository checkout.
+
+```bash
+cd /path/to/openCodex
+node ./bin/opencodex.js install bundle
+node ./bin/opencodex.js install detached --bundle ./dist/opencodex-runtime-<version>-<timestamp>.tgz
+node ./bin/opencodex.js install status
+open "$HOME/Applications/OpenCodex.app"
+```
+
+The detached install currently defaults to:
+
+- runtime root: `~/Library/Application Support/OpenCodex`
+- CLI shim: `~/.local/bin/opencodex`
+- app shell: `~/Applications/OpenCodex.app`
+
+### Development Shortcut
+
+If you intentionally want the installed app shell and CLI shim to keep following your live checkout while you are iterating locally, use:
+
+```bash
+node ./bin/opencodex.js install detached --link-source
+```
+
+This is for development only.
+Long-lived services should normally point at a detached installed runtime instead of a source checkout.
+
 ## Quick Start
 
 ```bash

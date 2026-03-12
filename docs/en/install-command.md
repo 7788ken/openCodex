@@ -31,6 +31,7 @@ That app shell is intentionally lightweight and delegates work back to the insta
 - `--applications-dir <dir>`; default: `~/Applications`
 - `--bundle <path>`; optional packaged runtime artifact or extracted bundle directory
 - `--name <id>`; optional install slot name
+- `--link-source`; link the install slot back to the current checkout instead of copying files; development only
 - `--force`
 - `--json`
 
@@ -58,7 +59,7 @@ That app shell is intentionally lightweight and delegates work back to the insta
 - the CLI shim path
 - the installed app bundle path and generated app source path
 - launcher provenance for the installed runtime
-- whether the install came from a direct copy or from a packaged bundle
+- whether the install came from a direct copy, a source link, or a packaged bundle
 - bundle provenance when `--bundle` was used
 
 `status` reports whether the detached runtime, CLI shim, and app shell are present, and which runtime `current` resolves to.
@@ -72,6 +73,8 @@ For product-like installs, prefer:
 2. `opencodex install detached --bundle <path>`
 
 Direct `install detached` from a live checkout still exists for local development convenience, but it is no longer the recommended handoff path.
+If you want the installed CLI and app shell to follow your current repository without reinstalling after each edit, use `opencodex install detached --link-source`.
+That mode is for active local development only and keeps the runtime intentionally coupled to the checkout.
 
 ## Non-Goals
 

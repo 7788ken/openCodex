@@ -79,6 +79,7 @@ This model keeps the app, CLI, and services on one versioned runtime without for
 The repository checkout is for development, testing, and temporary local experiments.
 If a developer intentionally wants a checkout-coupled service during active local work, that must stay opt-in and visibly marked as temporary.
 Direct `install detached` from the current checkout remains available for local testing, but it should be treated as a development shortcut rather than the default production handoff.
+When the goal is development speed rather than isolation, `opencodex install detached --link-source` can keep the installed app and CLI pointed at the active checkout so source edits take effect immediately.
 
 ## Non-Goals
 

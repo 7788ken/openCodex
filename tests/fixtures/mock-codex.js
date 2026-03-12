@@ -132,6 +132,22 @@ function buildPlannerPayload(prompt) {
     };
   }
 
+  if (prompt.includes('下载文件夹') || /save(?: the)? .*downloads/i.test(prompt)) {
+    return {
+      mode: 'execute',
+      summary_zh: '已准备导出到下载文件夹。',
+      question_zh: '',
+      tasks: [
+        {
+          id: 'export-downloads',
+          title: 'Export documents to Downloads',
+          worker_prompt: 'MOCK_WORKER export-downloads',
+          depends_on: []
+        }
+      ]
+    };
+  }
+
   return {
     mode: 'execute',
     summary_zh: '已拆分任务并开始调度。',
@@ -193,6 +209,34 @@ function buildRunPayload(prompt) {
       validation: [],
       changed_files: ['src/mock-inspection.js'],
       findings: []
+    };
+  }
+
+  if (prompt.includes('MOCK_WORKER export-downloads')) {
+    if (process.env.OPENCODEX_HOST_EXECUTOR_JOB_ID) {
+      return {
+        title: 'Mock export completed',
+        result: 'The export to Downloads completed successfully.',
+        status: 'completed',
+        highlights: ['Downloads export finished.'],
+        next_steps: [],
+        risks: [],
+        validation: [],
+        changed_files: ['/Users/lijianqian/Downloads/mock-report.md'],
+        findings: []
+      };
+    }
+
+    return {
+      title: 'Mock export blocked',
+      result: '实际复制被当前只读沙箱拦住了，没能写入 Downloads。',
+      status: 'partial',
+      highlights: ['The export is blocked by the current sandbox.'],
+      next_steps: ['请切到宿主环境继续导出到 Downloads。'],
+      risks: ['当前环境无法写入 Downloads。'],
+      validation: ['cp "/tmp/mock-report.md" "/Users/lijianqian/Downloads/mock-report.md" -> Operation not permitted'],
+      changed_files: [],
+      findings: ['下载目录导出被只读沙箱阻断']
     };
   }
 

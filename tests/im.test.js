@@ -156,7 +156,10 @@ test('im telegram listen --cto orchestrates a workflow and returns structured pr
   });
   assert.equal(telegram.state.sentMessages.length, 1);
   assert.match(telegram.state.sentMessages[0].text, /这轮已经处理完/);
-  assert.match(telegram.state.sentMessages[0].text, /The mock findings summary completed successfully\./);
+  assert.match(telegram.state.sentMessages[0].text, /本轮结果：/);
+  assert.match(telegram.state.sentMessages[0].text, /改动文件：/);
+  assert.match(telegram.state.sentMessages[0].text, /已经检查完了。/);
+  assert.match(telegram.state.sentMessages[0].text, /已经处理完，结果也整理好了。/);
   assert.doesNotMatch(telegram.state.sentMessages[0].text, /openCodex CTO|Workflow:/);
 
   const sessionsRoot = path.join(cwd, '.opencodex', 'sessions');
@@ -533,10 +536,10 @@ test('im telegram listen --cto cancels the current waiting workflow without disp
     }
   });
 
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 722 && /这轮先停在这里了/.test(message.text)), 'cancel reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 722 && /这轮先停在这里/.test(message.text)), 'cancel reply');
   await waitForCondition(() => stdout.includes('Handled CTO workflow control for update 322'), 'cancel control log');
 
-  const cancelReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 722 && /这轮先停在这里了/.test(message.text));
+  const cancelReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 722 && /这轮先停在这里/.test(message.text));
   assert.ok(cancelReply);
   assert.doesNotMatch(cancelReply.text, /openCodex CTO|Workflow:/);
   assert.equal(telegram.state.reactions.length, 1);
@@ -862,11 +865,16 @@ test('im telegram listen --cto preserves the pending question when the CEO expli
     stderr += chunk.toString();
   });
 
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 722 && /resumed mock workflow finished successfully/i.test(message.text)), 'explicit continue final reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 722 && /这轮先做到这里，还没完全收口。/.test(message.text)), 'explicit continue final reply');
   await waitForCondition(() => stdout.includes(`Continuing CTO workflow ${workflowId} from update 322`), 'continue workflow log');
 
-  const continueReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 722 && /resumed mock workflow finished successfully/i.test(message.text));
+  const continueReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 722 && /这轮先做到这里，还没完全收口。/.test(message.text));
   assert.ok(continueReply);
+  assert.match(continueReply.text, /这轮先做到这里，还没完全收口。/);
+  assert.match(continueReply.text, /已完成部分：/);
+  assert.match(continueReply.text, /改动文件：/);
+  assert.match(continueReply.text, /已经继续跑完了。/);
+  assert.match(continueReply.text, /建议下一步：/);
   assert.equal(telegram.state.reactions.length, 1);
   assert.doesNotMatch(stdout, /started workflow .* for update 322/);
 
@@ -1435,8 +1443,8 @@ test('im telegram listen --cto keeps later messages non-blocking while a slow wo
   await waitForCondition(() => telegram.state.reactions.length >= 2, 'parallel workflow reactions');
   await waitForCondition(() => telegram.state.sentMessages.length >= 2, 'parallel workflow replies');
 
-  const finalSlowIndex = findMessageIndex(telegram.state.sentMessages, (message) => message.reply_to_message_id === 701 && /mock slow worker finished successfully/i.test(message.text));
-  const finalFastIndex = findMessageIndex(telegram.state.sentMessages, (message) => message.reply_to_message_id === 702 && /mock fast worker finished successfully/i.test(message.text));
+  const finalSlowIndex = findMessageIndex(telegram.state.sentMessages, (message) => message.reply_to_message_id === 701 && /已经处理完了。/.test(message.text));
+  const finalFastIndex = findMessageIndex(telegram.state.sentMessages, (message) => message.reply_to_message_id === 702 && /已经处理完了。/.test(message.text));
 
   assert.deepEqual(telegram.state.reactions, [
     {
@@ -1523,7 +1531,7 @@ test('im telegram listen --cto reports workflow status instead of dispatching a 
 
   await waitForCondition(() => telegram.state.reactions.length >= 1, 'workflow acknowledgement');
   await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 702 && /工作流汇报/.test(message.text)), 'workflow status reply');
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 701 && /mock slow worker finished successfully/i.test(message.text)), 'slow workflow completion');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 701 && /已经处理完了。/.test(message.text)), 'slow workflow completion');
 
   const workflow = await waitForCtoWorkflowStateBySourceMessageId(cwd, 701, 'slow workflow');
 
@@ -1541,6 +1549,159 @@ test('im telegram listen --cto reports workflow status instead of dispatching a 
   const exitCode = await waitForExit(child);
   assert.equal(exitCode, 0);
   assert.equal(stderr, '');
+});
+
+test('im telegram listen --cto binds colloquial completion follow-ups to the latest waiting workflow', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-colloquial-status-'));
+  const workflowId = 'cto-20260312-012756-0gcurj';
+  const workflowDir = path.join(cwd, '.opencodex', 'sessions', workflowId);
+  const workflowStatePath = path.join(workflowDir, 'artifacts', 'cto-workflow.json');
+  const workflowState = {
+    workflow_session_id: workflowId,
+    provider: 'telegram',
+    chat_id: '123456',
+    source_update_id: 510,
+    source_message_id: 910,
+    sender_display: 'Li Jianqian',
+    goal_text: '把这些输出的文档保存到下载文件夹中',
+    latest_user_message: '把这些输出的文档保存到下载文件夹中',
+    created_at: '2026-03-12T01:27:56.000Z',
+    updated_at: '2026-03-12T01:28:16.000Z',
+    status: 'waiting_for_user',
+    plan_mode: 'execute',
+    plan_summary_zh: '当前导出卡在宿主权限边界。',
+    pending_question_zh: '当前复制到下载目录被当前环境拦住了，需要切到宿主环境继续导出。',
+    task_counter: 1,
+    tasks: [
+      {
+        id: 'export-downloads',
+        title: 'Export documents to Downloads',
+        worker_prompt: 'MOCK_WORKER export-downloads',
+        depends_on: [],
+        status: 'partial',
+        session_id: 'run-export-1',
+        summary_status: 'partial',
+        result: '实际复制被当前只读沙箱拦住了。',
+        next_steps: ['当前复制到下载目录被当前环境拦住了，需要切到宿主环境继续导出。'],
+        changed_files: [],
+        updated_at: '2026-03-12T01:28:16.000Z'
+      }
+    ],
+    user_messages: [
+      {
+        update_id: 510,
+        message_id: 910,
+        text: '把这些输出的文档保存到下载文件夹中',
+        created_at: '2026-03-12T01:27:56.000Z'
+      }
+    ]
+  };
+  const workflowSession = {
+    session_id: workflowId,
+    command: 'cto',
+    status: 'partial',
+    created_at: '2026-03-12T01:27:56.000Z',
+    updated_at: '2026-03-12T01:28:16.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'telegram-cto',
+    input: {
+      prompt: '把这些输出的文档保存到下载文件夹中',
+      arguments: {
+        provider: 'telegram',
+        profile: 'full-access',
+        update_id: 510,
+        chat_id: '123456',
+        sender: 'Li Jianqian'
+      }
+    },
+    summary: {
+      title: 'CTO workflow needs follow-up',
+      result: '当前复制到下载目录被当前环境拦住了，需要切到宿主环境继续导出。',
+      status: 'partial',
+      highlights: [],
+      next_steps: ['当前复制到下载目录被当前环境拦住了，需要切到宿主环境继续导出。']
+    },
+    artifacts: [
+      {
+        type: 'cto_workflow',
+        path: workflowStatePath,
+        description: 'Telegram CTO workflow state and task graph.'
+      }
+    ]
+  };
+
+  await mkdir(path.join(workflowDir, 'artifacts'), { recursive: true });
+  await writeFile(path.join(workflowDir, 'session.json'), `${JSON.stringify(workflowSession, null, 2)}\n`, 'utf8');
+  await writeFile(workflowStatePath, `${JSON.stringify(workflowState, null, 2)}\n`, 'utf8');
+
+  const telegram = await startTelegramMockServer({
+    updates: [
+      {
+        update_id: 511,
+        message: {
+          message_id: 911,
+          date: 1741742900,
+          text: '这个任务完成没有？',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      }
+    ]
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const child = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 911 && /工作流汇报/.test(message.text)), 'colloquial status reply');
+  await waitForCondition(() => stdout.includes('Reported CTO workflow status for update 511'), 'colloquial status log');
+
+  assert.equal(telegram.state.reactions.length, 0);
+  assert.equal(telegram.state.sentMessages.length, 1);
+  assert.match(telegram.state.sentMessages[0].text, /openCodex CTO 工作流汇报/);
+  assert.match(telegram.state.sentMessages[0].text, new RegExp(`Workflow: ${workflowId}`));
+  assert.match(telegram.state.sentMessages[0].text, /waiting_for_user（等待 CEO 确认）/);
+  assert.match(telegram.state.sentMessages[0].text, /待确认：当前复制到下载目录被当前环境拦住了，需要切到宿主环境继续导出。/);
+  assert.doesNotMatch(stdout, /started workflow .* for update 511/);
+  assert.doesNotMatch(stdout, /Continuing CTO workflow .* from update 511/);
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+
+  const sessionIds = await readdir(path.join(cwd, '.opencodex', 'sessions'));
+  assert.equal(sessionIds.length, 2);
 });
 
 test('im telegram listen --cto can report a referenced workflow id without dispatching new tasks', async (t) => {
@@ -2095,7 +2256,7 @@ test('im telegram listen --cto reroutes host-sandbox-blocked work into the host 
 
   await waitForCondition(() => telegram.state.reactions.length >= 1, 'reroute acknowledgement');
   await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 852 && /宿主执行器/.test(message.text)), 'reroute interim reply');
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 852 && /The mock findings summary completed successfully\./.test(message.text)), 'reroute final reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 852 && /已经处理完，结果也整理好了。/.test(message.text)), 'reroute final reply');
 
   const workflow = await waitForCtoWorkflowStateBySourceMessageId(cwd, 852, 'reroute workflow');
 
@@ -2117,6 +2278,97 @@ test('im telegram listen --cto reroutes host-sandbox-blocked work into the host 
   }, 'host executor job files');
   const jobFiles = await readdir(jobsDir);
   assert.equal(jobFiles.length, 2);
+  const jobPayloads = await Promise.all(jobFiles.map((entry) => readFile(path.join(jobsDir, entry), 'utf8').then((content) => JSON.parse(content))));
+  assert.ok(jobPayloads.every((job) => job.status === 'completed'));
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+});
+
+test('im telegram listen --cto reroutes partial sandbox-blocked export tasks into the host executor queue', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-partial-reroute-'));
+  const serviceStateDir = path.join(cwd, '.service-state');
+  const telegram = await startTelegramMockServer({
+    updates: [
+      {
+        update_id: 453,
+        message: {
+          message_id: 853,
+          date: 1741435512,
+          text: '把这些输出的文档保存到下载文件夹中',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      }
+    ]
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const child = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture,
+      OPENCODEX_HOST_EXECUTOR_ENABLED: '1',
+      OPENCODEX_SERVICE_STATE_DIR: serviceStateDir,
+      OPENCODEX_HOST_EXECUTOR_SANDBOX_MODE: 'danger-full-access'
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  await waitForCondition(() => telegram.state.reactions.length >= 1, 'partial reroute acknowledgement');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 853 && /宿主执行器/.test(message.text)), 'partial reroute interim reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 853 && /这轮已经处理完了。/.test(message.text)), 'partial reroute final reply');
+
+  const workflow = await waitForCtoWorkflowStateBySourceMessageId(cwd, 853, 'partial reroute workflow');
+
+  assert.match(stdout, /rerouted work to the host executor/);
+  assert.match(stdout, /Host executor claimed/);
+
+  const workflowState = JSON.parse(await readFile(workflow.workflowPath, 'utf8'));
+  assert.equal(workflowState.status, 'completed');
+  assert.equal(workflowState.tasks.length, 1);
+  assert.equal(workflowState.tasks[0].id, 'export-downloads');
+  assert.equal(workflowState.tasks[0].status, 'completed');
+  assert.match(telegram.state.sentMessages.at(-1).text, /mock-report\.md/);
+
+  const jobsDir = path.join(serviceStateDir, 'host-executor', 'jobs');
+  await waitForCondition(async () => {
+    try {
+      const entries = await readdir(jobsDir);
+      return entries.length >= 1;
+    } catch {
+      return false;
+    }
+  }, 'partial reroute job files');
+  const jobFiles = await readdir(jobsDir);
+  assert.ok(jobFiles.length >= 1);
   const jobPayloads = await Promise.all(jobFiles.map((entry) => readFile(path.join(jobsDir, entry), 'utf8').then((content) => JSON.parse(content))));
   assert.ok(jobPayloads.every((job) => job.status === 'completed'));
 
@@ -2177,7 +2429,7 @@ test('im telegram listen --cto asks for confirmation before execution when plann
     reaction: [{ type: 'emoji', emoji: '👍' }],
     is_big: false
   });
-  assert.match(telegram.state.sentMessages[0].text, /现在还差你确认这一步/);
+  assert.match(telegram.state.sentMessages[0].text, /这轮先停一下，等你拍板/);
   assert.match(telegram.state.sentMessages[0].text, /请确认是否继续修改本地仓库/);
 
   child.kill('SIGTERM');

@@ -1298,7 +1298,7 @@ function isHostExecutorRerouteCandidate(runResult) {
   const summary = runResult?.summary && typeof runResult.summary === 'object'
     ? runResult.summary
     : null;
-  if (!summary || summary.status !== 'failed') {
+  if (!summary || !['failed', 'partial'].includes(String(summary.status || ''))) {
     return false;
   }
 
@@ -1311,7 +1311,26 @@ function isHostExecutorRerouteCandidate(runResult) {
     return true;
   }
 
-  return /更严格的外层沙箱|host sandbox/i.test(String(summary.result || ''));
+  const summaryTexts = [
+    summary.title,
+    summary.result,
+    ...(Array.isArray(summary.highlights) ? summary.highlights : []),
+    ...(Array.isArray(summary.next_steps) ? summary.next_steps : []),
+    ...(Array.isArray(summary.risks) ? summary.risks : []),
+    ...validation,
+    ...(Array.isArray(summary.findings)
+      ? summary.findings.map((item) => (typeof item === 'string'
+        ? item
+        : [item?.title, item?.detail, item?.message].filter(Boolean).join(' ')))
+      : []),
+    runResult?.stderr,
+    runResult?.stdout
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return /更严格的外层沙箱|host sandbox|只读沙箱|read-only sandbox|Operation not permitted|\bEPERM\b|写入被拒绝|无法写入|cannot write|Downloads?\b/i
+    .test(summaryTexts);
 }
 
 function hasReroutedWorkflowTasks(workflowState) {
@@ -2240,6 +2259,7 @@ function buildTelegramCtoDirectReplyFallbackText(pendingWorkflow, replyMode = 'c
 function parseTelegramCtoStatusIntent(text) {
   const value = String(text || '').trim();
   const workflowId = extractReferencedWorkflowId(value);
+  const classifiedIntent = classifyTelegramCtoMessageIntent(value);
   const historyPatterns = [
     /(最近|历史).{0,6}(任务|派发)/i,
     /任务历史/i,
@@ -2269,11 +2289,15 @@ function parseTelegramCtoStatusIntent(text) {
       .replace(/workflow[:：]?/ig, '')
       .trim();
   const isHistoryQuery = historyPatterns.some((pattern) => pattern.test(value));
+  const hasExplicitStatusPattern = statusPatterns.some((pattern) => pattern.test(value));
 
   return {
     workflowId,
     isHistoryQuery,
-    isStatusQuery: bareWorkflowReference || isHistoryQuery || statusPatterns.some((pattern) => pattern.test(value))
+    isStatusQuery: bareWorkflowReference
+      || isHistoryQuery
+      || hasExplicitStatusPattern
+      || classifiedIntent.kind === 'status_query'
   };
 }
 
