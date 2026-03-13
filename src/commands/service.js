@@ -47,6 +47,7 @@ const TELEGRAM_INSTALL_OPTION_SPEC = {
   'cli-path': { type: 'string' },
   'cto-soul-path': { type: 'string' },
   'poll-timeout': { type: 'string' },
+  'supervisor-interval': { type: 'string' },
   profile: { type: 'string' },
   label: { type: 'string' },
   'launch-agent-dir': { type: 'string' },
@@ -398,8 +399,25 @@ async function runTelegramServiceSetSetting(args) {
 
   const service = await loadInstalledService(options);
   const existingConfig = await readExistingServiceConfig(service);
-  const { settingKey, settingValue, settings } = applyServiceSetting(service.settings, options.key, options.value);
-  service.settings = settings;
+  const previousState = await inspectService(service);
+  const runtimeSettingKey = normalizeSettingKey(options.key);
+  let settingKey = '';
+  let settingValue = '';
+  if (runtimeSettingKey === 'supervisor_interval_seconds') {
+    service.supervisorIntervalSeconds = normalizeSupervisorInterval(options.value, service.supervisorIntervalSeconds);
+    settingKey = runtimeSettingKey;
+    settingValue = String(service.supervisorIntervalSeconds);
+    await writeServiceLaunchers(service);
+    if (previousState.supervisor_loaded) {
+      await stopLaunchdUnit(service.cwd, service.supervisorLabel);
+      await startLaunchdUnit(service.cwd, service.supervisorLabel, service.supervisorPlistPath);
+    }
+  } else {
+    const next = applyServiceSetting(service.settings, options.key, options.value);
+    settingKey = next.settingKey;
+    settingValue = next.settingValue;
+    service.settings = next.settings;
+  }
 
   await writeJson(service.configPath, buildServiceConfig(service, {
     ...existingConfig,
@@ -822,6 +840,7 @@ function resolveTelegramServiceSettings(options) {
   const label = typeof options.label === 'string' && options.label.trim() ? options.label.trim() : DEFAULT_LABEL;
   const chatId = normalizeChatId(options['chat-id']);
   const pollTimeout = parseNonNegativeInteger(options['poll-timeout'] || DEFAULT_POLL_TIMEOUT, '--poll-timeout');
+  const supervisorIntervalSeconds = normalizeSupervisorInterval(options['supervisor-interval'], DEFAULT_SUPERVISOR_INTERVAL_SECONDS);
   const requestedProfile = typeof options.profile === 'string' && options.profile.trim() ? options.profile.trim() : DEFAULT_PROFILE;
   const profile = normalizeProfileName(requestedProfile, workspace.cwd);
   const workspaceInfo = describeServiceWorkspace(workspace.cwd);
@@ -848,7 +867,7 @@ function resolveTelegramServiceSettings(options) {
     stderrPath: path.join(stateDir, 'service.stderr.log'),
     supervisorStdoutPath: path.join(stateDir, 'supervisor.stdout.log'),
     supervisorStderrPath: path.join(stateDir, 'supervisor.stderr.log'),
-    supervisorIntervalSeconds: DEFAULT_SUPERVISOR_INTERVAL_SECONDS,
+    supervisorIntervalSeconds,
     menubarAppPath: path.join(applicationsDir, DEFAULT_MENU_BAR_APP_NAME),
     menubarSourcePath: path.join(stateDir, 'OpenCodexTray.applescript'),
     ctoSoulPath: resolveServiceCtoSoulPath(options, stateDir),
@@ -1168,6 +1187,9 @@ function normalizeSettingKey(key) {
   if (value === 'refresh_interval' || value === 'refresh' || value === 'interval') {
     return 'refresh_interval_seconds';
   }
+  if (value === 'supervisor_interval' || value === 'supervisor_tick_interval' || value === 'supervisor_tick_seconds') {
+    return 'supervisor_interval_seconds';
+  }
   if (value === 'workflow_ids' || value === 'show_ids') {
     return 'show_workflow_ids';
   }
@@ -1198,6 +1220,14 @@ function normalizeRefreshInterval(value) {
     return parsed;
   }
   return DEFAULT_SERVICE_SETTINGS.refresh_interval_seconds;
+}
+
+function normalizeSupervisorInterval(value, fallbackValue = DEFAULT_SUPERVISOR_INTERVAL_SECONDS) {
+  const parsed = Number.parseInt(String(value || ''), 10);
+  if ([15, 30, 60, 300].includes(parsed)) {
+    return parsed;
+  }
+  return fallbackValue;
 }
 
 function normalizeBooleanSetting(value, fallback) {
@@ -3011,6 +3041,16 @@ on describeRefreshInterval(statusText)
 	return my localizedText(statusText, "Refresh: every ", "刷新：每 ") & currentValue & my localizedText(statusText, "s", " 秒")
 end describeRefreshInterval
 
+on describeSupervisorInterval(statusText)
+	set currentValue to my lineValue(statusText, "Supervisor Interval: ", "60s")
+	if currentValue ends with "s" then
+		set displayValue to text 1 thru -2 of currentValue
+	else
+		set displayValue to currentValue
+	end if
+	return my localizedText(statusText, "Supervisor Tick: every ", "Supervisor Tick：每 ") & displayValue & my localizedText(statusText, "s", " 秒")
+end describeSupervisorInterval
+
 on describeWorkflowIds(statusText)
 	if my settingEnabled(statusText, "Show Workflow IDs: ", true) then
 		return my localizedText(statusText, "Workflow IDs: On", "工作流 ID：显示")
@@ -3184,7 +3224,7 @@ on statusSectionText(statusText, sectionName)
 		return my joinLines(workflowLines)
 	end if
 	if sectionName is "Settings" then
-		return my joinLines({"Permission Mode: " & my lineValue(statusText, "Permission Mode: ", "unknown"), "Profile: " & my lineValue(statusText, "Profile: ", "unknown"), "UI Language: " & my lineValue(statusText, "UI Language: ", "en"), "Badge Mode: " & my lineValue(statusText, "Badge Mode: ", "tasks"), "Refresh Interval: " & my lineValue(statusText, "Refresh Interval: ", "15"), "Show Workflow IDs: " & my lineValue(statusText, "Show Workflow IDs: ", "on"), "Show Paths: " & my lineValue(statusText, "Show Paths: ", "on")})
+		return my joinLines({"Permission Mode: " & my lineValue(statusText, "Permission Mode: ", "unknown"), "Profile: " & my lineValue(statusText, "Profile: ", "unknown"), "UI Language: " & my lineValue(statusText, "UI Language: ", "en"), "Badge Mode: " & my lineValue(statusText, "Badge Mode: ", "tasks"), "Refresh Interval: " & my lineValue(statusText, "Refresh Interval: ", "15"), "Supervisor Interval: " & my lineValue(statusText, "Supervisor Interval: ", "60s"), "Show Workflow IDs: " & my lineValue(statusText, "Show Workflow IDs: ", "on"), "Show Paths: " & my lineValue(statusText, "Show Paths: ", "on")})
 	end if
 	if sectionName is "Paths" then
 		return my joinLines({"CLI Path: " & my lineValue(statusText, "CLI Path: ", ""), "Node Path: " & my lineValue(statusText, "Node Path: ", ""), "Plist: " & my lineValue(statusText, "Plist: ", ""), "State Dir: " & my lineValue(statusText, "State Dir: ", ""), "Stdout Log: " & my lineValue(statusText, "Stdout Log: ", ""), "Stderr Log: " & my lineValue(statusText, "Stderr Log: ", ""), "Menu Bar Path: " & my lineValue(statusText, "Menu Bar Path: ", "")})
@@ -3203,7 +3243,7 @@ end statusSectionText
 on openSettings_(sender)
 	set statusText to my runStatusCommand(false)
 	repeat
-		set settingChoices to {my describeUiLanguage(statusText), my describeBadgeMode(statusText), my describeRefreshInterval(statusText), my describeWorkflowIds(statusText), my describePaths(statusText)}
+		set settingChoices to {my describeUiLanguage(statusText), my describeBadgeMode(statusText), my describeRefreshInterval(statusText), my describeSupervisorInterval(statusText), my describeWorkflowIds(statusText), my describePaths(statusText)}
 		set picked to choose from list settingChoices with title appTitle with prompt (my localizedText(statusText, "Choose a tray setting to change", "选择要修改的任务栏设置")) OK button name (my localizedText(statusText, "Change", "修改")) cancel button name (my localizedText(statusText, "Close", "关闭"))
 		if picked is false then return
 		set selectedChoice to item 1 of picked
@@ -3214,8 +3254,10 @@ on openSettings_(sender)
 		else if selectedChoice is item 3 of settingChoices then
 			my chooseRefreshInterval(statusText)
 		else if selectedChoice is item 4 of settingChoices then
-			my chooseWorkflowIds(statusText)
+			my chooseSupervisorInterval(statusText)
 		else if selectedChoice is item 5 of settingChoices then
+			my chooseWorkflowIds(statusText)
+		else if selectedChoice is item 6 of settingChoices then
 			my choosePaths(statusText)
 		end if
 		set statusText to my runStatusCommand(false)
@@ -3254,6 +3296,15 @@ on chooseRefreshInterval(statusText)
 	if choiceValue ends with "s" then set choiceValue to text 1 thru -2 of choiceValue
 	my runSettingCommand("refresh_interval_seconds", choiceValue)
 end chooseRefreshInterval
+
+on chooseSupervisorInterval(statusText)
+	set choices to {"15s", "30s", "60s", "300s"}
+	set picked to choose from list choices with title appTitle with prompt (my localizedText(statusText, "Choose the supervisor tick interval", "选择 supervisor tick 间隔")) OK button name (my localizedText(statusText, "Apply", "应用")) cancel button name (my localizedText(statusText, "Back", "返回"))
+	if picked is false then return
+	set choiceValue to item 1 of picked
+	if choiceValue ends with "s" then set choiceValue to text 1 thru -2 of choiceValue
+	my runSettingCommand("supervisor_interval_seconds", choiceValue)
+end chooseSupervisorInterval
 
 on chooseWorkflowIds(statusText)
 	set choices to {my localizedText(statusText, "Show Workflow IDs", "显示工作流 ID"), my localizedText(statusText, "Hide Workflow IDs", "隐藏工作流 ID")}

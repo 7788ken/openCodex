@@ -57,6 +57,7 @@ Install the service from an installed openCodex CLI, or use `--allow-project-cli
 - `--cli-path <path>`; optional explicit openCodex CLI entry for the background service
 - `--cto-soul-path <path>`; optional explicit shared-layer service-local CTO soul path; the chat/workflow layers default to sibling files in the same directory
 - `--poll-timeout <seconds>`
+- `--supervisor-interval <seconds>`; periodic supervisor tick interval; supported values: `15`, `30`, `60`, `300`; default: `60`
 - `--profile <name>`; default: `full-access`
 - `--allow-project-cli`; explicitly allow binding the service to the current project checkout
 - `--install-menubar`
@@ -133,6 +134,7 @@ Supported keys in the first version:
 - `ui_language` → `en` or `zh`
 - `badge_mode` → `tasks`, `workflows`, or `none`
 - `refresh_interval_seconds` → `5`, `15`, `30`, or `60`
+- `supervisor_interval_seconds` → `15`, `30`, `60`, or `300`
 - `show_workflow_ids` → `on` or `off`
 - `show_paths` → `on` or `off`
 

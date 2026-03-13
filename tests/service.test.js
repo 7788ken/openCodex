@@ -50,6 +50,7 @@ test('service telegram install writes launchd files with full-access as the defa
     '--cwd', cwd,
     '--chat-id', '1379564094',
     '--bot-token', 'test-token',
+    '--supervisor-interval', '300',
     '--state-dir', stateDir,
     '--launch-agent-dir', launchAgentDir,
     '--applications-dir', applicationsDir,
@@ -80,7 +81,7 @@ test('service telegram install writes launchd files with full-access as the defa
   assert.equal(config.profile, 'full-access');
   assert.equal(config.permission_mode, 'full-access');
   assert.equal(config.supervisor_label, 'com.opencodex.telegram.cto.supervisor');
-  assert.equal(config.supervisor_interval_seconds, 60);
+  assert.equal(config.supervisor_interval_seconds, 300);
   assert.deepEqual(config.settings, {
     ui_language: 'en',
     badge_mode: 'tasks',
@@ -106,7 +107,7 @@ test('service telegram install writes launchd files with full-access as the defa
   assert.match(wrapper, /--profile 'full-access'/);
   assert.match(plist, /com\.opencodex\.telegram\.cto/);
   assert.match(supervisorPlist, /com\.opencodex\.telegram\.cto\.supervisor/);
-  assert.match(supervisorPlist, /<key>StartInterval<\/key>\s*<integer>60<\/integer>/);
+  assert.match(supervisorPlist, /<key>StartInterval<\/key>\s*<integer>300<\/integer>/);
 });
 
 test('service telegram install defaults to a user workspace outside the repository when --cwd is omitted', async () => {
@@ -1270,6 +1271,15 @@ test('service telegram set-setting persists tray settings and exposes them in st
     OPENCODEX_LAUNCHCTL_BIN: launchctl,
     OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
   });
+  await runCli([
+    'service', 'telegram', 'set-setting',
+    '--state-dir', stateDir,
+    '--key', 'supervisor_interval_seconds',
+    '--value', '300'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
 
   const config = JSON.parse(await readFile(path.join(stateDir, 'service.json'), 'utf8'));
   assert.deepEqual(config.settings, {
@@ -1279,6 +1289,9 @@ test('service telegram set-setting persists tray settings and exposes them in st
     show_workflow_ids: false,
     show_paths: false
   });
+  assert.equal(config.supervisor_interval_seconds, 300);
+  const supervisorPlist = await readFile(path.join(launchAgentDir, 'com.opencodex.telegram.cto.supervisor.plist'), 'utf8');
+  assert.match(supervisorPlist, /<key>StartInterval<\/key>\s*<integer>300<\/integer>/);
 
   const status = await runCli([
     'service', 'telegram', 'status',
@@ -1294,6 +1307,7 @@ test('service telegram set-setting persists tray settings and exposes them in st
   assert.equal(payload.ui_language, 'zh');
   assert.equal(payload.badge_mode, 'workflows');
   assert.equal(payload.refresh_interval_seconds, 30);
+  assert.equal(payload.supervisor_interval_seconds, 300);
   assert.equal(payload.show_workflow_ids, false);
   assert.equal(payload.show_paths, false);
 });
@@ -1623,12 +1637,15 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /UI Language:/);
   assert.match(scriptSource, /Badge Mode:/);
   assert.match(scriptSource, /Refresh Interval:/);
+  assert.match(scriptSource, /Supervisor Interval:/);
   assert.match(scriptSource, /Show Workflow IDs:/);
   assert.match(scriptSource, /Workflow History:/);
   assert.match(scriptSource, /Show Paths:/);
   assert.match(scriptSource, /localizedText/);
   assert.match(scriptSource, /runSettingCommand/);
   assert.match(scriptSource, /service telegram set-setting --key/);
+  assert.match(scriptSource, /chooseSupervisorInterval/);
+  assert.match(scriptSource, /supervisor_interval_seconds/);
   assert.match(scriptSource, /set actionButtons to \{/);
   assert.match(scriptSource, /browseDispatchSections/);
   assert.match(scriptSource, /browseDispatchArtifacts/);

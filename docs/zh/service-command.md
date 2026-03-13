@@ -57,6 +57,7 @@
 - `--cli-path <path>`；可选，显式指定后台服务要绑定的 openCodex CLI 入口
 - `--cto-soul-path <path>`；可选，显式指定共享层 service-local CTO soul 文件路径；chat/workflow 两层会默认放在同目录下
 - `--poll-timeout <seconds>`
+- `--supervisor-interval <seconds>`；周期性 supervisor tick 的间隔；支持值：`15`、`30`、`60`、`300`；默认值：`60`
 - `--profile <name>`；默认值：`full-access`
 - `--allow-project-cli`；显式允许把服务绑定到当前项目 checkout
 - `--install-menubar`
@@ -133,6 +134,7 @@
 - `ui_language` → `en` 或 `zh`
 - `badge_mode` → `tasks`、`workflows` 或 `none`
 - `refresh_interval_seconds` → `5`、`15`、`30` 或 `60`
+- `supervisor_interval_seconds` → `15`、`30`、`60` 或 `300`
 - `show_workflow_ids` → `on` 或 `off`
 - `show_paths` → `on` 或 `off`
 
