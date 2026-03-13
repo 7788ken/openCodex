@@ -33,5 +33,6 @@ That makes the identity boundary blurry.
 - There is now also a one-shot host-supervisor entrypoint outside the polling loop: `im telegram supervise`, with `service telegram supervise` as the installed-service wrapper.
 - The installed Telegram service now provisions a second periodic supervisor agent, so the host-supervisor path is no longer only reachable through the listener process itself.
 - Rehydrated workflow recovery now uses a host-side resume lease, so concurrent listener/supervisor ticks do not both resume the same Telegram CTO workflow.
+- Host-executor queue claims now also use a short host-side lease, so concurrent listener/supervisor workers do not both take the same rerouted job.
 - Child Codex sessions are captured as subordinate planner/reply/worker records under the host workflow instead of defining the supervisor identity themselves.
 - The remaining gap is that the supervisor lifecycle is still assembled from launchd-managed CLI wrappers rather than a single dedicated host runtime with its own state machine and lifecycle management.

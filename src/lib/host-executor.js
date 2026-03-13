@@ -1,9 +1,10 @@
 import path from 'node:path';
-import { readdir } from 'node:fs/promises';
+import { mkdir, readdir, rm } from 'node:fs/promises';
 import { ensureDir, pathExists, readJson, toIsoString, writeJson } from './fs.js';
 
 const HOST_EXECUTOR_DIRNAME = 'host-executor';
 const HOST_EXECUTOR_JOBS_DIRNAME = 'jobs';
+const HOST_EXECUTOR_CLAIM_LEASE_TTL_MS = 90 * 1000;
 const SANDBOX_ENV_KEYS = ['OPENCODEX_HOST_SANDBOX_MODE', 'CODEX_SANDBOX_MODE', 'SANDBOX_MODE'];
 
 export function isHostExecutorEnabled({ env = process.env } = {}) {
@@ -136,22 +137,39 @@ export async function loadHostExecutorJob(jobPath) {
 
 export async function claimNextPendingHostExecutorJob(rootDir) {
   const jobs = await listHostExecutorJobs(rootDir);
-  const nextJob = jobs.find((job) => job?.status === 'pending');
-  if (!nextJob?.record_path) {
-    return null;
+  for (const nextJob of jobs) {
+    if (nextJob?.status !== 'pending' || !nextJob?.record_path) {
+      continue;
+    }
+
+    const claimLease = await tryClaimHostExecutorJob(nextJob.record_path);
+    if (!claimLease) {
+      continue;
+    }
+
+    try {
+      const currentJob = await loadHostExecutorJob(nextJob.record_path);
+      if (!currentJob || currentJob.status !== 'pending') {
+        continue;
+      }
+
+      const claimedJob = {
+        ...currentJob,
+        status: 'running',
+        updated_at: toIsoString(),
+        attempt_count: Number.isInteger(currentJob.attempt_count) ? currentJob.attempt_count + 1 : 1
+      };
+      await writeJson(nextJob.record_path, claimedJob);
+      return {
+        job: claimedJob,
+        jobPath: nextJob.record_path
+      };
+    } finally {
+      await releaseHostExecutorJobClaim(claimLease);
+    }
   }
 
-  const claimedJob = {
-    ...nextJob,
-    status: 'running',
-    updated_at: toIsoString(),
-    attempt_count: Number.isInteger(nextJob.attempt_count) ? nextJob.attempt_count + 1 : 1
-  };
-  await writeJson(nextJob.record_path, claimedJob);
-  return {
-    job: claimedJob,
-    jobPath: nextJob.record_path
-  };
+  return null;
 }
 
 export async function updateHostExecutorJob(jobPath, patch = {}) {
@@ -189,6 +207,59 @@ export function buildHostExecutorEnv(extraEnv = {}, env = process.env) {
   }
 
   return nextEnv;
+}
+
+async function tryClaimHostExecutorJob(jobPath) {
+  const lockDir = `${jobPath}.claim`;
+  const leasePath = path.join(lockDir, 'lease.json');
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await mkdir(lockDir, { recursive: false });
+      const lease = buildHostExecutorClaimLease();
+      await writeJson(leasePath, lease);
+      return { lockDir, leasePath };
+    } catch (error) {
+      if (error?.code !== 'EEXIST') {
+        throw error;
+      }
+
+      let existingLease = null;
+      try {
+        existingLease = await readJson(leasePath);
+      } catch {
+        existingLease = null;
+      }
+
+      if (!isExpiredHostExecutorClaimLease(existingLease)) {
+        return null;
+      }
+
+      await rm(lockDir, { recursive: true, force: true });
+    }
+  }
+
+  return null;
+}
+
+async function releaseHostExecutorJobClaim(claimLease) {
+  if (!claimLease?.lockDir) {
+    return;
+  }
+  await rm(claimLease.lockDir, { recursive: true, force: true });
+}
+
+function buildHostExecutorClaimLease() {
+  const now = Date.now();
+  return {
+    acquired_at: new Date(now).toISOString(),
+    expires_at: new Date(now + HOST_EXECUTOR_CLAIM_LEASE_TTL_MS).toISOString()
+  };
+}
+
+function isExpiredHostExecutorClaimLease(lease) {
+  const expiresAt = Date.parse(String(lease?.expires_at || ''));
+  return !Number.isFinite(expiresAt) || expiresAt <= Date.now();
 }
 
 function createHostExecutorJobId() {
