@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { appendFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseOptions } from '../lib/args.js';
@@ -59,6 +59,8 @@ const DEFAULT_TELEGRAM_SERVICE_SESSION_RETENTION_MINUTES = readNonNegativeIntege
   'OPENCODEX_TELEGRAM_SERVICE_SESSION_RETENTION_MINUTES',
   12 * 60
 );
+const TELEGRAM_WORKFLOW_RESUME_LEASE_TTL_MS = 90 * 1000;
+const TELEGRAM_WORKFLOW_RESUME_LEASE_HEARTBEAT_MS = 30 * 1000;
 const DEFAULT_TELEGRAM_SERVICE_SESSION_KEEP_RECENT_PER_COMMAND = readNonNegativeIntegerEnv(
   'OPENCODEX_TELEGRAM_SERVICE_SESSION_KEEP_RECENT_PER_COMMAND',
   8
@@ -345,6 +347,7 @@ async function runTelegramListen(args) {
           botToken,
           persistListenerSession,
           hostExecutor,
+          supervisorSessionId: session.session_id,
           trackWorkflowPromise
         });
       }
@@ -729,6 +732,7 @@ async function runTelegramSupervise(args) {
       botToken,
       persistListenerSession: persistSupervisorSession,
       hostExecutor,
+      supervisorSessionId: session.session_id,
       trackWorkflowPromise
     });
     await Promise.allSettled([...trackedPromises]);
@@ -3241,6 +3245,7 @@ function resumeRehydratedTelegramCtoWorkflows({
   botToken,
   persistListenerSession,
   hostExecutor,
+  supervisorSessionId,
   trackWorkflowPromise
 }) {
   for (const runtime of workflowRuntimes.values()) {
@@ -3249,9 +3254,9 @@ function resumeRehydratedTelegramCtoWorkflows({
     }
 
     const workflowStatus = String(runtime?.state?.status || '').trim();
-    let resumePromise = null;
+    let resumeFactory = null;
     if (workflowStatus === 'planning') {
-      resumePromise = resumeTelegramPlanningWorkflow({
+      resumeFactory = () => resumeTelegramPlanningWorkflow({
         cwd,
         profile,
         runtime,
@@ -3265,7 +3270,7 @@ function resumeRehydratedTelegramCtoWorkflows({
         workflowRuntimes
       });
     } else if (workflowStatus === 'running' && !hasReroutedWorkflowTasks(runtime.state)) {
-      resumePromise = resumeTelegramRunningWorkflow({
+      resumeFactory = () => resumeTelegramRunningWorkflow({
         cwd,
         profile,
         runtime,
@@ -3280,15 +3285,120 @@ function resumeRehydratedTelegramCtoWorkflows({
       });
     }
 
-    if (!resumePromise) {
+    if (!resumeFactory) {
       continue;
     }
 
-    runtime.resumePromise = resumePromise.finally(() => {
+    runtime.resumePromise = runWithTelegramWorkflowResumeLease({
+      cwd,
+      runtime,
+      ownerSessionId: supervisorSessionId,
+      resumeFactory,
+      logPath
+    }).finally(() => {
       runtime.resumePromise = null;
     });
     trackWorkflowPromise(runtime.resumePromise);
   }
+}
+
+async function runWithTelegramWorkflowResumeLease({
+  cwd,
+  runtime,
+  ownerSessionId,
+  resumeFactory,
+  logPath
+}) {
+  const lease = await claimTelegramWorkflowResumeLease(cwd, runtime, ownerSessionId);
+  if (!lease) {
+    return;
+  }
+
+  try {
+    await resumeFactory();
+  } finally {
+    await releaseTelegramWorkflowResumeLease(lease, logPath);
+  }
+}
+
+async function claimTelegramWorkflowResumeLease(cwd, runtime, ownerSessionId) {
+  const leaseDir = path.join(runtime.sessionDir, 'artifacts', 'supervisor-resume-lock');
+  const leasePath = path.join(leaseDir, 'lease.json');
+  const normalizedOwnerSessionId = typeof ownerSessionId === 'string' && ownerSessionId.trim()
+    ? ownerSessionId.trim()
+    : `process-${process.pid}`;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await mkdir(leaseDir, { recursive: false });
+      const leaseState = buildTelegramWorkflowResumeLeaseState(runtime.session.session_id, normalizedOwnerSessionId);
+      await writeJson(leasePath, leaseState);
+      const heartbeat = setInterval(() => {
+        void writeJson(leasePath, buildTelegramWorkflowResumeLeaseState(runtime.session.session_id, normalizedOwnerSessionId));
+      }, TELEGRAM_WORKFLOW_RESUME_LEASE_HEARTBEAT_MS);
+      heartbeat.unref?.();
+      return {
+        leaseDir,
+        leasePath,
+        ownerSessionId: normalizedOwnerSessionId,
+        workflowSessionId: runtime.session.session_id,
+        heartbeat
+      };
+    } catch (error) {
+      if (error?.code !== 'EEXIST') {
+        throw error;
+      }
+
+      let existingLease = null;
+      try {
+        existingLease = await readJson(leasePath);
+      } catch {
+        existingLease = null;
+      }
+
+      if (!isExpiredTelegramWorkflowResumeLease(existingLease)) {
+        return null;
+      }
+
+      await rm(leaseDir, { recursive: true, force: true });
+    }
+  }
+
+  return null;
+}
+
+async function releaseTelegramWorkflowResumeLease(lease, logPath = '') {
+  clearInterval(lease.heartbeat);
+  let existingLease = null;
+  try {
+    existingLease = await readJson(lease.leasePath);
+  } catch {
+    existingLease = null;
+  }
+
+  if (existingLease?.owner_session_id && existingLease.owner_session_id !== lease.ownerSessionId) {
+    if (logPath) {
+      await appendFile(logPath, `[${toIsoString()}] preserved workflow resume lease for ${lease.workflowSessionId}; ownership moved to ${existingLease.owner_session_id}\n`, 'utf8');
+    }
+    return;
+  }
+
+  await rm(lease.leaseDir, { recursive: true, force: true });
+}
+
+function buildTelegramWorkflowResumeLeaseState(workflowSessionId, ownerSessionId) {
+  const now = Date.now();
+  return {
+    workflow_session_id: workflowSessionId,
+    owner_session_id: ownerSessionId,
+    acquired_at: new Date(now).toISOString(),
+    expires_at: new Date(now + TELEGRAM_WORKFLOW_RESUME_LEASE_TTL_MS).toISOString()
+  };
+}
+
+function isExpiredTelegramWorkflowResumeLease(leaseState) {
+  const expiresAt = Date.parse(String(leaseState?.expires_at || ''));
+  return !Number.isFinite(expiresAt) || expiresAt <= Date.now();
 }
 
 async function resumeTelegramPlanningWorkflow({

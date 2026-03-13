@@ -1984,6 +1984,169 @@ test('im telegram supervise resumes a rehydrated workflow without starting the p
   assert.ok(telegram.state.sentMessages.some((message) => message.reply_to_message_id === 911 && /已经处理完了。/.test(message.text)));
 });
 
+test('im telegram supervise does not duplicate a rehydrated workflow when two supervisor ticks race', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-supervise-race-'));
+  const telegram = await startTelegramMockServer({
+    updates: []
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  await writeSessionFixture(cwd, {
+    session_id: 'run-race-first',
+    command: 'run',
+    status: 'completed',
+    created_at: '2026-03-12T08:30:00.000Z',
+    updated_at: '2026-03-12T08:30:01.000Z',
+    input: {
+      prompt: 'First task',
+      arguments: {
+        profile: 'full-access'
+      }
+    },
+    summary: {
+      title: 'First task completed',
+      result: 'The first task already completed.',
+      status: 'completed',
+      highlights: [],
+      next_steps: [],
+      risks: [],
+      validation: [],
+      changed_files: ['src/mock-first.js'],
+      findings: []
+    }
+  });
+
+  await writeSessionFixture(cwd, {
+    session_id: 'cto-20260312-083000-race',
+    command: 'cto',
+    status: 'running',
+    created_at: '2026-03-12T08:30:00.000Z',
+    updated_at: '2026-03-12T08:30:01.000Z',
+    input: {
+      prompt: 'race chain',
+      arguments: {
+        provider: 'telegram',
+        chat_id: '123456'
+      }
+    },
+    child_sessions: [
+      {
+        session_id: 'run-race-first',
+        label: 'Task first-task · 阿岚',
+        task_id: 'first-task',
+        session_contract: {
+          schema: 'opencodex/session-contract/v1',
+          layer: 'child',
+          thread_kind: 'child_session',
+          role: 'worker',
+          scope: 'telegram_cto',
+          supervisor_session_id: 'cto-20260312-083000-race'
+        }
+      }
+    ],
+    summary: {
+      title: 'CTO workflow running',
+      result: 'Workflow is running with 1 active task(s).',
+      status: 'running',
+      highlights: [],
+      next_steps: []
+    }
+  }, [
+    {
+      name: 'cto-workflow.json',
+      type: 'cto_workflow',
+      description: 'Telegram CTO workflow state and task graph.',
+      json: {
+        workflow_session_id: 'cto-20260312-083000-race',
+        source_message_id: 921,
+        source_update_id: 521,
+        chat_id: '123456',
+        sender_display: 'Li Jianqian',
+        goal_text: 'race chain',
+        status: 'running',
+        pending_question_zh: '',
+        created_at: '2026-03-12T08:30:00.000Z',
+        updated_at: '2026-03-12T08:30:01.000Z',
+        task_counter: 2,
+        user_messages: [
+          {
+            provider: 'telegram',
+            update_id: 521,
+            message_id: 921,
+            created_at: '2026-03-12T08:30:00.000Z',
+            chat_id: '123456',
+            sender_display: 'Li Jianqian',
+            text: 'race chain'
+          }
+        ],
+        tasks: [
+          {
+            id: 'first-task',
+            title: 'First task',
+            worker_prompt: 'MOCK_WORKER fast',
+            depends_on: [],
+            status: 'completed',
+            session_id: 'run-race-first',
+            summary_status: 'completed',
+            result: 'The first task already completed.',
+            next_steps: [],
+            changed_files: ['src/mock-first.js'],
+            updated_at: '2026-03-12T08:30:01.000Z'
+          },
+          {
+            id: 'finish-task',
+            title: 'Finish task',
+            worker_prompt: 'MOCK_WORKER slow-500',
+            depends_on: ['first-task'],
+            status: 'queued',
+            session_id: '',
+            summary_status: '',
+            result: '',
+            next_steps: [],
+            changed_files: [],
+            updated_at: '2026-03-12T08:30:01.000Z'
+          }
+        ]
+      }
+    }
+  ]);
+
+  const sharedEnv = {
+    OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+    OPENCODEX_CODEX_BIN: fixture
+  };
+
+  const [firstResult, secondResult] = await Promise.all([
+    runCli([
+      'im', 'telegram', 'supervise',
+      '--cwd', cwd,
+      '--bot-token', 'test-token',
+      '--profile', 'full-access'
+    ], sharedEnv),
+    runCli([
+      'im', 'telegram', 'supervise',
+      '--cwd', cwd,
+      '--bot-token', 'test-token',
+      '--profile', 'full-access'
+    ], sharedEnv)
+  ]);
+
+  assert.equal(firstResult.code, 0);
+  assert.equal(secondResult.code, 0);
+
+  const completedReplies = telegram.state.sentMessages.filter((message) => message.reply_to_message_id === 921 && /已经处理完了。/.test(message.text));
+  assert.equal(completedReplies.length, 1);
+
+  const workflowRecord = await waitForCtoWorkflowState(cwd, (state) => String(state?.workflow_session_id || '') === 'cto-20260312-083000-race' && state.status === 'completed', 'completed raced workflow');
+  assert.deepEqual(workflowRecord.state.tasks.map((task) => task.status), ['completed', 'completed']);
+
+  const workflowSession = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'sessions', 'cto-20260312-083000-race', 'session.json'), 'utf8'));
+  const resumedChildren = (workflowSession.child_sessions || []).filter((entry) => entry.task_id === 'finish-task');
+  assert.equal(resumedChildren.length, 1);
+});
+
 test('im telegram listen --cto reports workflow status instead of dispatching a new workflow for status questions', async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-status-'));
   const telegram = await startTelegramMockServer({
