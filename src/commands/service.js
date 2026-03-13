@@ -2933,6 +2933,7 @@ end setupMenuBar
 on rebuildMenu(statusText)
 	statusMenu's removeAllItems()
 	my addInfoItem(my localizedText(statusText, "Service", "服务") & ": " & my lineValue(statusText, "State: ", "unknown") & " • " & my detectMode(statusText))
+	my addInfoItem(my localizedText(statusText, "Supervisor", "监督器") & ": " & my lineValue(statusText, "Supervisor State: ", "unknown") & " • " & my lineValue(statusText, "Supervisor Interval: ", "60s"))
 	my addInfoItem(my localizedText(statusText, "Workflows", "工作流") & ": running " & my lineValue(statusText, "Running Workflows: ", "0") & " • waiting " & my lineValue(statusText, "Waiting Workflows: ", "0"))
 	my addInfoItem(my localizedText(statusText, "Tasks", "任务") & ": running " & my lineValue(statusText, "Running Tasks: ", "0") & " • rerouted " & my lineValue(statusText, "Rerouted Tasks: ", "0") & " • queued " & my lineValue(statusText, "Queued Tasks: ", "0"))
 	my addInfoItem(my localizedText(statusText, "History", "历史") & ": " & my localizedText(statusText, "workflow", "工作流") & " " & my lineValue(statusText, "Workflow History: ", "0") & " • " & my localizedText(statusText, "task", "任务") & " " & my lineValue(statusText, "Task History: ", "0"))
@@ -3148,6 +3149,7 @@ on statusOverviewText(statusText)
 	set summaryLines to {}
 	set end of summaryLines to "openCodex CTO"
 	set end of summaryLines to my localizedText(statusText, "Service", "服务") & ": " & my lineValue(statusText, "State: ", "unknown") & " • " & my detectMode(statusText)
+	set end of summaryLines to my localizedText(statusText, "Supervisor", "监督器") & ": " & my lineValue(statusText, "Supervisor State: ", "unknown") & " • " & my lineValue(statusText, "Supervisor Interval: ", "60s")
 	set end of summaryLines to my localizedText(statusText, "Workflows", "工作流") & ": running " & my lineValue(statusText, "Running Workflows: ", "0") & " • waiting " & my lineValue(statusText, "Waiting Workflows: ", "0")
 	set end of summaryLines to my localizedText(statusText, "Tasks", "任务") & ": running " & my lineValue(statusText, "Running Tasks: ", "0") & " • rerouted " & my lineValue(statusText, "Rerouted Tasks: ", "0") & " • queued " & my lineValue(statusText, "Queued Tasks: ", "0")
 	set workflowIdsVisible to my settingEnabled(statusText, "Show Workflow IDs: ", false)

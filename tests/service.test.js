@@ -1607,6 +1607,8 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /Restore the default Codex-CLI-based CTO soul templates/);
   assert.match(scriptSource, /Send Status Reply/);
   assert.match(scriptSource, /Run Supervisor Tick/);
+  assert.match(scriptSource, /Supervisor/);
+  assert.match(scriptSource, /Supervisor Interval:/);
   assert.match(scriptSource, /Running Workflows:/);
   assert.match(scriptSource, /Running Tasks:/);
   assert.match(scriptSource, /Rerouted Tasks:/);
