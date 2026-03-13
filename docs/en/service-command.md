@@ -134,6 +134,7 @@ Supported keys in the first version:
 - `ui_language` → `en` or `zh`
 - `badge_mode` → `tasks`, `workflows`, or `none`
 - `refresh_interval_seconds` → `5`, `15`, `30`, or `60`
+- `supervisor_enabled` → `on` or `off`
 - `supervisor_interval_seconds` → `15`, `30`, `60`, or `300`
 - `show_workflow_ids` → `on` or `off`
 - `show_paths` → `on` or `off`

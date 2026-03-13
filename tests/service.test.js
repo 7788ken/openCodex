@@ -1290,6 +1290,7 @@ test('service telegram set-setting persists tray settings and exposes them in st
     show_paths: false
   });
   assert.equal(config.supervisor_interval_seconds, 300);
+  assert.equal(config.supervisor_enabled, true);
   const supervisorPlist = await readFile(path.join(launchAgentDir, 'com.opencodex.telegram.cto.supervisor.plist'), 'utf8');
   assert.match(supervisorPlist, /<key>StartInterval<\/key>\s*<integer>300<\/integer>/);
 
@@ -1308,8 +1309,89 @@ test('service telegram set-setting persists tray settings and exposes them in st
   assert.equal(payload.badge_mode, 'workflows');
   assert.equal(payload.refresh_interval_seconds, 30);
   assert.equal(payload.supervisor_interval_seconds, 300);
+  assert.equal(payload.supervisor_enabled, true);
   assert.equal(payload.show_workflow_ids, false);
   assert.equal(payload.show_paths, false);
+});
+
+test('service telegram set-setting can disable and re-enable the periodic supervisor agent without stopping the listener', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-supervisor-toggle-'));
+  const cwd = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+  const launchctlState = path.join(root, 'launchctl-state.json');
+  const launchctl = await writeMockLaunchctl(path.join(root, 'mock-launchctl.js'), launchctlState);
+
+  await mkdir(cwd, { recursive: true });
+
+  await runCli([
+    'service', 'telegram', 'install',
+    '--allow-project-cli',
+    '--cwd', cwd,
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  const started = await runCli([
+    'service', 'telegram', 'start',
+    '--state-dir', stateDir,
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+  const startedPayload = JSON.parse(started.stdout);
+  assert.equal(startedPayload.loaded, true);
+  assert.equal(startedPayload.supervisor_loaded, true);
+  assert.equal(startedPayload.supervisor_enabled, true);
+
+  const disabled = await runCli([
+    'service', 'telegram', 'set-setting',
+    '--state-dir', stateDir,
+    '--key', 'supervisor_enabled',
+    '--value', 'off',
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+  assert.equal(disabled.code, 0);
+  const disabledPayload = JSON.parse(disabled.stdout);
+  assert.equal(disabledPayload.loaded, true);
+  assert.equal(disabledPayload.supervisor_enabled, false);
+  assert.equal(disabledPayload.supervisor_loaded, false);
+  assert.equal(disabledPayload.supervisor_state, 'disabled');
+
+  const configAfterDisable = JSON.parse(await readFile(path.join(stateDir, 'service.json'), 'utf8'));
+  assert.equal(configAfterDisable.supervisor_enabled, false);
+
+  const enabled = await runCli([
+    'service', 'telegram', 'set-setting',
+    '--state-dir', stateDir,
+    '--key', 'supervisor_enabled',
+    '--value', 'on',
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+  assert.equal(enabled.code, 0);
+  const enabledPayload = JSON.parse(enabled.stdout);
+  assert.equal(enabledPayload.loaded, true);
+  assert.equal(enabledPayload.supervisor_enabled, true);
+  assert.equal(enabledPayload.supervisor_loaded, true);
+  assert.equal(enabledPayload.supervisor_state, 'running');
+
+  const configAfterEnable = JSON.parse(await readFile(path.join(stateDir, 'service.json'), 'utf8'));
+  assert.equal(configAfterEnable.supervisor_enabled, true);
 });
 
 test('service telegram send-status sends the current workflow snapshot back to Telegram', async () => {
@@ -1639,6 +1721,7 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /UI Language:/);
   assert.match(scriptSource, /Badge Mode:/);
   assert.match(scriptSource, /Refresh Interval:/);
+  assert.match(scriptSource, /Supervisor Enabled:/);
   assert.match(scriptSource, /Supervisor Interval:/);
   assert.match(scriptSource, /Show Workflow IDs:/);
   assert.match(scriptSource, /Workflow History:/);
@@ -1647,6 +1730,8 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /runSettingCommand/);
   assert.match(scriptSource, /service telegram set-setting --key/);
   assert.match(scriptSource, /chooseSupervisorInterval/);
+  assert.match(scriptSource, /chooseSupervisorEnabled/);
+  assert.match(scriptSource, /supervisor_enabled/);
   assert.match(scriptSource, /supervisor_interval_seconds/);
   assert.match(scriptSource, /set actionButtons to \{/);
   assert.match(scriptSource, /browseDispatchSections/);

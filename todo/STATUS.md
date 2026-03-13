@@ -16,6 +16,7 @@
 - Service status/tray surfaces now also track the latest supervisor-tick session separately from the long-lived listener session, and the tray app can trigger `service telegram supervise` directly.
 - The installed Telegram service now provisions and manages a second periodic launchd agent for supervisor ticks, so `start` / `stop` / `restart` no longer control only the listener process.
 - The periodic supervisor agent is now configurable through `--supervisor-interval` at install time and `service telegram set-setting --key supervisor_interval_seconds --value ...`, with the tray settings surface exposing the same control.
+- The installed service can now pause or resume the periodic supervisor agent through `service telegram set-setting --key supervisor_enabled --value on|off`, and the tray settings surface exposes the same toggle.
 - Added shared `session-contract` helpers and wired them through `im`, `auto`, `run`, `review`, `session-store`, child-session capture, and service payloads so host/child role metadata is machine-readable.
 - Service workflow/dispatch history and detail payloads now expose `thread_kind`, `thread_kind_label`, `session_role`, `session_scope`, `session_layer`, `execution_surface`, and `session_contract`.
 - The legacy `session` CLI now also surfaces the same host/child thread metadata in `list`, `show`, `latest`, and `tree` output, including fallback child-session contract hints carried by parent workflow records.

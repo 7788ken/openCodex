@@ -134,6 +134,7 @@
 - `ui_language` → `en` 或 `zh`
 - `badge_mode` → `tasks`、`workflows` 或 `none`
 - `refresh_interval_seconds` → `5`、`15`、`30` 或 `60`
+- `supervisor_enabled` → `on` 或 `off`
 - `supervisor_interval_seconds` → `15`、`30`、`60` 或 `300`
 - `show_workflow_ids` → `on` 或 `off`
 - `show_paths` → `on` 或 `off`

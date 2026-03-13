@@ -311,6 +311,7 @@ async function runTelegramServiceInstall(args) {
     action: 'install',
     installed: true,
     loaded: launchState.loaded,
+    supervisor_enabled: service.supervisorEnabled,
     supervisor_loaded: launchState.supervisor_loaded,
     label: service.label,
     supervisor_label: service.supervisorLabel,
@@ -410,6 +411,16 @@ async function runTelegramServiceSetSetting(args) {
     await writeServiceLaunchers(service);
     if (previousState.supervisor_loaded) {
       await stopLaunchdUnit(service.cwd, service.supervisorLabel);
+      await startLaunchdUnit(service.cwd, service.supervisorLabel, service.supervisorPlistPath);
+    }
+  } else if (runtimeSettingKey === 'supervisor_enabled') {
+    service.supervisorEnabled = normalizeBooleanSetting(options.value, true);
+    settingKey = runtimeSettingKey;
+    settingValue = service.supervisorEnabled ? 'on' : 'off';
+    if (!service.supervisorEnabled && previousState.supervisor_loaded) {
+      await stopLaunchdUnit(service.cwd, service.supervisorLabel);
+    }
+    if (service.supervisorEnabled && previousState.loaded && !previousState.supervisor_loaded) {
       await startLaunchdUnit(service.cwd, service.supervisorLabel, service.supervisorPlistPath);
     }
   } else {
@@ -853,6 +864,7 @@ function resolveTelegramServiceSettings(options) {
     chatId,
     pollTimeout,
     profile,
+    supervisorEnabled: true,
     settings: defaultServiceSettings(),
     stateDir,
     launchAgentDir,
@@ -902,6 +914,7 @@ async function loadInstalledService(options) {
       chatId: config.chat_id || service.chatId,
       pollTimeout: Number.isInteger(config.poll_timeout) ? config.poll_timeout : service.pollTimeout,
       profile: config.profile || config.permission_mode || service.profile,
+      supervisorEnabled: normalizeBooleanSetting(config.supervisor_enabled, true),
       settings: normalizeServiceSettings(config.settings),
       launchAgentDir: config.launch_agent_dir || service.launchAgentDir,
       stateDir: config.state_dir || service.stateDir,
@@ -1091,6 +1104,7 @@ function buildServiceConfig(service, overrides = {}) {
     chat_id: service.chatId,
     poll_timeout: service.pollTimeout,
     profile: service.profile,
+    supervisor_enabled: service.supervisorEnabled,
     permission_mode: service.profile,
     settings: normalizeServiceSettings(service.settings),
     launch_agent_dir: service.launchAgentDir,
@@ -1189,6 +1203,9 @@ function normalizeSettingKey(key) {
   }
   if (value === 'supervisor_interval' || value === 'supervisor_tick_interval' || value === 'supervisor_tick_seconds') {
     return 'supervisor_interval_seconds';
+  }
+  if (value === 'supervisor_enabled' || value === 'supervisor_ticks' || value === 'supervisor_tick' || value === 'supervisor') {
+    return 'supervisor_enabled';
   }
   if (value === 'workflow_ids' || value === 'show_ids') {
     return 'show_workflow_ids';
@@ -1306,9 +1323,12 @@ async function inspectService(service) {
       ok: true,
       installed: false,
       loaded: false,
+      supervisor_enabled: service.supervisorEnabled,
       supervisor_loaded: false,
       state: 'missing',
-      supervisor_state: supervisorInstalled ? 'stopped' : 'missing',
+      supervisor_state: service.supervisorEnabled
+        ? (supervisorInstalled ? 'stopped' : 'missing')
+        : 'disabled',
       pid: null,
       supervisor_pid: null,
       label: service.label,
@@ -1357,9 +1377,12 @@ async function inspectService(service) {
     ok: true,
     installed: true,
     loaded: listenerState.loaded,
+    supervisor_enabled: service.supervisorEnabled,
     supervisor_loaded: supervisorState.loaded,
     state: listenerState.state,
-    supervisor_state: supervisorState.state,
+    supervisor_state: service.supervisorEnabled
+      ? supervisorState.state
+      : (supervisorState.loaded ? supervisorState.state : 'disabled'),
     pid: listenerState.pid,
     supervisor_pid: supervisorState.pid,
     label: service.label,
@@ -1842,14 +1865,14 @@ function normalizeDispatchStatus(status) {
 
 async function startService(service) {
   const current = await inspectService(service);
-  if (current.loaded && current.supervisor_loaded) {
+  if (current.loaded && (current.supervisor_loaded || !service.supervisorEnabled)) {
     return current;
   }
 
   if (!current.loaded) {
     await startLaunchdUnit(service.cwd, service.label, service.plistPath);
   }
-  if (!current.supervisor_loaded) {
+  if (service.supervisorEnabled && !current.supervisor_loaded) {
     await startLaunchdUnit(service.cwd, service.supervisorLabel, service.supervisorPlistPath);
   }
 
@@ -1930,6 +1953,7 @@ function renderServiceOutput(payload, json, title) {
   const lines = [title, ''];
   lines.push(`Installed: ${payload.installed ? 'yes' : 'no'}`);
   lines.push(`Loaded: ${payload.loaded ? 'yes' : 'no'}`);
+  lines.push(`Supervisor Enabled: ${payload.supervisor_enabled === false ? 'no' : 'yes'}`);
   lines.push(`Supervisor Loaded: ${payload.supervisor_loaded ? 'yes' : 'no'}`);
   lines.push(`Label: ${payload.label}`);
   if (payload.supervisor_label) {
@@ -3042,6 +3066,13 @@ on describeRefreshInterval(statusText)
 	return my localizedText(statusText, "Refresh: every ", "刷新：每 ") & currentValue & my localizedText(statusText, "s", " 秒")
 end describeRefreshInterval
 
+on describeSupervisorEnabled(statusText)
+	if my settingEnabled(statusText, "Supervisor Enabled: ", true) then
+		return my localizedText(statusText, "Supervisor Ticks: On", "Supervisor Tick：开启")
+	end if
+	return my localizedText(statusText, "Supervisor Ticks: Off", "Supervisor Tick：关闭")
+end describeSupervisorEnabled
+
 on describeSupervisorInterval(statusText)
 	set currentValue to my lineValue(statusText, "Supervisor Interval: ", "60s")
 	if currentValue ends with "s" then
@@ -3226,7 +3257,7 @@ on statusSectionText(statusText, sectionName)
 		return my joinLines(workflowLines)
 	end if
 	if sectionName is "Settings" then
-		return my joinLines({"Permission Mode: " & my lineValue(statusText, "Permission Mode: ", "unknown"), "Profile: " & my lineValue(statusText, "Profile: ", "unknown"), "UI Language: " & my lineValue(statusText, "UI Language: ", "en"), "Badge Mode: " & my lineValue(statusText, "Badge Mode: ", "tasks"), "Refresh Interval: " & my lineValue(statusText, "Refresh Interval: ", "15"), "Supervisor Interval: " & my lineValue(statusText, "Supervisor Interval: ", "60s"), "Show Workflow IDs: " & my lineValue(statusText, "Show Workflow IDs: ", "on"), "Show Paths: " & my lineValue(statusText, "Show Paths: ", "on")})
+		return my joinLines({"Permission Mode: " & my lineValue(statusText, "Permission Mode: ", "unknown"), "Profile: " & my lineValue(statusText, "Profile: ", "unknown"), "UI Language: " & my lineValue(statusText, "UI Language: ", "en"), "Badge Mode: " & my lineValue(statusText, "Badge Mode: ", "tasks"), "Refresh Interval: " & my lineValue(statusText, "Refresh Interval: ", "15"), "Supervisor Enabled: " & my lineValue(statusText, "Supervisor Enabled: ", "yes"), "Supervisor Interval: " & my lineValue(statusText, "Supervisor Interval: ", "60s"), "Show Workflow IDs: " & my lineValue(statusText, "Show Workflow IDs: ", "on"), "Show Paths: " & my lineValue(statusText, "Show Paths: ", "on")})
 	end if
 	if sectionName is "Paths" then
 		return my joinLines({"CLI Path: " & my lineValue(statusText, "CLI Path: ", ""), "Node Path: " & my lineValue(statusText, "Node Path: ", ""), "Plist: " & my lineValue(statusText, "Plist: ", ""), "State Dir: " & my lineValue(statusText, "State Dir: ", ""), "Stdout Log: " & my lineValue(statusText, "Stdout Log: ", ""), "Stderr Log: " & my lineValue(statusText, "Stderr Log: ", ""), "Menu Bar Path: " & my lineValue(statusText, "Menu Bar Path: ", "")})
@@ -3245,7 +3276,7 @@ end statusSectionText
 on openSettings_(sender)
 	set statusText to my runStatusCommand(false)
 	repeat
-		set settingChoices to {my describeUiLanguage(statusText), my describeBadgeMode(statusText), my describeRefreshInterval(statusText), my describeSupervisorInterval(statusText), my describeWorkflowIds(statusText), my describePaths(statusText)}
+		set settingChoices to {my describeUiLanguage(statusText), my describeBadgeMode(statusText), my describeRefreshInterval(statusText), my describeSupervisorEnabled(statusText), my describeSupervisorInterval(statusText), my describeWorkflowIds(statusText), my describePaths(statusText)}
 		set picked to choose from list settingChoices with title appTitle with prompt (my localizedText(statusText, "Choose a tray setting to change", "选择要修改的任务栏设置")) OK button name (my localizedText(statusText, "Change", "修改")) cancel button name (my localizedText(statusText, "Close", "关闭"))
 		if picked is false then return
 		set selectedChoice to item 1 of picked
@@ -3256,10 +3287,12 @@ on openSettings_(sender)
 		else if selectedChoice is item 3 of settingChoices then
 			my chooseRefreshInterval(statusText)
 		else if selectedChoice is item 4 of settingChoices then
-			my chooseSupervisorInterval(statusText)
+			my chooseSupervisorEnabled(statusText)
 		else if selectedChoice is item 5 of settingChoices then
-			my chooseWorkflowIds(statusText)
+			my chooseSupervisorInterval(statusText)
 		else if selectedChoice is item 6 of settingChoices then
+			my chooseWorkflowIds(statusText)
+		else if selectedChoice is item 7 of settingChoices then
 			my choosePaths(statusText)
 		end if
 		set statusText to my runStatusCommand(false)
@@ -3307,6 +3340,17 @@ on chooseSupervisorInterval(statusText)
 	if choiceValue ends with "s" then set choiceValue to text 1 thru -2 of choiceValue
 	my runSettingCommand("supervisor_interval_seconds", choiceValue)
 end chooseSupervisorInterval
+
+on chooseSupervisorEnabled(statusText)
+	set choices to {my localizedText(statusText, "Enable Supervisor Ticks", "启用 Supervisor Tick"), my localizedText(statusText, "Disable Supervisor Ticks", "停用 Supervisor Tick")}
+	set picked to choose from list choices with title appTitle with prompt (my localizedText(statusText, "Choose whether periodic supervisor ticks stay enabled", "选择是否启用周期性 Supervisor Tick")) OK button name (my localizedText(statusText, "Apply", "应用")) cancel button name (my localizedText(statusText, "Back", "返回"))
+	if picked is false then return
+	if (item 1 of picked) is item 1 of choices then
+		my runSettingCommand("supervisor_enabled", "on")
+	else
+		my runSettingCommand("supervisor_enabled", "off")
+	end if
+end chooseSupervisorEnabled
 
 on chooseWorkflowIds(statusText)
 	set choices to {my localizedText(statusText, "Show Workflow IDs", "显示工作流 ID"), my localizedText(statusText, "Hide Workflow IDs", "隐藏工作流 ID")}
