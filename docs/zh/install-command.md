@@ -92,6 +92,7 @@ OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
 - 如果使用了 `--bundle`，还会带上 bundle provenance
 
 `status` 会报告 detached runtime、CLI shim 和 App 壳是否存在，以及 `current` 当前解析到哪一个 runtime。
+同时还会给出安装槽位生命周期信息，包括槽位总数、当前槽位名，以及默认 `keep=3` 的 prune 预览信号，便于在真正清理前先判断是否有过期槽位。
 如果这套安装来自 bundle，`status` 还会显示 bundle 路径以及 bundle manifest 里记录的原始来源。
 
 `prune` 会报告哪些安装槽位被保留、哪些被清理，并支持 dry-run 预览模式。

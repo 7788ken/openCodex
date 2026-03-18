@@ -235,10 +235,54 @@ test('install status reports the detached runtime and shim', async () => {
   assert.equal(payload.launcher_scope, 'installed_cli');
   assert.equal(payload.install_name, 'status-runtime');
   assert.equal(payload.app_installed, true);
+  assert.equal(payload.slots_total, 1);
+  assert.equal(payload.current_slot_name, 'status-runtime');
+  assert.equal(payload.prune_keep_default, 3);
+  assert.equal(payload.prune_candidate_count_default, 0);
+  assert.deepEqual(payload.prune_candidates_default, []);
+  assert.equal(payload.next_steps.length, 0);
   assert.match(payload.current_target_path, /installs\/status-runtime$/);
   assert.match(payload.current_cli_path, /current\/bin\/opencodex\.js$/);
   assert.match(payload.runtime_cli_path, /status-runtime\/bin\/opencodex\.js$/);
   assert.match(payload.app_source_path, /OpenCodex\.applescript$/);
+});
+
+test('install status previews stale slot prune candidates with default keep count', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-install-status-prune-preview-'));
+  const installRoot = path.join(root, 'OpenCodex');
+  const installsDir = path.join(installRoot, 'installs');
+  const currentPath = path.join(installRoot, 'current');
+
+  const slotA = await createInstallSlot(installsDir, 'slot-a');
+  const slotB = await createInstallSlot(installsDir, 'slot-b');
+  const slotC = await createInstallSlot(installsDir, 'slot-c');
+  const slotD = await createInstallSlot(installsDir, 'slot-d');
+
+  await symlink(path.relative(installRoot, slotB), currentPath);
+
+  await utimes(slotA, new Date('2026-03-08T00:00:01.000Z'), new Date('2026-03-08T00:00:01.000Z'));
+  await utimes(slotB, new Date('2026-03-08T00:00:02.000Z'), new Date('2026-03-08T00:00:02.000Z'));
+  await utimes(slotC, new Date('2026-03-08T00:00:03.000Z'), new Date('2026-03-08T00:00:03.000Z'));
+  await utimes(slotD, new Date('2026-03-08T00:00:04.000Z'), new Date('2026-03-08T00:00:04.000Z'));
+
+  const result = await runCli([
+    'install', 'status',
+    '--root', installRoot,
+    '--json'
+  ]);
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.action, 'status');
+  assert.equal(payload.installed, true);
+  assert.equal(payload.slots_total, 4);
+  assert.equal(payload.current_slot_name, 'slot-b');
+  assert.equal(payload.prune_keep_default, 3);
+  assert.equal(payload.prune_candidate_count_default, 1);
+  assert.deepEqual(payload.prune_candidates_default.map((slot) => slot.name), ['slot-a']);
+  assert.deepEqual(payload.slots_by_recency.map((slot) => slot.name), ['slot-d', 'slot-c', 'slot-b', 'slot-a']);
+  assert.ok(payload.slots_by_recency.some((slot) => slot.name === 'slot-b' && slot.current));
+  assert.match(payload.next_steps[0] || '', /install prune --root '.*OpenCodex' --dry-run/);
 });
 
 test('install prune keeps current runtime and the newest remaining slots', async () => {

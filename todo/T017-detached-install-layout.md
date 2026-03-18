@@ -29,5 +29,6 @@ That breaks the separation between project work and installed product runtime.
 
 - Partially implemented, beyond the earlier “docs + skeleton” stage.
 - The repository now has `install bundle`, `install detached`, `install status`, `install prune`, Telegram service relink support, and a one-command bootstrap installer script.
+- `install status` now also exposes install-slot lifecycle visibility (slot count, current slot, and default prune preview) so runtime cleanup can be planned before `install prune`.
 - The detached runtime, CLI shim, app shell, launcher provenance checks, and repair/relink path are all covered by focused install and service tests.
 - The remaining work is broader product packaging and lifecycle polish, not the core detached-runtime boundary itself.

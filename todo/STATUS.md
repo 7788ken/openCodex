@@ -2,6 +2,14 @@
 
 ## 2026-03-19
 
+- Extended `opencodex install status` with detached-runtime lifecycle preview data:
+  - status payload now includes `slots_total`, `current_slot_name`, and slot ordering by recency
+  - status payload also includes default prune preview fields (`prune_keep_default=3`, candidate count, and candidate slots)
+  - text-mode status now prints current slot, slot count, and default prune candidate summary
+- Added regression coverage for install lifecycle preview reporting in `tests/install.test.js`.
+- Validation passed for the install lifecycle follow-up:
+  - `node --test tests/install.test.js`
+
 - Added a live health probe to `opencodex remote status` for running bridge sessions:
   - status payload now includes `health_probe` with attempted/ok/url/status fields
   - text-mode status now prints probe outcome and adds a direct warning when a running bridge fails health checks

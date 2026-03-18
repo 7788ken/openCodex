@@ -231,19 +231,22 @@ async function runInstallStatus(args) {
   }
 
   const paths = resolveInstallPaths(options);
+  const defaultPruneKeepCount = 3;
   const currentCliPath = path.join(paths.currentPath, 'bin', 'opencodex.js');
   const installed = await pathExists(currentCliPath);
   const shimExists = await pathExists(paths.shimPath);
   const appInstalled = await pathExists(paths.appPath);
+  const slots = await listInstallSlots(paths.installsDir);
   const statePath = path.join(paths.rootDir, INSTALL_STATE_FILE);
   const state = await loadInstallState(statePath);
-  let currentTargetPath = '';
-  if (installed) {
-    try {
-      currentTargetPath = await realpath(paths.currentPath);
-    } catch {
-      currentTargetPath = '';
-    }
+  const currentTargetPath = await resolveCurrentTargetPath(paths.currentPath);
+  const prunePlan = planInstallSlotPrune(slots, currentTargetPath, defaultPruneKeepCount);
+  const staleSlotCount = prunePlan.removedSlots.length;
+  const statusNextSteps = [];
+  if (staleSlotCount > 0) {
+    statusNextSteps.push(
+      `Run \`opencodex install prune${paths.rootDir ? ` --root ${shellQuote(paths.rootDir)}` : ''} --dry-run\` to preview cleanup of ${staleSlotCount} stale install slot${staleSlotCount === 1 ? '' : 's'}.`
+    );
   }
 
   const payload = {
@@ -270,7 +273,21 @@ async function runInstallStatus(args) {
     linked_source: Boolean(state?.linked_source),
     bundle_path: state?.bundle_path || '',
     bundle_source_root: state?.bundle_source_root || '',
-    bundle_source_scope: state?.bundle_source_scope || ''
+    bundle_source_scope: state?.bundle_source_scope || '',
+    slots_total: slots.length,
+    current_slot_name: prunePlan.currentSlot?.name || '',
+    slots_by_recency: prunePlan.slotsByRecency.map((slot) => ({
+      name: slot.name,
+      path: slot.path,
+      current: Boolean(prunePlan.currentSlot && slot.name === prunePlan.currentSlot.name)
+    })),
+    prune_keep_default: defaultPruneKeepCount,
+    prune_candidate_count_default: staleSlotCount,
+    prune_candidates_default: prunePlan.removedSlots.map((slot) => ({
+      name: slot.name,
+      path: slot.path
+    })),
+    next_steps: statusNextSteps
   };
 
   renderInstallOutput(payload, options.json, 'Detached openCodex runtime status');
@@ -288,32 +305,8 @@ async function runInstallPrune(args) {
 
   const slots = await listInstallSlots(paths.installsDir);
   const currentTargetPath = await resolveCurrentTargetPath(paths.currentPath);
-
-  const slotsByRecency = [...slots].sort((left, right) => {
-    if (left.mtime_ms !== right.mtime_ms) {
-      return right.mtime_ms - left.mtime_ms;
-    }
-    return right.name.localeCompare(left.name);
-  });
-
-  const currentSlot = slots.find((slot) => currentTargetPath && slot.real_path === currentTargetPath) || null;
-  const keptSlots = [];
-  if (currentSlot) {
-    keptSlots.push(currentSlot);
-  }
-
-  for (const slot of slotsByRecency) {
-    if (keptSlots.length >= keepCount) {
-      break;
-    }
-    if (currentSlot && slot.name === currentSlot.name) {
-      continue;
-    }
-    keptSlots.push(slot);
-  }
-
-  const keptNameSet = new Set(keptSlots.map((slot) => slot.name));
-  const removedSlots = slotsByRecency.filter((slot) => !keptNameSet.has(slot.name));
+  const prunePlan = planInstallSlotPrune(slots, currentTargetPath, keepCount);
+  const { currentSlot, keptSlots, removedSlots } = prunePlan;
 
   if (!dryRun) {
     for (const slot of removedSlots) {
@@ -403,6 +396,35 @@ async function resolveCurrentTargetPath(currentPath) {
   }
   const resolvedPath = await tryResolveRealPath(currentPath);
   return resolvedPath || '';
+}
+
+function planInstallSlotPrune(slots, currentTargetPath, keepCount) {
+  const slotsByRecency = [...slots].sort((left, right) => {
+    if (left.mtime_ms !== right.mtime_ms) {
+      return right.mtime_ms - left.mtime_ms;
+    }
+    return right.name.localeCompare(left.name);
+  });
+
+  const currentSlot = slots.find((slot) => currentTargetPath && slot.real_path === currentTargetPath) || null;
+  const keptSlots = [];
+  if (currentSlot) {
+    keptSlots.push(currentSlot);
+  }
+
+  for (const slot of slotsByRecency) {
+    if (keptSlots.length >= keepCount) {
+      break;
+    }
+    if (currentSlot && slot.name === currentSlot.name) {
+      continue;
+    }
+    keptSlots.push(slot);
+  }
+
+  const keptNameSet = new Set(keptSlots.map((slot) => slot.name));
+  const removedSlots = slotsByRecency.filter((slot) => !keptNameSet.has(slot.name));
+  return { currentSlot, slotsByRecency, keptSlots, removedSlots };
 }
 
 async function tryResolveRealPath(value) {
@@ -829,6 +851,15 @@ function renderInstallOutput(payload, json, title) {
   }
   if (payload.current_target_path) {
     lines.push(`Current Target: ${payload.current_target_path}`);
+  }
+  if (payload.current_slot_name) {
+    lines.push(`Current Slot: ${payload.current_slot_name}`);
+  }
+  if (typeof payload.slots_total === 'number') {
+    lines.push(`Install Slots: ${payload.slots_total}`);
+  }
+  if (typeof payload.prune_candidate_count_default === 'number') {
+    lines.push(`Prune Candidates (keep ${payload.prune_keep_default || 3}): ${payload.prune_candidate_count_default}`);
   }
   if (payload.runtime_path) {
     lines.push(`Runtime Path: ${payload.runtime_path}`);
