@@ -3315,6 +3315,10 @@ async function runWithTelegramWorkflowResumeLease({
   }
 
   try {
+    const shouldResume = await refreshRehydratedTelegramWorkflowBeforeResume(cwd, runtime);
+    if (!shouldResume) {
+      return;
+    }
     await resumeFactory();
   } finally {
     await releaseTelegramWorkflowResumeLease(lease, logPath);
@@ -3399,6 +3403,52 @@ function buildTelegramWorkflowResumeLeaseState(workflowSessionId, ownerSessionId
 function isExpiredTelegramWorkflowResumeLease(leaseState) {
   const expiresAt = Date.parse(String(leaseState?.expires_at || ''));
   return !Number.isFinite(expiresAt) || expiresAt <= Date.now();
+}
+
+async function refreshRehydratedTelegramWorkflowBeforeResume(cwd, runtime) {
+  if (!runtime?.session?.session_id) {
+    return false;
+  }
+
+  let latestSession = null;
+  try {
+    latestSession = await loadSession(cwd, runtime.session.session_id);
+  } catch {
+    latestSession = null;
+  }
+  if (!latestSession) {
+    return false;
+  }
+
+  const workflowStatePath = resolveSessionArtifactPath(
+    latestSession,
+    'cto_workflow',
+    path.join(getSessionDir(cwd, latestSession.session_id), 'artifacts', 'cto-workflow.json')
+  );
+  let latestWorkflowState = null;
+  try {
+    latestWorkflowState = await readJson(workflowStatePath);
+  } catch {
+    latestWorkflowState = null;
+  }
+
+  if (!shouldRehydrateTelegramWorkflow(latestSession, latestWorkflowState)) {
+    runtime.rehydrated = false;
+    runtime.session = latestSession;
+    if (latestWorkflowState && typeof latestWorkflowState === 'object') {
+      runtime.state = latestWorkflowState;
+      runtime.statePath = workflowStatePath;
+      runtime.rootMessage = buildRehydratedTelegramRootMessage(latestSession, latestWorkflowState);
+    }
+    return false;
+  }
+
+  runtime.session = latestSession;
+  runtime.state = latestWorkflowState;
+  runtime.statePath = workflowStatePath;
+  runtime.rootMessage = buildRehydratedTelegramRootMessage(latestSession, latestWorkflowState);
+  runtime.rehydrated = true;
+  return true;
 }
 
 async function resumeTelegramPlanningWorkflow({

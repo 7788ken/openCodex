@@ -503,6 +503,76 @@ test('service telegram workflow-detail returns workflow execution details for UI
   assert.match(humanDetail.stdout, /Thread: host workflow • role cto_supervisor • source inferred/);
 });
 
+test('service telegram prefers child session contract data over stale parent child-session metadata', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-child-contract-sync-'));
+  const cwd = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+  const launchctlState = path.join(root, 'launchctl-state.json');
+  const launchctl = await writeMockLaunchctl(path.join(root, 'mock-launchctl.js'), launchctlState);
+
+  await mkdir(cwd, { recursive: true });
+  await seedWorkflowSessions(cwd);
+
+  await runCli([
+    'service', 'telegram', 'install',
+    '--allow-project-cli',
+    '--cwd', cwd,
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  const childSessionPath = path.join(cwd, '.opencodex', 'sessions', 'run-task-2', 'session.json');
+  const childSession = JSON.parse(await readFile(childSessionPath, 'utf8'));
+  childSession.session_contract = {
+    schema: 'opencodex/session-contract/v1',
+    layer: 'child',
+    thread_kind: 'child_session',
+    role: 'worker',
+    scope: 'telegram_cto',
+    supervisor_session_id: 'cto-20260309-100500-waiting'
+  };
+  await writeFile(childSessionPath, JSON.stringify(childSession, null, 2) + '\n', 'utf8');
+
+  const status = await runCli([
+    'service', 'telegram', 'status',
+    '--state-dir', stateDir,
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+  assert.equal(status.code, 0);
+  const statusPayload = JSON.parse(status.stdout);
+  const dispatch = statusPayload.recent_dispatches.find((item) => item.task_id === 'prepare-release');
+  assert.ok(dispatch);
+  assert.equal(dispatch.session_contract_source, 'explicit');
+
+  const detail = await runCli([
+    'service', 'telegram', 'workflow-detail',
+    '--state-dir', stateDir,
+    '--index', '1',
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+  assert.equal(detail.code, 0);
+  const detailPayload = JSON.parse(detail.stdout);
+  const task = detailPayload.tasks.find((item) => item.task_id === 'prepare-release');
+  assert.ok(task);
+  assert.equal(task.session_contract_source, 'explicit');
+  assert.equal(task.session_role, 'worker');
+});
+
 test('service telegram dispatch-detail returns task execution details for UI viewing', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-dispatch-detail-'));
   const cwd = path.join(root, 'repo');

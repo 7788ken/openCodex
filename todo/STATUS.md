@@ -36,6 +36,17 @@
 - Extended human-readable outputs to show contract provenance too:
   - `opencodex session list/show/tree` now prints `source <explicit|fallback|inferred>` when available
   - `service telegram workflow-history/workflow-detail/dispatch-detail` now show the same source marker in text mode
+- Service history/detail aggregation now also hydrates child-session contract snapshots from child `session.json` records:
+  - when parent `child_sessions` metadata is stale/missing, dispatch/workflow payloads can still surface explicit child contract metadata from the child session itself
+  - this reduces avoidable `fallback` labels in `service telegram status` and `workflow-detail` when explicit child contracts already exist on disk
+- Added regression coverage for stale-parent vs child-session contract reconciliation in `tests/service.test.js`.
+- Hardened rehydrated supervisor resume lease handling:
+  - after acquiring the resume lease, supervisor ticks now re-read the latest workflow/session artifacts and re-check rehydration eligibility before resuming
+  - this prevents stale in-memory runtime state from re-running an already-finished rehydrated workflow during sequential supervisor races
+- Validation for contract-hydration + resume-race hardening:
+  - `node --test tests/service.test.js` (passed)
+  - `node --test tests/im.test.js --test-name-pattern "does not duplicate a rehydrated workflow when two supervisor ticks race$"` (passed)
+  - `npm test` (full suite, `179/179`)
 - Validation passed for the source-visibility follow-up:
   - `node --test tests/session-cli.test.js tests/service.test.js`
   - `npm test` (full suite, `178/178`)

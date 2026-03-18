@@ -20,7 +20,7 @@ import {
   resolveCtoSubagentSoulPath,
   resolveCtoSoulVariantPath
 } from '../lib/cto-workflow.js';
-import { formatSessionThreadKindLabel, resolveSessionContract } from '../lib/session-contract.js';
+import { buildSessionContractSnapshot, formatSessionThreadKindLabel, resolveSessionContract } from '../lib/session-contract.js';
 import { getSessionDir, listSessions } from '../lib/session-store.js';
 
 const CLI_PATH = fileURLToPath(new URL('../../bin/opencodex.js', import.meta.url));
@@ -1427,10 +1427,41 @@ async function inspectService(service) {
 }
 
 async function loadWorkflowInfos(cwd, sessions, limit = 24) {
-  return Promise.all((sessions || []).slice(0, limit).map(async (session) => ({
-    session,
-    ...(await resolveWorkflowStateInfo(cwd, session))
-  })));
+  return Promise.all((sessions || []).slice(0, limit).map(async (session) => {
+    const workflowInfo = await resolveWorkflowStateInfo(cwd, session);
+    const childSessionsById = await loadWorkflowChildSessions(cwd, session, workflowInfo.workflowState);
+    return {
+      session,
+      ...workflowInfo,
+      childSessionsById
+    };
+  }));
+}
+
+async function loadWorkflowChildSessions(cwd, session, workflowState) {
+  const childSessionIds = new Set(
+    normalizeChildSessionRefs(session?.child_sessions)
+      .map((entry) => entry.session_id)
+      .filter(Boolean)
+  );
+
+  for (const task of Array.isArray(workflowState?.tasks) ? workflowState.tasks : []) {
+    if (typeof task?.session_id === 'string' && task.session_id) {
+      childSessionIds.add(task.session_id);
+    }
+  }
+
+  const childSessions = await Promise.all(Array.from(childSessionIds).map(async (sessionId) => {
+    try {
+      return await loadJsonIfExists(path.join(getSessionDir(cwd, sessionId), 'session.json'));
+    } catch {
+      return null;
+    }
+  }));
+
+  return new Map(childSessions
+    .filter((childSession) => typeof childSession?.session_id === 'string' && childSession.session_id)
+    .map((childSession) => [childSession.session_id, childSession]));
 }
 
 async function collectDispatchHistory(cwd, options = {}) {
@@ -1818,6 +1849,7 @@ function buildDispatchRecordsFromWorkflowInfo(cwd, workflowInfo) {
   }
 
   const childSessionByTaskId = buildWorkflowChildSessionMap(session);
+  const childSessionsById = workflowInfo?.childSessionsById instanceof Map ? workflowInfo.childSessionsById : new Map();
   return workflowState.tasks
     .filter((task) => isDispatchRecord(task))
     .map((task) => {
@@ -1828,7 +1860,12 @@ function buildDispatchRecordsFromWorkflowInfo(cwd, workflowInfo) {
       const taskId = typeof task?.id === 'string' ? task.id : '';
       const title = typeof task?.title === 'string' ? task.title : '';
       const rerouteRecordPath = typeof task?.reroute_record_path === 'string' ? task.reroute_record_path : '';
-      const presentation = buildDispatchPresentation({ task, childEntry: childSessionByTaskId.get(taskId) });
+      const childSession = sessionId ? childSessionsById.get(sessionId) : null;
+      const childEntry = buildDispatchChildEntry({
+        childEntry: childSessionByTaskId.get(taskId),
+        childSession
+      });
+      const presentation = buildDispatchPresentation({ task, childEntry });
       return {
         workflow_session_id: session.session_id,
         task_id: taskId,
@@ -2179,6 +2216,7 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
   const taskCounts = summarizeWorkflowTaskCounts(workflowState);
   const presentation = buildSessionPresentation(workflowSession);
   const childSessionByTaskId = buildWorkflowChildSessionMap(workflowSession);
+  const childSessionsById = await loadWorkflowChildSessions(cwd, workflowSession, workflowState);
   const tasks = Array.isArray(workflowState?.tasks)
     ? workflowState.tasks.map((task) => {
         const sessionId = typeof task?.session_id === 'string' ? task.session_id : '';
@@ -2187,7 +2225,12 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
         const title = typeof task?.title === 'string' && task.title ? task.title : (taskId || 'Untitled task');
         const status = getWorkflowTaskDisplayStatus(task);
         const rerouteRecordPath = typeof task?.reroute_record_path === 'string' ? task.reroute_record_path : '';
-        const taskPresentation = buildDispatchPresentation({ task, childEntry: childSessionByTaskId.get(taskId) });
+        const childSession = sessionId ? childSessionsById.get(sessionId) : null;
+        const childEntry = buildDispatchChildEntry({
+          childEntry: childSessionByTaskId.get(taskId),
+          childSession
+        });
+        const taskPresentation = buildDispatchPresentation({ task, childEntry });
         return {
           task_id: taskId,
           title,
@@ -2568,6 +2611,20 @@ function renderDispatchDetailOutput(payload, json, title) {
   }
 
   process.stdout.write(lines.join('\n') + '\n');
+}
+
+function buildDispatchChildEntry({ childEntry = null, childSession = null }) {
+  const sessionContract = childEntry?.session_contract
+    || buildSessionContractSnapshot(childSession)
+    || null;
+  if (!childEntry && !sessionContract) {
+    return null;
+  }
+
+  return {
+    ...(childEntry && typeof childEntry === 'object' ? childEntry : {}),
+    session_contract: sessionContract
+  };
 }
 
 function formatSessionContractSourceSuffix(source) {

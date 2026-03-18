@@ -100,7 +100,7 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 - `T010` — remote mobile bridge MVP implemented
 - `T011` — Telegram IM connector MVP implemented
 - `T012` — Telegram CTO delegation loop implemented as a transitional bridge
-- `T013` — mostly implemented in the Telegram CTO runtime; periodic supervisor ticks now exist alongside the listener, and the remaining gap is a single always-on standalone host supervisor runtime
+- `T013` — mostly implemented in the Telegram CTO runtime; periodic supervisor ticks and resume-race hardening now exist alongside the listener, and the remaining gap is a single always-on standalone host supervisor runtime
 - `T014` — mostly implemented with shared child-session contract metadata and source visibility (`session_contract_source`) across session/service surfaces; remaining legacy/fallback producers still need cleanup
 - `T015` — mostly implemented in session/service/tray workflow and dispatch views; legacy records now surface inferred/fallback origin explicitly, but full historical backfill is still pending
 - `T016` — mostly implemented in the Telegram CTO chat/exploration path

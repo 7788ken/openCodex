@@ -34,4 +34,5 @@ Without that contract, prompts, status semantics, and adoption rules will stay a
 - Auto repair now also backfills legacy child session contracts when historical records are missing explicit metadata, using command-aware fallback roles (`executor` for `run`, `reviewer` for `review`) under the auto supervisor scope.
 - CTO repair fallback now also infers planner/reply/worker/reviewer child roles from command, label, and task context when explicit child contracts are missing.
 - Session and service payloads now expose `session_contract_source` (`explicit` / `fallback` / `inferred` / `none`) so legacy inferred metadata is visible instead of silently looking explicit.
+- Service workflow/dispatch surfaces now also reconcile child-session contract snapshots from child `session.json` records, so stale parent `child_sessions` metadata no longer forces avoidable fallback contracts.
 - The remaining gap is historical consistency: legacy records and a few fallback paths still rely on inferred metadata instead of every producer persisting the full contract end to end.
