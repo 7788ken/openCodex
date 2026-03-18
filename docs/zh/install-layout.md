@@ -71,6 +71,7 @@ openCodex 可以同时以两种形态存在：
 3. 让 App 壳和 CLI shim 持续指向 `current`。
 4. 仅在必要时刷新或重启长期服务。
 5. 不触碰开发仓库。
+6. 可选执行 `opencodex install prune --keep <n>` 清理过期 runtime 槽位。
 
 这样可以让 App、CLI 和 service 始终共享同一版本 runtime，而不需要每次升级都完整卸载重装。
 

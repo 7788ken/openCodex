@@ -106,5 +106,5 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 - `T016` — mostly implemented in the Telegram CTO chat/exploration path
 - `T018` — implemented
 - `T019` — implemented
-- `T017` — detached install boundary, bundle/install/status flow, and bootstrap installer implemented; broader packaging polish still pending
+- `T017` — detached install boundary plus bundle/install/status/prune flow implemented; broader packaging polish still pending
 - `T020` — partially implemented: boundary docs are in place and `remote status` now provides deployment checks plus troubleshooting hints; broader control-plane follow-through remains

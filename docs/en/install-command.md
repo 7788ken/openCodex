@@ -11,6 +11,7 @@ The first version supports:
 - `opencodex install bundle`
 - `opencodex install detached`
 - `opencodex install status`
+- `opencodex install prune`
 
 `bundle` creates a portable runtime artifact that can be handed off outside the current checkout.
 `detached` installs a versioned runtime tree, rewrites a `current` pointer, creates a user CLI shim, and compiles a thin `OpenCodex.app` shell that points at the same `current` runtime.
@@ -63,6 +64,13 @@ OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
 - `--applications-dir <dir>`
 - `--json`
 
+### `prune`
+
+- `--root <dir>`
+- `--keep <n>`; keep at most `n` install slots (always preserving the current target when present), default `3`
+- `--dry-run`; report candidates without deleting
+- `--json`
+
 ## Output
 
 `bundle` reports:
@@ -85,6 +93,8 @@ OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
 
 `status` reports whether the detached runtime, CLI shim, and app shell are present, and which runtime `current` resolves to.
 If the install was created from a bundle, `status` also reports the bundle path plus the original source provenance captured in the bundle manifest.
+
+`prune` reports which install slots were kept or removed, and supports a dry-run mode for previewing cleanup before applying it.
 
 ## Preferred Flow
 

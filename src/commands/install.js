@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chmod, cp, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { parseOptions } from '../lib/args.js';
 import { runCommandCapture } from '../lib/codex.js';
 import { describeOpenCodexLauncher } from '../lib/launcher.js';
@@ -40,6 +40,13 @@ const STATUS_OPTION_SPEC = {
   json: { type: 'boolean' }
 };
 
+const PRUNE_OPTION_SPEC = {
+  root: { type: 'string' },
+  keep: { type: 'string' },
+  'dry-run': { type: 'boolean' },
+  json: { type: 'boolean' }
+};
+
 export async function runInstallCommand(args) {
   const [subcommand, ...rest] = args;
 
@@ -48,7 +55,8 @@ export async function runInstallCommand(args) {
       'Usage:\n' +
       '  opencodex install bundle [--output <path>] [--force] [--json]\n' +
       '  opencodex install detached [--root <dir>] [--bin-dir <dir>] [--applications-dir <dir>] [--bundle <path>] [--name <id>] [--link-source] [--force] [--json]\n' +
-      '  opencodex install status [--root <dir>] [--bin-dir <dir>] [--applications-dir <dir>] [--json]\n'
+      '  opencodex install status [--root <dir>] [--bin-dir <dir>] [--applications-dir <dir>] [--json]\n' +
+      '  opencodex install prune [--root <dir>] [--keep <n>] [--dry-run] [--json]\n'
     );
     return;
   }
@@ -65,6 +73,11 @@ export async function runInstallCommand(args) {
 
   if (subcommand === 'status') {
     await runInstallStatus(rest);
+    return;
+  }
+
+  if (subcommand === 'prune') {
+    await runInstallPrune(rest);
     return;
   }
 
@@ -263,6 +276,79 @@ async function runInstallStatus(args) {
   renderInstallOutput(payload, options.json, 'Detached openCodex runtime status');
 }
 
+async function runInstallPrune(args) {
+  const { options, positionals } = parseOptions(args, PRUNE_OPTION_SPEC);
+  if (positionals.length) {
+    throw new Error('`opencodex install prune` does not accept positional arguments');
+  }
+
+  const paths = resolveInstallPaths(options);
+  const keepCount = parseKeepCount(options.keep || '3');
+  const dryRun = Boolean(options['dry-run']);
+
+  const slots = await listInstallSlots(paths.installsDir);
+  const currentTargetPath = await resolveCurrentTargetPath(paths.currentPath);
+
+  const slotsByRecency = [...slots].sort((left, right) => {
+    if (left.mtime_ms !== right.mtime_ms) {
+      return right.mtime_ms - left.mtime_ms;
+    }
+    return right.name.localeCompare(left.name);
+  });
+
+  const currentSlot = slots.find((slot) => currentTargetPath && slot.real_path === currentTargetPath) || null;
+  const keptSlots = [];
+  if (currentSlot) {
+    keptSlots.push(currentSlot);
+  }
+
+  for (const slot of slotsByRecency) {
+    if (keptSlots.length >= keepCount) {
+      break;
+    }
+    if (currentSlot && slot.name === currentSlot.name) {
+      continue;
+    }
+    keptSlots.push(slot);
+  }
+
+  const keptNameSet = new Set(keptSlots.map((slot) => slot.name));
+  const removedSlots = slotsByRecency.filter((slot) => !keptNameSet.has(slot.name));
+
+  if (!dryRun) {
+    for (const slot of removedSlots) {
+      await rm(slot.path, { recursive: true, force: true });
+    }
+  }
+
+  const payload = {
+    ok: true,
+    action: 'prune',
+    root_dir: paths.rootDir,
+    installs_dir: paths.installsDir,
+    current_target_path: currentTargetPath,
+    keep: keepCount,
+    dry_run: dryRun,
+    slots_total: slots.length,
+    kept_count: keptSlots.length,
+    removed_count: removedSlots.length,
+    slots_kept: keptSlots.map((slot) => ({
+      name: slot.name,
+      path: slot.path,
+      current: Boolean(currentSlot && slot.name === currentSlot.name)
+    })),
+    slots_removed: removedSlots.map((slot) => ({
+      name: slot.name,
+      path: slot.path
+    })),
+    next_steps: dryRun
+      ? ['Run the same command without `--dry-run` to apply this cleanup.']
+      : ['Use `opencodex install status` to confirm the detached runtime pointer after cleanup.']
+  };
+
+  renderInstallPruneOutput(payload, options.json);
+}
+
 function resolveInstallPaths(options = {}) {
   const homeDir = os.homedir();
   const rootDir = path.resolve(options.root || path.join(homeDir, 'Library', 'Application Support', 'OpenCodex'));
@@ -280,6 +366,59 @@ function resolveInstallPaths(options = {}) {
     trayAppPath: path.join(applicationsDir, DEFAULT_TRAY_APP_NAME),
     sessionsPath: path.join(homeDir, '.opencodex', 'sessions')
   };
+}
+
+async function listInstallSlots(installsDir) {
+  if (!(await pathExists(installsDir))) {
+    return [];
+  }
+
+  const entries = await readdir(installsDir, { withFileTypes: true });
+  const slots = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) {
+      continue;
+    }
+    const slotPath = path.join(installsDir, entry.name);
+    let slotStat = null;
+    try {
+      slotStat = await stat(slotPath);
+    } catch {
+      continue;
+    }
+    const realPath = await tryResolveRealPath(slotPath);
+    slots.push({
+      name: entry.name,
+      path: slotPath,
+      real_path: realPath || slotPath,
+      mtime_ms: Number(slotStat.mtimeMs || 0)
+    });
+  }
+  return slots;
+}
+
+async function resolveCurrentTargetPath(currentPath) {
+  if (!(await pathExists(currentPath))) {
+    return '';
+  }
+  const resolvedPath = await tryResolveRealPath(currentPath);
+  return resolvedPath || '';
+}
+
+async function tryResolveRealPath(value) {
+  try {
+    return await realpath(value);
+  } catch {
+    return '';
+  }
+}
+
+function parseKeepCount(value) {
+  const parsed = Number.parseInt(String(value || ''), 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error('`--keep` must be a positive integer');
+  }
+  return parsed;
 }
 
 async function resolveInstallSource(options = {}) {
@@ -728,6 +867,47 @@ function renderInstallOutput(payload, json, title) {
     lines.push(`Launcher Scope: ${payload.launcher_scope}`);
   }
   if (Array.isArray(payload.next_steps) && payload.next_steps.length) {
+    lines.push('Next Steps:');
+    for (const step of payload.next_steps) {
+      lines.push(`- ${step}`);
+    }
+  }
+
+  process.stdout.write(lines.join('\n') + '\n');
+}
+
+function renderInstallPruneOutput(payload, json) {
+  if (json) {
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+
+  const lines = ['Detached runtime prune', ''];
+  lines.push(`Root Dir: ${payload.root_dir}`);
+  lines.push(`Installs Dir: ${payload.installs_dir}`);
+  lines.push(`Keep: ${payload.keep}`);
+  lines.push(`Dry Run: ${payload.dry_run ? 'yes' : 'no'}`);
+  lines.push(`Slots Total: ${payload.slots_total}`);
+  lines.push(`Kept: ${payload.kept_count}`);
+  lines.push(`Removed: ${payload.removed_count}`);
+  if (payload.current_target_path) {
+    lines.push(`Current Target: ${payload.current_target_path}`);
+  }
+
+  lines.push('');
+  lines.push('Kept Slots:');
+  for (const slot of payload.slots_kept || []) {
+    lines.push(`- ${slot.name}${slot.current ? ' (current)' : ''}`);
+  }
+
+  lines.push('');
+  lines.push(payload.dry_run ? 'Would Remove:' : 'Removed Slots:');
+  for (const slot of payload.slots_removed || []) {
+    lines.push(`- ${slot.name}`);
+  }
+
+  if (Array.isArray(payload.next_steps) && payload.next_steps.length) {
+    lines.push('');
     lines.push('Next Steps:');
     for (const step of payload.next_steps) {
       lines.push(`- ${step}`);

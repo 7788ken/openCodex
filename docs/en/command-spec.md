@@ -178,18 +178,22 @@ Create and inspect a detached local runtime so the installed CLI and long-lived 
 - create a CLI shim for shell usage
 - compile a thin `OpenCodex.app` shell that launches the same detached runtime
 - report the runtime CLI path that `service relink` should use
+- prune stale install slots while preserving the active runtime target
 
 **Minimal flags**
 
 - `bundle`
 - `detached`
 - `status`
+- `prune`
 - `--output <path>`
 - `--root <dir>`
 - `--bin-dir <dir>`
 - `--applications-dir <dir>`
 - `--bundle <path>`
 - `--name <id>`
+- `--keep <n>`
+- `--dry-run`
 - `--link-source`
 - `--force`
 - `--json`

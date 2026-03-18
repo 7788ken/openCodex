@@ -19,6 +19,15 @@
 - Validation passed for contract-backfill follow-up:
   - `node --test tests/session-repair.test.js tests/session-cli.test.js`
   - `npm test` (full suite, `175/175`)
+- Added `opencodex install prune` as a detached-runtime lifecycle cleanup command:
+  - supports `--keep <n>` retention
+  - supports `--dry-run` preview
+  - always preserves the active `current` install target when present
+- Added install lifecycle tests for prune apply/dry-run paths in `tests/install.test.js`.
+- Updated install docs, install-layout docs, and command-spec docs in English and Chinese to include the `prune` surface.
+- Validation passed for install lifecycle follow-up:
+  - `node --test tests/install.test.js`
+  - `npm test` (full suite)
 
 ## 2026-03-12
 

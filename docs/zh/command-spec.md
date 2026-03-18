@@ -178,18 +178,22 @@ openCodex 是架在 Codex CLI 之上的轻量 CLI 层。
 - 创建给 shell 使用的 CLI shim
 - 编译一个启动同一 detached runtime 的轻量 `OpenCodex.app` 宿主壳
 - 输出供 `service relink` 使用的 runtime CLI 路径
+- 清理过期安装槽位，同时保留当前活动 runtime
 
 **Minimal flags**
 
 - `bundle`
 - `detached`
 - `status`
+- `prune`
 - `--output <path>`
 - `--root <dir>`
 - `--bin-dir <dir>`
 - `--applications-dir <dir>`
 - `--bundle <path>`
 - `--name <id>`
+- `--keep <n>`
+- `--dry-run`
 - `--link-source`
 - `--force`
 - `--json`

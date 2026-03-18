@@ -71,6 +71,7 @@ Runtime upgrade after installation:
 3. Keep the app shell and CLI shim pointing at `current`.
 4. Restart or refresh long-lived services only when needed.
 5. Leave the development checkout untouched.
+6. Optionally run `opencodex install prune --keep <n>` to clean stale runtime slots.
 
 This model keeps the app, CLI, and services on one versioned runtime without forcing a full uninstall on every upgrade.
 

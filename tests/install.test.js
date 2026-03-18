@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { access, lstat, mkdtemp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdtemp, mkdir, readFile, realpath, symlink, utimes, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 
 const cli = path.resolve('bin/opencodex.js');
@@ -241,6 +241,87 @@ test('install status reports the detached runtime and shim', async () => {
   assert.match(payload.app_source_path, /OpenCodex\.applescript$/);
 });
 
+test('install prune keeps current runtime and the newest remaining slots', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-install-prune-'));
+  const installRoot = path.join(root, 'OpenCodex');
+  const installsDir = path.join(installRoot, 'installs');
+  const currentPath = path.join(installRoot, 'current');
+
+  const slotA = await createInstallSlot(installsDir, 'slot-a');
+  const slotB = await createInstallSlot(installsDir, 'slot-b');
+  const slotC = await createInstallSlot(installsDir, 'slot-c');
+  const slotD = await createInstallSlot(installsDir, 'slot-d');
+
+  await symlink(path.relative(installRoot, slotB), currentPath);
+
+  await utimes(slotA, new Date('2026-03-08T00:00:01.000Z'), new Date('2026-03-08T00:00:01.000Z'));
+  await utimes(slotB, new Date('2026-03-08T00:00:02.000Z'), new Date('2026-03-08T00:00:02.000Z'));
+  await utimes(slotC, new Date('2026-03-08T00:00:03.000Z'), new Date('2026-03-08T00:00:03.000Z'));
+  await utimes(slotD, new Date('2026-03-08T00:00:04.000Z'), new Date('2026-03-08T00:00:04.000Z'));
+
+  const result = await runCli([
+    'install', 'prune',
+    '--root', installRoot,
+    '--keep', '2',
+    '--json'
+  ]);
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.action, 'prune');
+  assert.equal(payload.keep, 2);
+  assert.equal(payload.dry_run, false);
+  assert.equal(payload.slots_total, 4);
+  assert.equal(payload.kept_count, 2);
+  assert.equal(payload.removed_count, 2);
+  assert.deepEqual(payload.slots_kept.map((slot) => slot.name).sort(), ['slot-b', 'slot-d']);
+  assert.ok(payload.slots_kept.some((slot) => slot.name === 'slot-b' && slot.current));
+  assert.deepEqual(payload.slots_removed.map((slot) => slot.name).sort(), ['slot-a', 'slot-c']);
+
+  await access(slotB);
+  await access(slotD);
+  await assert.rejects(access(slotA));
+  await assert.rejects(access(slotC));
+});
+
+test('install prune dry-run reports candidates without deleting runtimes', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-install-prune-dry-run-'));
+  const installRoot = path.join(root, 'OpenCodex');
+  const installsDir = path.join(installRoot, 'installs');
+  const currentPath = path.join(installRoot, 'current');
+
+  const slotA = await createInstallSlot(installsDir, 'slot-a');
+  const slotB = await createInstallSlot(installsDir, 'slot-b');
+  const slotC = await createInstallSlot(installsDir, 'slot-c');
+
+  await symlink(path.relative(installRoot, slotB), currentPath);
+
+  await utimes(slotA, new Date('2026-03-08T00:00:01.000Z'), new Date('2026-03-08T00:00:01.000Z'));
+  await utimes(slotB, new Date('2026-03-08T00:00:02.000Z'), new Date('2026-03-08T00:00:02.000Z'));
+  await utimes(slotC, new Date('2026-03-08T00:00:03.000Z'), new Date('2026-03-08T00:00:03.000Z'));
+
+  const result = await runCli([
+    'install', 'prune',
+    '--root', installRoot,
+    '--keep', '1',
+    '--dry-run',
+    '--json'
+  ]);
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.action, 'prune');
+  assert.equal(payload.dry_run, true);
+  assert.equal(payload.keep, 1);
+  assert.equal(payload.removed_count, 2);
+  assert.deepEqual(payload.slots_kept.map((slot) => slot.name), ['slot-b']);
+  assert.deepEqual(payload.slots_removed.map((slot) => slot.name).sort(), ['slot-a', 'slot-c']);
+
+  await access(slotA);
+  await access(slotB);
+  await access(slotC);
+});
+
 test('bootstrap install script installs a detached runtime from an existing checkout', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-bootstrap-script-'));
   const homeDir = path.join(root, 'home');
@@ -368,6 +449,13 @@ process.exit(1);
 `;
   await writeFile(filePath, source, { mode: 0o755 });
   return filePath;
+}
+
+async function createInstallSlot(installsDir, name) {
+  const runtimePath = path.join(installsDir, name);
+  await mkdir(path.join(runtimePath, 'bin'), { recursive: true });
+  await writeFile(path.join(runtimePath, 'bin', 'opencodex.js'), '#!/usr/bin/env node\n');
+  return runtimePath;
 }
 
 function extractTar(archivePath, outputDir) {

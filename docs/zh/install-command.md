@@ -11,6 +11,7 @@
 - `opencodex install bundle`
 - `opencodex install detached`
 - `opencodex install status`
+- `opencodex install prune`
 
 `bundle` 用来先产出一个可交付的 runtime 包。
 `detached` 会安装版本化 runtime 目录、重写 `current` 指针、创建用户级 CLI shim，并编译一个指向同一 `current` runtime 的轻量 `OpenCodex.app` 宿主壳。
@@ -63,6 +64,13 @@ OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
 - `--applications-dir <dir>`
 - `--json`
 
+### `prune`
+
+- `--root <dir>`
+- `--keep <n>`；最多保留 `n` 个安装槽位（若存在 `current` 目标会强制保留），默认 `3`
+- `--dry-run`；仅预览不删除
+- `--json`
+
 ## 输出
 
 `bundle` 会报告：
@@ -85,6 +93,8 @@ OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
 
 `status` 会报告 detached runtime、CLI shim 和 App 壳是否存在，以及 `current` 当前解析到哪一个 runtime。
 如果这套安装来自 bundle，`status` 还会显示 bundle 路径以及 bundle manifest 里记录的原始来源。
+
+`prune` 会报告哪些安装槽位被保留、哪些被清理，并支持 dry-run 预览模式。
 
 ## 推荐流程
 
