@@ -49,8 +49,8 @@ The product focus is workflow orchestration, normalized sessions, policy mapping
   - `T016` Conversation/research mode (remaining gap: product-wide persisted visibility)
 - Partially implemented:
   - `T017` Detached install layout (core boundary complete; packaging/lifecycle polish remains)
-- Planned:
-  - `T020` Mobile/Web control-plane boundary follow-through (boundary note is drafted; implementation remains)
+- Partially implemented:
+  - `T020` Mobile/Web control-plane boundary follow-through (boundary docs are in place and `remote status` already covers deployment checks/troubleshooting; broader control-plane follow-through remains)
 - Parked:
   - `T008` Gateway spike
 

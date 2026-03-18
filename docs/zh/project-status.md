@@ -49,8 +49,8 @@ openCodex 是构建在 Codex CLI 之上的本地编排层，不重写本地 codi
   - `T016` Conversation / research mode（剩余全控制面持久可见性）
 - 部分实现（partial）：
   - `T017` Detached install 形态（核心边界已完成，剩余 packaging/lifecycle 打磨）
-- 规划中：
-  - `T020` Mobile/Web control-plane 边界（边界文档已完成，实现待跟进）
+- 部分实现（partial）：
+  - `T020` Mobile/Web control-plane 边界（边界文档与 `remote status` 诊断能力已落地，剩余更完整 control-plane 产品化收敛）
 - 暂停（parked）：
   - `T008` Gateway spike
 
