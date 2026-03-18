@@ -42,12 +42,13 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 
 - `T008-gateway-spike.md`
 - `T010-remote-mobile-bridge.md`
+- `T020-mobile-control-plane-boundary.md`
 - `T011-telegram-im-connector.md`
 - `T012-telegram-cto-delegation.md`
 
 ## Recommended Execution Order
 
-`T001 -> (T002 + T005) -> T003 -> T007 -> T004 -> T006 -> T009 -> T011 -> T012 -> (T013 + T014) -> T015 -> T016 -> (T018 + T019) -> T017 -> T010 -> T008`
+`T001 -> (T002 + T005) -> T003 -> T007 -> T004 -> T006 -> T009 -> T011 -> T012 -> (T013 + T014) -> T015 -> T016 -> (T018 + T019) -> T017 -> T010 -> T020 -> T008`
 
 ## Dependency Notes
 
@@ -66,7 +67,8 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 13. `T018` keeps short Telegram follow-up questions attached to the right workflow instead of spawning empty status-less runs.
 14. `T019` lets sandbox-blocked host-only export work continue through the existing host executor queue.
 15. `T017` defines how app, CLI, and long-lived services share one detached installed runtime.
-16. `T008` is explicitly isolated from MVP.
+16. `T020` sharpens the next-stage phone/web control-plane boundary after the minimal `remote` bridge exists.
+17. `T008` is explicitly isolated from MVP.
 
 ## Parallelization Guidance
 
@@ -81,6 +83,7 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 - Move `T016` right after the supervisor split so the CEO can use CTO naturally even before issuing explicit commands.
 - Run `T018` and `T019` as Telegram CTO correctness follow-ups once the chat-first loop is live.
 - Move `T017` in before broader installed-product rollout so the service, tray app, and CLI do not bind to a source checkout by accident.
+- Keep `T020` behind `T010` so the product boundary is refined after the remote MVP exists, not before.
 - Keep `T008` parked until the local CLI milestone is complete.
 
 ## Current Status
@@ -98,9 +101,10 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 - `T011` — Telegram IM connector MVP implemented
 - `T012` — Telegram CTO delegation loop implemented as a transitional bridge
 - `T013` — mostly implemented in the Telegram CTO runtime; periodic supervisor ticks now exist alongside the listener, and the remaining gap is a single always-on standalone host supervisor runtime
-- `T014` — mostly implemented with shared child-session contract metadata across core commands; legacy/fallback paths still need cleanup
+- `T014` — mostly implemented with shared child-session contract metadata across core commands and auto legacy fallback backfill; remaining legacy/fallback producers still need cleanup
 - `T015` — mostly implemented in session/service/tray workflow and dispatch views; older records still rely on inferred separation
 - `T016` — mostly implemented in the Telegram CTO chat/exploration path
 - `T018` — implemented
 - `T019` — implemented
 - `T017` — detached install boundary, bundle/install/status flow, and bootstrap installer implemented; broader packaging polish still pending
+- `T020` — partially implemented: boundary docs are in place and `remote status` now provides deployment checks plus troubleshooting hints; broader control-plane follow-through remains

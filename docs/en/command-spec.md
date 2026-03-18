@@ -108,11 +108,13 @@ Receive remote messages from a phone through a token-protected HTTP bridge tied 
 - accept mobile message submission with token auth
 - save inbound messages as local artifacts
 - expose a CLI inbox view for the latest remote session
+- expose a CLI status snapshot with deployment checks and troubleshooting hints
 
 **Minimal flags**
 
 - `serve`
 - `inbox`
+- `status`
 - `--cwd <dir>`
 - `--host <host>`
 - `--port <n>`

@@ -50,5 +50,7 @@ The first version should not try to:
 ## Current Status
 
 - MVP implemented with `remote serve` and `remote inbox`.
+- Command-adjacent follow-up now includes `remote status` for lightweight status inspection, deployment checks, and troubleshooting hints.
 - Mobile messages are saved into the active `remote` session artifact `messages.jsonl` and tracked through a normal `remote` session.
 - The root page serves a mobile-friendly form and `/api/messages` supports token-authenticated JSON access.
+- Follow-up product-boundary work for a broader phone/web control plane is tracked separately in `T020`.

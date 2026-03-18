@@ -7,14 +7,21 @@ It gives the maintainer a lightweight remote inbox without replacing Codex CLI a
 
 ## First-Version Flow
 
-The first version provides two subcommands:
+The first version provides three subcommands:
 
 - `opencodex remote serve`
 - `opencodex remote inbox`
+- `opencodex remote status`
 
 `remote serve` starts a token-protected local HTTP server.
 It creates a `remote` session, prints phone URLs, stores incoming messages in a session artifact, and keeps a normal openCodex audit trail.
 `remote inbox` reads the latest stored messages from the newest `remote` session.
+`remote status` reads the latest `remote` session and prints a deployment-oriented status snapshot:
+
+- bind scope and exposure label
+- message count and latest message
+- success checks (health URL, form submit, inbox visibility)
+- common troubleshooting hints
 
 ## Inputs
 
@@ -30,6 +37,11 @@ It creates a `remote` session, prints phone URLs, stores incoming messages in a 
 
 - `--cwd <dir>`
 - `--limit <n>`
+- `--json`
+
+### `remote status`
+
+- `--cwd <dir>`
 - `--json`
 
 ## HTTP Surface
@@ -55,6 +67,7 @@ The bridge stores incoming messages in the active `remote` session artifact:
 - `messages.jsonl` — append-only message log under the session artifacts directory
 
 The newest `remote` session remains visible through `opencodex session` and `opencodex remote inbox`.
+Use `opencodex remote status` when you want a quick operational snapshot plus validation/troubleshooting guidance.
 
 ## Security Notes
 

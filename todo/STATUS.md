@@ -1,5 +1,25 @@
 # Status Log
 
+## 2026-03-18
+
+- Reviewed the retained `mobileCodexHelper` comparison notes after manual trimming and converted the surviving direction into a dedicated follow-up todo.
+- Added `T020` to capture the next-stage mobile/web control-plane boundary:
+  - phone surface stays narrow
+  - user-facing deployment and troubleshooting need a clearer product surface
+- Linked `T020` from `T010` as the follow-up boundary/productization track instead of keeping the comparison note as a standalone docs artifact.
+- Drafted the formal mobile/web control-plane boundary note in both Chinese and English docs and linked `T020` to those design artifacts.
+- Added `opencodex remote status` as a command-adjacent implementation follow-through for `T020`.
+- `remote status` now outputs bind/exposure snapshot, message counters, success checks, and common troubleshooting hints in both text and JSON modes.
+- Updated remote docs and command-spec docs in both languages to include the `status` subcommand and its deployment/diagnostic role.
+- Reclassified `T020` from planned to partially implemented after the status/checklist follow-through landed.
+- Extended `session repair` contract backfill for legacy auto child-session records:
+  - when old child records miss `session_contract`, repair now infers command-aware fallback roles (`run -> executor`, `review -> reviewer`)
+  - fallback contracts are persisted under `child_session` / `auto` scope with `supervisor_session_id` bound to the parent auto workflow
+- `cto` repair fallback contract inference was also tightened for missing child metadata, using command/label/task context to map planner/reply/worker/reviewer roles when possible.
+- Validation passed for contract-backfill follow-up:
+  - `node --test tests/session-repair.test.js tests/session-cli.test.js`
+  - `npm test` (full suite, `175/175`)
+
 ## 2026-03-12
 
 - Audited the `todo/` board against the current codebase and corrected several overstated or stale status labels.

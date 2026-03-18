@@ -21,11 +21,16 @@ const INBOX_OPTION_SPEC = {
   limit: { type: 'string' }
 };
 
+const STATUS_OPTION_SPEC = {
+  cwd: { type: 'string' },
+  json: { type: 'boolean' }
+};
+
 export async function runRemoteCommand(args) {
   const [subcommand, ...rest] = args;
 
   if (!subcommand || subcommand === '--help' || subcommand === '-h') {
-    process.stdout.write('Usage:\n  opencodex remote serve [--cwd <dir>] [--host <host>] [--port <n>] [--token <value>] [--json]\n  opencodex remote inbox [--cwd <dir>] [--limit <n>] [--json]\n');
+    process.stdout.write('Usage:\n  opencodex remote serve [--cwd <dir>] [--host <host>] [--port <n>] [--token <value>] [--json]\n  opencodex remote inbox [--cwd <dir>] [--limit <n>] [--json]\n  opencodex remote status [--cwd <dir>] [--json]\n');
     return;
   }
 
@@ -36,6 +41,11 @@ export async function runRemoteCommand(args) {
 
   if (subcommand === 'inbox') {
     await runRemoteInbox(rest);
+    return;
+  }
+
+  if (subcommand === 'status') {
+    await runRemoteStatus(rest);
     return;
   }
 
@@ -220,6 +230,79 @@ async function runRemoteInbox(args) {
   for (const message of messages) {
     process.stdout.write(`\n- ${message.created_at}  ${message.sender}\n`);
     process.stdout.write(`  ${message.text}\n`);
+  }
+}
+
+async function runRemoteStatus(args) {
+  const { options, positionals } = parseOptions(args, STATUS_OPTION_SPEC);
+  if (positionals.length) {
+    throw new Error('`opencodex remote status` does not accept positional arguments');
+  }
+
+  const cwd = path.resolve(options.cwd || process.cwd());
+  const remoteSession = (await listSessions(cwd)).find((session) => session.command === 'remote');
+  if (!remoteSession) {
+    throw new Error('No remote bridge session found for `opencodex remote status`');
+  }
+
+  const host = String(remoteSession?.input?.arguments?.host || '');
+  const port = Number.parseInt(String(remoteSession?.input?.arguments?.port || ''), 10);
+  const exposure = classifyRemoteExposure(host);
+  const urls = Number.isInteger(port) && port >= 0 ? buildSuggestedUrls(host || '127.0.0.1', port) : [];
+  const messagesPath = resolveMessagesPath(cwd, remoteSession);
+  const messages = await readMessageLog(messagesPath);
+  const latestMessage = messages.length ? messages[messages.length - 1] : null;
+
+  const payload = {
+    session_id: remoteSession.session_id,
+    status: remoteSession.status,
+    host: host || null,
+    port: Number.isInteger(port) ? port : null,
+    exposure,
+    urls,
+    message_count: messages.length,
+    latest_message: latestMessage
+      ? {
+          created_at: latestMessage.created_at || null,
+          sender: latestMessage.sender || null,
+          text: latestMessage.text || null
+        }
+      : null,
+    warnings: buildRemoteExposureWarnings(exposure),
+    success_checks: buildRemoteSuccessChecks({ host, port, urls }),
+    common_failures: buildRemoteCommonFailures()
+  };
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+
+  process.stdout.write(`Remote status for ${payload.session_id}\n`);
+  process.stdout.write(`Status: ${payload.status}\n`);
+  process.stdout.write(`Bind: ${payload.host || 'unknown'}:${payload.port ?? 'unknown'}\n`);
+  process.stdout.write(`Exposure: ${payload.exposure.label}\n`);
+  process.stdout.write(`Messages received: ${payload.message_count}\n`);
+  if (payload.latest_message) {
+    process.stdout.write(`Latest message: ${payload.latest_message.created_at}  ${payload.latest_message.sender}\n`);
+    process.stdout.write(`  ${payload.latest_message.text}\n`);
+  }
+
+  if (payload.warnings.length) {
+    process.stdout.write('\nWarnings:\n');
+    for (const warning of payload.warnings) {
+      process.stdout.write(`- ${warning}\n`);
+    }
+  }
+
+  process.stdout.write('\nSuccess checks:\n');
+  for (const check of payload.success_checks) {
+    process.stdout.write(`- ${check}\n`);
+  }
+
+  process.stdout.write('\nCommon failures:\n');
+  for (const failure of payload.common_failures) {
+    process.stdout.write(`- ${failure}\n`);
   }
 }
 
@@ -510,6 +593,87 @@ function outputRemoteStartup({ host, port, token, sessionId, asJson }) {
   process.stdout.write(`Session: ${sessionId}\n`);
 }
 
+function classifyRemoteExposure(hostInput) {
+  const host = String(hostInput || '').trim().toLowerCase();
+  if (!host) {
+    return {
+      mode: 'unknown',
+      label: 'Unknown bind scope'
+    };
+  }
+
+  if (host === '127.0.0.1' || host === 'localhost' || host === '::1') {
+    return {
+      mode: 'local_only',
+      label: 'Localhost only'
+    };
+  }
+
+  if (host === '0.0.0.0' || host === '::') {
+    return {
+      mode: 'network_wide',
+      label: 'All interfaces (LAN or wider)'
+    };
+  }
+
+  if (isPrivateAddress(host)) {
+    return {
+      mode: 'private_interface',
+      label: 'Specific private interface'
+    };
+  }
+
+  return {
+    mode: 'specific_interface',
+    label: 'Specific interface (review network exposure)'
+  };
+}
+
+function buildRemoteExposureWarnings(exposure) {
+  if (exposure.mode === 'network_wide') {
+    return [
+      'Bridge is bound to all interfaces. Keep it behind private network or a controlled tunnel.',
+      'Do not share the token in chat logs, screenshots, or public notes.'
+    ];
+  }
+
+  if (exposure.mode === 'specific_interface') {
+    return [
+      'Bridge is bound to a specific interface that may be publicly reachable. Verify routing and firewall policy.'
+    ];
+  }
+
+  if (exposure.mode === 'private_interface') {
+    return [
+      'Bridge is reachable from a private interface. Keep host firewall and token hygiene enabled.'
+    ];
+  }
+
+  return [];
+}
+
+function buildRemoteSuccessChecks({ host, port, urls }) {
+  const checks = [];
+  const primaryUrl = urls[0] || (host && Number.isInteger(port) ? `http://${host}:${port}` : null);
+  if (primaryUrl) {
+    checks.push(`Open ${primaryUrl}/health and expect {"ok":true}.`);
+    checks.push(`Open ${primaryUrl}/?token=<token> and submit a test message.`);
+  } else {
+    checks.push('Start `opencodex remote serve` and confirm host/port are shown in startup output.');
+  }
+  checks.push('Run `opencodex remote inbox --limit 5` and confirm your latest message is visible.');
+  return checks;
+}
+
+function buildRemoteCommonFailures() {
+  return [
+    '401 Unauthorized: token mismatch between phone request and bridge process.',
+    'Connection refused or timeout: bridge process stopped, wrong host/port, or local firewall blocks access.',
+    'Phone cannot reach host: phone not on same private network or tunnel/VPN route is missing.',
+    'Messages accepted but not visible in CLI: inspect remote session artifacts and run `opencodex session latest`.'
+  ];
+}
+
 function buildSuggestedUrls(host, port) {
   if (host !== '0.0.0.0' && host !== '::') {
     return [`http://${host}:${port}`];
@@ -520,6 +684,36 @@ function buildSuggestedUrls(host, port) {
     urls.add(`http://${address}:${port}`);
   }
   return [...urls];
+}
+
+function isPrivateAddress(host) {
+  if (host.startsWith('fe80:') || host.startsWith('fd') || host.startsWith('fc')) {
+    return true;
+  }
+
+  const ipv4 = host.match(/^(\d{1,3})(\.\d{1,3}){3}$/);
+  if (!ipv4) {
+    return false;
+  }
+
+  const parts = host.split('.').map((part) => Number.parseInt(part, 10));
+  if (parts.some((value) => value < 0 || value > 255)) {
+    return false;
+  }
+
+  if (parts[0] === 10) {
+    return true;
+  }
+
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) {
+    return true;
+  }
+
+  if (parts[0] === 192 && parts[1] === 168) {
+    return true;
+  }
+
+  return false;
 }
 
 function getLanAddresses() {

@@ -7,14 +7,21 @@
 
 ## 第一版流程
 
-第一版提供两个子命令：
+第一版提供三个子命令：
 
 - `opencodex remote serve`
 - `opencodex remote inbox`
+- `opencodex remote status`
 
 `remote serve` 会启动一个带 token 保护的本地 HTTP 服务。
 它会创建一个 `remote` session，打印手机访问 URL，把收到的消息保存到当前 `remote` session 的 artifact 中，同时保留正常的 openCodex 审计轨迹。
 `remote inbox` 则负责从最新的 `remote` session 中读取最近消息。
+`remote status` 会读取最新 `remote` session，输出面向部署与排障的状态快照，包括：
+
+- 绑定范围与暴露级别
+- 消息数量与最近一条消息
+- 成功检查项（`/health`、表单投递、inbox 可见性）
+- 常见故障提示
 
 ## 输入
 
@@ -30,6 +37,11 @@
 
 - `--cwd <dir>`
 - `--limit <n>`
+- `--json`
+
+### `remote status`
+
+- `--cwd <dir>`
 - `--json`
 
 ## HTTP 接口
@@ -55,6 +67,7 @@ bridge 会把收到的消息保存到当前 `remote` session 的 artifact 中：
 - `messages.jsonl` — 位于 session artifacts 目录下的追加式消息日志
 
 最新的 `remote` session 可以继续通过 `opencodex session` 和 `opencodex remote inbox` 查看。
+如果需要快速查看运行状态并按清单排障，使用 `opencodex remote status`。
 
 ## 安全说明
 

@@ -82,6 +82,7 @@ The bootstrap script is meant for detached installs, not `--link-source` develop
 ## Available Documents
 
 - `project-overview.md` — project vision, scope, and principles.
+- `project-status.md` — dated snapshot of goals, outlook, and current execution progress.
 - `roadmap.md` — initial milestones and delivery direction.
 - `team.md` — team structure, fixed internal role names, and management rules.
 - `session-model.md` — normalized session, summary, and artifact structure for wrapper commands.
@@ -91,6 +92,7 @@ The bootstrap script is meant for detached installs, not `--link-source` develop
 - `review-command.md` — review workflow inputs, artifacts, and summary strategy.
 - `auto-command.md` — unattended local workflow chaining on top of existing wrapper commands.
 - `remote-command.md` — token-protected mobile message bridge over local HTTP.
+- `mobile-control-plane.md` — product boundary, host-owned control, and support limits for the mobile/web control plane.
 - `service-command.md` — macOS launchd service and menu bar app management for Telegram CTO mode.
 - `install-command.md` — detached runtime installation and local CLI shim management.
 - `im-command.md` — Telegram-first instant-messaging connector for phone-to-openCodex reachability.

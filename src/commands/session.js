@@ -387,7 +387,7 @@ async function deriveCtoRepair(cwd, session, lineage) {
   );
 
   for (const task of workflowState.tasks) {
-    await repairCtoWorkflowTask(cwd, task, childSessionById, childSessionByTaskId, lineage);
+    await repairCtoWorkflowTask(cwd, task, childSessionById, childSessionByTaskId, lineage, session.session_id);
   }
 
   for (const child of childSessions) {
@@ -404,11 +404,17 @@ async function deriveCtoRepair(cwd, session, lineage) {
       continue;
     }
     const resolvedChild = await resolveRepairSnapshot(cwd, childSession, lineage);
+    const fallbackContract = buildCtoChildSessionContractFallback({
+      parentSessionId: session.session_id,
+      childSession: resolvedChild,
+      childMetadata: child
+    });
     child.status = resolvedChild.status || child.status || 'unknown';
     child.command = resolvedChild.command || child.command || 'run';
     child.session_contract = child.session_contract
-      || buildSessionContractSnapshot(resolvedChild)
-      || buildSessionContractSnapshot(childSession)
+      || buildSessionContractSnapshot(resolvedChild, fallbackContract)
+      || buildSessionContractSnapshot(childSession, fallbackContract)
+      || buildSessionContractSnapshot(child, fallbackContract)
       || null;
   }
 
@@ -518,7 +524,7 @@ function repairMisroutedCasualChatWorkflow(session, workflowState) {
   };
 }
 
-async function repairCtoWorkflowTask(cwd, task, childSessionById, childSessionByTaskId, lineage) {
+async function repairCtoWorkflowTask(cwd, task, childSessionById, childSessionByTaskId, lineage, parentSessionId = '') {
   if (!task || typeof task !== 'object') {
     return;
   }
@@ -555,11 +561,18 @@ async function repairCtoWorkflowTask(cwd, task, childSessionById, childSessionBy
   const resolvedChild = await resolveRepairSnapshot(cwd, childSession, lineage);
   const childMetadata = childSessionById.get(taskSessionId);
   if (childMetadata) {
+    const fallbackContract = buildCtoChildSessionContractFallback({
+      parentSessionId,
+      childSession: resolvedChild,
+      childMetadata,
+      task
+    });
     childMetadata.status = resolvedChild.status || childMetadata.status || 'unknown';
     childMetadata.command = resolvedChild.command || childMetadata.command || 'run';
     childMetadata.session_contract = childMetadata.session_contract
-      || buildSessionContractSnapshot(resolvedChild)
-      || buildSessionContractSnapshot(childSession)
+      || buildSessionContractSnapshot(resolvedChild, fallbackContract)
+      || buildSessionContractSnapshot(childSession, fallbackContract)
+      || buildSessionContractSnapshot(childMetadata, fallbackContract)
       || null;
   }
   syncCtoTaskFromChild(task, resolvedChild);
@@ -769,14 +782,20 @@ async function deriveAutoRepair(cwd, session, lineage) {
   const retryCount = inferAutoRetryCount(childSessions, autoLogText);
   const iterationsCompleted = countCompletedAutoIterations(childSessions);
   const lastChild = childSessions.at(-1);
-  const repairedChildSessions = childSessions.map((child) => ({
-    label: child.repair_label || child.command,
-    iteration: getAutoIteration(child),
-    command: child.command,
-    session_id: child.session_id,
-    status: child.status,
-    session_contract: child.repair_session_contract || buildSessionContractSnapshot(child) || null
-  }));
+  const repairedChildSessions = childSessions.map((child) => {
+    const fallbackContract = buildAutoChildSessionContractFallback({
+      parentSessionId: session.session_id,
+      childSession: child
+    });
+    return {
+      label: child.repair_label || child.command,
+      iteration: getAutoIteration(child),
+      command: child.command,
+      session_id: child.session_id,
+      status: child.status,
+      session_contract: child.repair_session_contract || buildSessionContractSnapshot(child, fallbackContract) || null
+    };
+  });
 
   if (lastChild?.status === 'failed') {
     return {
@@ -937,11 +956,16 @@ async function collectAutoChildSessions(cwd, session, lineage) {
   const repairedChildren = [];
   for (const child of children) {
     const metadata = childMetadata.get(child.session_id) || {};
+    const fallbackContract = buildAutoChildSessionContractFallback({
+      parentSessionId: session.session_id,
+      childSession: child,
+      childMetadata: metadata
+    });
     const resolvedChild = await resolveRepairSnapshot(cwd, {
       ...child,
       repair_label: metadata.label || child.command,
       repair_iteration: metadata.iteration,
-      repair_session_contract: metadata.session_contract || buildSessionContractSnapshot(child) || null
+      repair_session_contract: metadata.session_contract || buildSessionContractSnapshot(child, fallbackContract) || null
     }, lineage);
     repairedChildren.push(resolvedChild);
   }
@@ -1033,6 +1057,46 @@ function inferAutoRetryCount(childSessions, autoLogText) {
 
   const logRetryCount = [...String(autoLogText || '').matchAll(/Retrying run after failure/g)].length;
   return Math.max(retryCount, logRetryCount);
+}
+
+function buildAutoChildSessionContractFallback({ parentSessionId = '', childSession = null, childMetadata = null } = {}) {
+  const command = String(childSession?.command || childMetadata?.command || '').trim().toLowerCase();
+  const role = command === 'review' ? 'reviewer' : 'executor';
+  return {
+    layer: 'child',
+    scope: 'auto',
+    thread_kind: 'child_session',
+    role,
+    supervisor_session_id: parentSessionId
+  };
+}
+
+function buildCtoChildSessionContractFallback({
+  parentSessionId = '',
+  childSession = null,
+  childMetadata = null,
+  task = null
+} = {}) {
+  const command = String(childSession?.command || childMetadata?.command || '').trim().toLowerCase();
+  const label = String(childMetadata?.label || '').trim().toLowerCase();
+  const taskTitle = String(task?.title || '').trim().toLowerCase();
+  let role = 'worker';
+
+  if (command === 'review') {
+    role = 'reviewer';
+  } else if (label.startsWith('direct reply') || label.includes('reply') || taskTitle.includes('reply')) {
+    role = 'reply';
+  } else if (label.startsWith('plan workflow') || label.startsWith('continue workflow') || label.includes('planner') || taskTitle.includes('plan')) {
+    role = 'planner';
+  }
+
+  return {
+    layer: 'child',
+    scope: 'telegram_cto',
+    thread_kind: 'child_session',
+    role,
+    supervisor_session_id: parentSessionId
+  };
 }
 
 function getAutoIteration(session) {

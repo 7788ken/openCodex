@@ -360,6 +360,101 @@ test('session repair completes stale cto workflows from finished child sessions'
   assert.deepEqual(repairedWorkflowState.tasks[0].changed_files, ['src/repaired-child.js']);
 });
 
+test('session repair infers missing cto child session contract metadata from workflow context', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-repair-cto-contract-fallback-'));
+  const ctoSessionId = 'cto-20260308-stale-contract-fallback';
+  const childSessionId = 'run-20260308-stale-contract-child';
+  const ctoSessionDir = path.join(cwd, '.opencodex', 'sessions', ctoSessionId);
+  const childSessionDir = path.join(cwd, '.opencodex', 'sessions', childSessionId);
+  const workflowStatePath = path.join(ctoSessionDir, 'artifacts', 'cto-workflow.json');
+
+  await mkdir(path.join(ctoSessionDir, 'artifacts'), { recursive: true });
+  await mkdir(path.join(childSessionDir, 'artifacts'), { recursive: true });
+  await writeFile(path.join(ctoSessionDir, 'session.json'), `${JSON.stringify({
+    session_id: ctoSessionId,
+    command: 'cto',
+    status: 'running',
+    created_at: '2026-03-08T00:00:00.000Z',
+    updated_at: '2026-03-08T00:00:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'telegram-bot-api',
+    input: { prompt: 'Repair workflow contracts', arguments: { provider: 'telegram' } },
+    summary: { title: 'CTO workflow running', result: 'running', status: 'running', highlights: [], next_steps: [] },
+    artifacts: [
+      { type: 'cto_workflow', path: workflowStatePath, description: 'Telegram CTO workflow state and task graph.' }
+    ],
+    child_sessions: [
+      { label: 'Task sync-task', command: 'run', session_id: childSessionId, status: 'completed' }
+    ]
+  }, null, 2)}
+`, 'utf8');
+  await writeFile(workflowStatePath, `${JSON.stringify({
+    workflow_session_id: ctoSessionId,
+    provider: 'telegram',
+    chat_id: '123456',
+    source_update_id: 1,
+    source_message_id: 1,
+    sender_display: 'CEO',
+    goal_text: 'Repair workflow contracts',
+    latest_user_message: 'Repair workflow contracts',
+    created_at: '2026-03-08T00:00:00.000Z',
+    updated_at: '2026-03-08T00:00:00.000Z',
+    status: 'running',
+    plan_mode: 'execute',
+    plan_summary_zh: 'Repair workflow contracts.',
+    pending_question_zh: '',
+    task_counter: 1,
+    tasks: [
+      {
+        id: 'sync-task',
+        title: 'Sync child task',
+        worker_prompt: 'Inspect child output.',
+        depends_on: [],
+        status: 'running',
+        session_id: childSessionId,
+        summary_status: '',
+        result: '',
+        next_steps: [],
+        changed_files: [],
+        updated_at: '2026-03-08T00:00:00.000Z'
+      }
+    ],
+    user_messages: []
+  }, null, 2)}
+`, 'utf8');
+  await writeFile(path.join(childSessionDir, 'session.json'), `${JSON.stringify({
+    session_id: childSessionId,
+    command: 'run',
+    status: 'completed',
+    created_at: '2026-03-08T00:00:00.000Z',
+    updated_at: '2026-03-08T00:05:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'codex-cli 0.111.0',
+    input: { prompt: 'child', arguments: {} },
+    summary: {
+      title: 'Child task completed',
+      result: 'Recovered child completion summary.',
+      status: 'completed',
+      highlights: [],
+      next_steps: [],
+      changed_files: [],
+      findings: []
+    },
+    artifacts: []
+  }, null, 2)}
+`, 'utf8');
+
+  const result = await runCli(['session', 'repair', '--json', '--cwd', cwd, '--stale-minutes', '1']);
+  assert.equal(result.code, 0);
+
+  const repairedSession = JSON.parse(await readFile(path.join(ctoSessionDir, 'session.json'), 'utf8'));
+  assert.equal(repairedSession.status, 'completed');
+  assert.equal(repairedSession.child_sessions[0].session_contract?.thread_kind, 'child_session');
+  assert.equal(repairedSession.child_sessions[0].session_contract?.role, 'worker');
+  assert.equal(repairedSession.child_sessions[0].session_contract?.scope, 'telegram_cto');
+  assert.equal(repairedSession.child_sessions[0].session_contract?.supervisor_session_id, ctoSessionId);
+});
+
 test('session repair converts orphaned stale cto tasks into a waiting workflow', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-repair-cto-orphaned-'));
   const ctoSessionId = 'cto-20260308-stale-orphaned';
@@ -890,6 +985,80 @@ test('session repair converts stale auto sessions into a resumable partial summa
   assert.deepEqual(repaired.child_sessions.map((child) => child.status), ['completed', 'completed']);
   assert.equal(repaired.child_sessions[0].session_contract?.role, 'executor');
   assert.equal(repaired.child_sessions[1].session_contract?.role, 'reviewer');
+});
+
+test('session repair backfills auto child session contracts for legacy child records', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-repair-auto-legacy-contract-'));
+  const autoSessionId = 'auto-20260308-legacy-parent';
+  const runSessionId = 'run-20260308-legacy-child';
+  const reviewSessionId = 'review-20260308-legacy-child';
+
+  await writeSession(cwd, autoSessionId, '2026-03-08T00:03:00.000Z', 'auto', 'running', {
+    input: {
+      prompt: 'legacy auto flow',
+      arguments: {
+        review: true,
+        'max-iterations': 2
+      }
+    },
+    summary: { title: 'Auto running', result: 'started', status: 'running', highlights: [], next_steps: [], findings: [] },
+    child_sessions: [
+      {
+        label: 'run',
+        iteration: 1,
+        command: 'run',
+        session_id: runSessionId,
+        status: 'completed'
+      },
+      {
+        label: 'review',
+        iteration: 1,
+        command: 'review',
+        session_id: reviewSessionId,
+        status: 'completed'
+      }
+    ],
+    iteration_count: 1
+  });
+
+  await writeSession(cwd, runSessionId, '2026-03-08T00:01:00.000Z', 'run', 'completed', {
+    parent_session_id: autoSessionId,
+    auto_iteration: 1,
+    summary: {
+      title: 'Run completed',
+      result: 'Implemented changes.',
+      status: 'completed',
+      highlights: [],
+      next_steps: [],
+      findings: []
+    }
+  });
+  await writeSession(cwd, reviewSessionId, '2026-03-08T00:02:00.000Z', 'review', 'completed', {
+    parent_session_id: autoSessionId,
+    auto_iteration: 1,
+    summary: {
+      title: 'Review completed',
+      result: 'No remaining findings.',
+      status: 'completed',
+      highlights: [],
+      next_steps: [],
+      findings: []
+    }
+  });
+
+  const result = await runCli(['session', 'repair', '--json', '--cwd', cwd, '--stale-minutes', '1']);
+  assert.equal(result.code, 0);
+
+  const repaired = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'sessions', autoSessionId, 'session.json'), 'utf8'));
+  assert.ok(Array.isArray(repaired.child_sessions));
+  assert.equal(repaired.child_sessions[0].session_contract?.thread_kind, 'child_session');
+  assert.equal(repaired.child_sessions[0].session_contract?.role, 'executor');
+  assert.equal(repaired.child_sessions[0].session_contract?.scope, 'auto');
+  assert.equal(repaired.child_sessions[0].session_contract?.supervisor_session_id, autoSessionId);
+  assert.equal(repaired.child_sessions[1].session_contract?.thread_kind, 'child_session');
+  assert.equal(repaired.child_sessions[1].session_contract?.role, 'reviewer');
+  assert.equal(repaired.child_sessions[1].session_contract?.scope, 'auto');
+  assert.equal(repaired.child_sessions[1].session_contract?.supervisor_session_id, autoSessionId);
 });
 
 function runCli(args) {

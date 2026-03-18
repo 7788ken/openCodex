@@ -31,4 +31,6 @@ Without that contract, prompts, status semantics, and adoption rules will stay a
 - A shared machine-readable `opencodex/session-contract/v1` layer now exists and is emitted across `im`, `auto`, `run`, and `review`, with session creation also able to inherit the contract from environment variables.
 - Child-session records and service payloads now preserve role/thread metadata such as `thread_kind`, `role`, `scope`, `layer`, and `supervisor_session_id`.
 - Session repair now preserves and backfills child-session contract metadata in the `auto` and `cto` repair paths instead of collapsing repaired child records back to bare `command/session_id/status` tuples.
+- Auto repair now also backfills legacy child session contracts when historical records are missing explicit metadata, using command-aware fallback roles (`executor` for `run`, `reviewer` for `review`) under the auto supervisor scope.
+- CTO repair fallback now also infers planner/reply/worker/reviewer child roles from command, label, and task context when explicit child contracts are missing.
 - The remaining gap is historical consistency: legacy records and a few fallback paths still rely on inferred metadata instead of every producer persisting the full contract end to end.

@@ -28,3 +28,4 @@ The product focus is orchestration, workflow design, session handling, and multi
 - `T017-detached-install-layout.md` — define the detached installed runtime layout for App, CLI, and services.
 - `T018-telegram-workflow-reference-follow.md` — bind colloquial Telegram follow-up questions back to the latest relevant CTO workflow.
 - `T019-telegram-host-export-to-downloads.md` — reroute sandbox-blocked partial export tasks into the host executor automatically.
+- `T020-mobile-control-plane-boundary.md` — define the next-stage mobile/web control plane boundary without derailing the runtime/supervisor route.

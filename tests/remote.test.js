@@ -102,6 +102,48 @@ test('remote inbox returns the latest received messages in json mode', async () 
   assert.equal(payload.messages[0].text, 'second');
 });
 
+test('remote status returns deployment checks and troubleshooting hints in json mode', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-status-'));
+  const sessionId = 'remote-20260318-status';
+  const sessionDir = path.join(cwd, '.opencodex', 'sessions', sessionId);
+  const artifactsDir = path.join(sessionDir, 'artifacts');
+  const messagesPath = path.join(artifactsDir, 'messages.jsonl');
+
+  await mkdir(artifactsDir, { recursive: true });
+  await writeFile(path.join(sessionDir, 'session.json'), `${JSON.stringify({
+    session_id: sessionId,
+    command: 'remote',
+    status: 'running',
+    created_at: '2026-03-18T00:00:00.000Z',
+    updated_at: '2026-03-18T00:01:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'embedded-http',
+    input: { prompt: '', arguments: { host: '0.0.0.0', port: 3789, auth: 'token', token_configured: true } },
+    summary: { title: 'Remote bridge running', result: 'ok', status: 'running', highlights: [], next_steps: [], findings: [] },
+    artifacts: [{ type: 'messages_log', path: messagesPath, description: 'Remote messages received by the mobile bridge.' }]
+  }, null, 2)}\n`, 'utf8');
+  await writeFile(messagesPath, [
+    JSON.stringify({ message_id: 'msg-1', created_at: '2026-03-18T00:00:10.000Z', sender: 'phone', text: 'first' }),
+    JSON.stringify({ message_id: 'msg-2', created_at: '2026-03-18T00:00:20.000Z', sender: 'phone', text: 'second' })
+  ].join('\n') + '\n', 'utf8');
+
+  const result = await runCli(['remote', 'status', '--cwd', cwd, '--json']);
+  assert.equal(result.code, 0);
+
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.session_id, sessionId);
+  assert.equal(payload.status, 'running');
+  assert.equal(payload.host, '0.0.0.0');
+  assert.equal(payload.port, 3789);
+  assert.equal(payload.exposure.mode, 'network_wide');
+  assert.equal(payload.message_count, 2);
+  assert.equal(payload.latest_message.text, 'second');
+  assert.ok(payload.urls.some((url) => url.includes(':3789')));
+  assert.ok(payload.warnings.some((line) => line.includes('all interfaces')));
+  assert.ok(payload.success_checks.some((line) => line.includes('/health')));
+  assert.ok(payload.common_failures.some((line) => line.includes('Unauthorized')));
+});
+
 function runCli(args) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [cli, ...args], {

@@ -87,6 +87,7 @@ node ./bin/opencodex.js install detached --link-source
 ## 当前文档
 
 - `project-overview.md` — 项目定位、范围与原则。
+- `project-status.md` — 项目目标、展望与当前进度快照（按日期更新）。
 - `roadmap.md` — 初始里程碑与交付方向。
 - `team.md` — 团队架构、固定内部称呼与管理规则。
 - `session-model.md` — wrapper 命令使用的 session、summary 与 artifact 结构。
@@ -96,6 +97,7 @@ node ./bin/opencodex.js install detached --link-source
 - `review-command.md` — review 工作流输入、artifacts 与 summary 策略。
 - `auto-command.md` — 基于现有 wrapper 命令串联的无人值守本地工作流。
 - `remote-command.md` — 基于本地 HTTP 的带 token 手机消息桥。
+- `mobile-control-plane.md` — 手机 / Web control plane 的产品边界、宿主控制权与支持范围。
 - `service-command.md` — Telegram CTO 模式的 macOS launchd 服务与菜单栏 app 管理。
 - `install-command.md` — detached runtime 安装与本地 CLI shim 管理。
 - `im-command.md` — 以 Telegram 为第一优先的即时通讯连接器。
