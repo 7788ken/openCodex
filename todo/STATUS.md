@@ -28,6 +28,14 @@
 - Validation passed for install lifecycle follow-up:
   - `node --test tests/install.test.js`
   - `npm test` (full suite)
+- Added `session_contract_source` visibility across `session` and `service` JSON payloads:
+  - normalized source enum is now explicit in output (`explicit`, `fallback`, `inferred`, `none`)
+  - session list/show/latest/tree now report whether thread metadata came from stored contract data vs fallback/inference
+  - service workflow/dispatch history and detail views now expose the same source marker for UI and tooling
+- Added regression coverage for explicit/fallback/inferred source reporting in `tests/session-cli.test.js` and `tests/service.test.js`.
+- Validation passed for the source-visibility follow-up:
+  - `node --test tests/session-cli.test.js tests/service.test.js`
+  - `npm test` (full suite, `178/178`)
 
 ## 2026-03-12
 

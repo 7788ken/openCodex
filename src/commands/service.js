@@ -20,7 +20,7 @@ import {
   resolveCtoSubagentSoulPath,
   resolveCtoSoulVariantPath
 } from '../lib/cto-workflow.js';
-import { formatSessionThreadKindLabel, inferSessionContract } from '../lib/session-contract.js';
+import { formatSessionThreadKindLabel, resolveSessionContract } from '../lib/session-contract.js';
 import { getSessionDir, listSessions } from '../lib/session-store.js';
 
 const CLI_PATH = fileURLToPath(new URL('../../bin/opencodex.js', import.meta.url));
@@ -1590,9 +1590,10 @@ function normalizeChildSessionRefs(childSessions) {
 }
 
 function buildSessionPresentation(session, fallback = null) {
-  const contract = inferSessionContract(session, fallback);
+  const { contract, source } = resolveSessionContract(session, fallback);
   return {
     session_contract: contract,
+    session_contract_source: source,
     thread_kind: contract?.thread_kind || '',
     thread_kind_label: formatSessionThreadKindLabel(contract?.thread_kind || ''),
     session_role: contract?.role || '',
@@ -1623,6 +1624,7 @@ function buildDispatchPresentation({ task, childEntry = null }) {
     return {
       execution_surface: 'host_executor',
       session_contract: null,
+      session_contract_source: 'fallback',
       thread_kind: 'host_executor',
       thread_kind_label: formatSessionThreadKindLabel('host_executor'),
       session_role: 'worker',
@@ -1638,6 +1640,7 @@ function buildDispatchPresentation({ task, childEntry = null }) {
     return {
       execution_surface: 'child_session',
       session_contract: childContract,
+      session_contract_source: childContract ? 'explicit' : 'fallback',
       thread_kind: childContract?.thread_kind || 'child_session',
       thread_kind_label: formatSessionThreadKindLabel(childContract?.thread_kind || 'child_session'),
       session_role: childContract?.role || 'worker',
@@ -1649,6 +1652,7 @@ function buildDispatchPresentation({ task, childEntry = null }) {
   return {
     execution_surface: 'host_workflow',
     session_contract: null,
+    session_contract_source: 'fallback',
     thread_kind: 'host_workflow',
     thread_kind_label: formatSessionThreadKindLabel('host_workflow'),
     session_role: 'cto_supervisor',
@@ -1775,6 +1779,7 @@ function buildWorkflowHistoryRecord(workflowInfo) {
     session_scope: presentation.session_scope,
     session_layer: presentation.session_layer,
     session_contract: presentation.session_contract,
+    session_contract_source: presentation.session_contract_source,
     child_thread_count: childThreadCount,
     task_total_count: counts.total,
     running_task_count: counts.running,
@@ -1840,6 +1845,7 @@ function buildDispatchRecordsFromWorkflowInfo(cwd, workflowInfo) {
         session_scope: presentation.session_scope,
         session_layer: presentation.session_layer,
         session_contract: presentation.session_contract,
+        session_contract_source: presentation.session_contract_source,
         updated_at: typeof task?.updated_at === 'string' && task.updated_at ? task.updated_at : (workflowState?.updated_at || session.updated_at || ''),
         label: `[${status}] ${truncateInline(taskId || title || 'task', 32)} — ${truncateInline(title || taskId || 'Untitled task', 72)}`
       };
@@ -2197,6 +2203,7 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
           session_scope: taskPresentation.session_scope,
           session_layer: taskPresentation.session_layer,
           session_contract: taskPresentation.session_contract,
+          session_contract_source: taskPresentation.session_contract_source,
           updated_at: typeof task?.updated_at === 'string' && task.updated_at ? task.updated_at : '',
           label: `[${status}] ${truncateInline(taskId || title || 'task', 32)} — ${truncateInline(title || taskId || 'Untitled task', 72)}`
         };
@@ -2218,6 +2225,7 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
     session_scope: presentation.session_scope,
     session_layer: presentation.session_layer,
     session_contract: presentation.session_contract,
+    session_contract_source: presentation.session_contract_source,
     goal,
     inferred_intent: inferredIntent.kind,
     inferred_intent_zh: inferredIntent.label_zh,
@@ -2473,6 +2481,7 @@ async function buildDispatchDetailPayload(cwd, dispatch, index) {
     session_scope: presentation.session_scope || 'telegram_cto',
     session_layer: presentation.session_layer || (rerouteRecord ? 'host' : 'child'),
     session_contract: presentation.session_contract || null,
+    session_contract_source: presentation.session_contract_source || 'fallback',
     reroute_job_id: typeof dispatch?.reroute_job_id === 'string' && dispatch.reroute_job_id
       ? dispatch.reroute_job_id
       : (typeof workflowTask?.reroute_job_id === 'string' ? workflowTask.reroute_job_id : ''),

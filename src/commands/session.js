@@ -3,7 +3,7 @@ import { parseOptions } from '../lib/args.js';
 import { listSessions, loadSession, saveSession, getSessionDir } from '../lib/session-store.js';
 import { readJson, readTextIfExists, writeJson } from '../lib/fs.js';
 import { buildTelegramCtoSessionSummary, classifyTelegramCtoMessageIntent, finalizeWorkflowStatus, summarizeWorkflowCounts } from '../lib/cto-workflow.js';
-import { buildSessionContractSnapshot, formatSessionThreadKindLabel, inferSessionContract } from '../lib/session-contract.js';
+import { buildSessionContractSnapshot, formatSessionThreadKindLabel, resolveSessionContract } from '../lib/session-contract.js';
 import { buildSummaryFromMessage } from './run.js';
 import { buildReviewSummary } from './review.js';
 import { renderHumanSummary } from '../lib/summary.js';
@@ -316,6 +316,7 @@ function buildSessionTreeNode(sessionId, sessionMap, parentByChild, childrenByPa
     session_scope: presentation.session_scope,
     session_layer: presentation.session_layer,
     session_contract: presentation.session_contract,
+    session_contract_source: presentation.session_contract_source,
     children: childIds.map((childSessionId) => {
       return buildSessionTreeNode(childSessionId, sessionMap, parentByChild, childrenByParent, childMetadataBySessionId, nextLineage);
     })
@@ -1317,9 +1318,10 @@ function buildSessionCliPayload(session, fallback = null) {
 }
 
 function buildSessionPresentation(session, fallback = null) {
-  const contract = inferSessionContract(session, fallback);
+  const { contract, source } = resolveSessionContract(session, fallback);
   return {
     session_contract: contract,
+    session_contract_source: source,
     thread_kind: contract?.thread_kind || '',
     thread_kind_label: formatSessionThreadKindLabel(contract?.thread_kind || ''),
     session_role: contract?.role || '',

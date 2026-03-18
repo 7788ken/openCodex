@@ -182,6 +182,8 @@ The app can:
 
 `telegram task-history` exposes the full known dispatch history collected from CTO workflow sessions, not just the latest 5 records shown by `telegram status`.
 
+`telegram workflow-detail` and `telegram dispatch-detail` JSON payloads include `session_contract_source` (`explicit`, `fallback`, `inferred`, `none`) so older inferred metadata is distinguishable from explicitly stored contracts.
+
 `telegram dispatch-detail --index <n>` resolves one history entry into a human-readable task detail view, including:
 
 - workflow id and workflow goal

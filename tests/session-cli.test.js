@@ -45,6 +45,34 @@ test('session show exposes derived thread metadata in json mode', async () => {
   assert.equal(payload.session_role, 'cto_supervisor');
   assert.equal(payload.session_scope, 'telegram_cto');
   assert.equal(payload.session_layer, 'host');
+  assert.equal(payload.session_contract_source, 'inferred');
+});
+
+test('session show keeps explicit session contract metadata and marks source as explicit', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-session-show-explicit-contract-'));
+  const sessionId = 'run-20260308-000210-explicit';
+
+  await writeSession(cwd, sessionId, '2026-03-08T00:02:10.000Z', 'run', 'completed', {
+    session_contract: {
+      schema: 'opencodex/session-contract/v1',
+      layer: 'child',
+      thread_kind: 'child_session',
+      role: 'executor',
+      scope: 'auto',
+      supervisor_session_id: 'auto-20260308-000000-root'
+    }
+  });
+
+  const result = await runCli(['session', 'show', sessionId, '--json', '--cwd', cwd]);
+  assert.equal(result.code, 0);
+
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.thread_kind, 'child_session');
+  assert.equal(payload.thread_kind_label, 'child session');
+  assert.equal(payload.session_role, 'executor');
+  assert.equal(payload.session_scope, 'auto');
+  assert.equal(payload.session_layer, 'child');
+  assert.equal(payload.session_contract_source, 'explicit');
 });
 
 test('session tree resolves the full tree from a child session id', async () => {
@@ -116,11 +144,13 @@ test('session tree prefers recorded child session contract metadata for child no
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.thread_kind, 'host_workflow');
   assert.equal(payload.session_role, 'auto_orchestrator');
+  assert.equal(payload.session_contract_source, 'inferred');
   assert.equal(payload.children[0].thread_kind, 'child_session');
   assert.equal(payload.children[0].thread_kind_label, 'child session');
   assert.equal(payload.children[0].session_role, 'executor');
   assert.equal(payload.children[0].session_scope, 'auto');
   assert.equal(payload.children[0].session_layer, 'child');
+  assert.equal(payload.children[0].session_contract_source, 'fallback');
 });
 
 test('session repair backfills stale failed sessions from terminal events', async () => {

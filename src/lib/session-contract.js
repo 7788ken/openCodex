@@ -157,51 +157,76 @@ export function buildSessionContractSnapshot(value, fallback = {}) {
   };
 }
 
-export function inferSessionContract(session, fallback = null) {
+export function resolveSessionContract(session, fallback = null) {
   const explicit = normalizeSessionContract(session?.session_contract || session?.contract || session);
   if (explicit) {
-    return explicit;
+    return {
+      contract: explicit,
+      source: 'explicit'
+    };
   }
 
   const normalizedFallback = normalizeSessionContract(fallback);
   if (normalizedFallback) {
-    return normalizedFallback;
+    return {
+      contract: normalizedFallback,
+      source: 'fallback'
+    };
   }
 
   if (!session || typeof session !== 'object') {
-    return null;
+    return {
+      contract: null,
+      source: 'none'
+    };
   }
 
   if (session.command === 'cto') {
-    return buildSessionContract({
-      layer: 'host',
-      thread_kind: 'host_workflow',
-      role: 'cto_supervisor',
-      scope: 'telegram_cto',
-      supervisor_session_id: session.parent_session_id || ''
-    });
+    return {
+      contract: buildSessionContract({
+        layer: 'host',
+        thread_kind: 'host_workflow',
+        role: 'cto_supervisor',
+        scope: 'telegram_cto',
+        supervisor_session_id: session.parent_session_id || ''
+      }),
+      source: 'inferred'
+    };
   }
 
   if (session.command === 'auto') {
-    return buildSessionContract({
-      layer: 'host',
-      thread_kind: 'host_workflow',
-      role: 'auto_orchestrator',
-      scope: 'auto',
-      supervisor_session_id: session.parent_session_id || ''
-    });
+    return {
+      contract: buildSessionContract({
+        layer: 'host',
+        thread_kind: 'host_workflow',
+        role: 'auto_orchestrator',
+        scope: 'auto',
+        supervisor_session_id: session.parent_session_id || ''
+      }),
+      source: 'inferred'
+    };
   }
 
   if (session.command === 'im' && session.input?.arguments?.provider === 'telegram') {
-    return buildSessionContract({
-      layer: 'host',
-      thread_kind: 'service_listener',
-      role: session.input?.arguments?.delegate_mode === 'cto' ? 'telegram_cto_listener' : 'telegram_listener',
-      scope: session.input?.arguments?.delegate_mode === 'cto' ? 'telegram_cto' : 'telegram'
-    });
+    return {
+      contract: buildSessionContract({
+        layer: 'host',
+        thread_kind: 'service_listener',
+        role: session.input?.arguments?.delegate_mode === 'cto' ? 'telegram_cto_listener' : 'telegram_listener',
+        scope: session.input?.arguments?.delegate_mode === 'cto' ? 'telegram_cto' : 'telegram'
+      }),
+      source: 'inferred'
+    };
   }
 
-  return null;
+  return {
+    contract: null,
+    source: 'none'
+  };
+}
+
+export function inferSessionContract(session, fallback = null) {
+  return resolveSessionContract(session, fallback).contract;
 }
 
 export function isTruthyEnv(value) {

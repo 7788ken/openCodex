@@ -182,6 +182,8 @@
 
 `telegram task-history` 会输出当前已知的完整任务派发历史，而不只是 `telegram status` 中默认展示的最近 5 条。
 
+`telegram workflow-detail` 和 `telegram dispatch-detail` 的 JSON 载荷会额外给出 `session_contract_source`（`explicit` / `fallback` / `inferred` / `none`），用于区分显式保存的 contract 与旧记录推断出的元数据。
+
 `telegram dispatch-detail --index <n>` 会把某一条历史任务解析成适合 UI 展示的人类可读详情，内容包括：
 
 - 工作流 id 与工作流目标
