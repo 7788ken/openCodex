@@ -2,6 +2,15 @@
 
 ## 2026-03-19
 
+- Added a live health probe to `opencodex remote status` for running bridge sessions:
+  - status payload now includes `health_probe` with attempted/ok/url/status fields
+  - text-mode status now prints probe outcome and adds a direct warning when a running bridge fails health checks
+- Added regression coverage for remote health-probe paths in `tests/remote.test.js`:
+  - stale fixture path (probe attempted + failed)
+  - live `remote serve` path (probe succeeds with `200` and `ok: true`)
+- Validation passed for the remote follow-up:
+  - `node --test tests/remote.test.js`
+
 - Service workflow/dispatch aggregation now reconciles child-session contract metadata from child `session.json` artifacts, reducing stale parent-link fallback noise.
 - Rehydrated supervisor resume handling was hardened so a tick re-reads persisted workflow/session state after acquiring the resume lease before resuming.
 - Added regression coverage for stale parent child-session metadata vs child-session contract reconciliation in `tests/service.test.js`.

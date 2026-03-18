@@ -252,6 +252,7 @@ async function runRemoteStatus(args) {
   const messagesPath = resolveMessagesPath(cwd, remoteSession);
   const messages = await readMessageLog(messagesPath);
   const latestMessage = messages.length ? messages[messages.length - 1] : null;
+  const healthProbe = await probeRemoteHealth({ host, port, sessionStatus: remoteSession.status });
 
   const payload = {
     session_id: remoteSession.session_id,
@@ -268,7 +269,8 @@ async function runRemoteStatus(args) {
           text: latestMessage.text || null
         }
       : null,
-    warnings: buildRemoteExposureWarnings(exposure),
+    health_probe: healthProbe,
+    warnings: buildRemoteExposureWarnings(exposure, healthProbe),
     success_checks: buildRemoteSuccessChecks({ host, port, urls }),
     common_failures: buildRemoteCommonFailures()
   };
@@ -283,6 +285,14 @@ async function runRemoteStatus(args) {
   process.stdout.write(`Bind: ${payload.host || 'unknown'}:${payload.port ?? 'unknown'}\n`);
   process.stdout.write(`Exposure: ${payload.exposure.label}\n`);
   process.stdout.write(`Messages received: ${payload.message_count}\n`);
+  if (payload.health_probe?.attempted) {
+    process.stdout.write(`Health probe: ${payload.health_probe.ok ? 'ok' : 'failed'}  ${payload.health_probe.url || ''}\n`);
+    if (!payload.health_probe.ok && payload.health_probe.error) {
+      process.stdout.write(`  ${payload.health_probe.error}\n`);
+    }
+  } else if (payload.health_probe?.skipped_reason) {
+    process.stdout.write(`Health probe: skipped (${payload.health_probe.skipped_reason})\n`);
+  }
   if (payload.latest_message) {
     process.stdout.write(`Latest message: ${payload.latest_message.created_at}  ${payload.latest_message.sender}\n`);
     process.stdout.write(`  ${payload.latest_message.text}\n`);
@@ -629,27 +639,28 @@ function classifyRemoteExposure(hostInput) {
   };
 }
 
-function buildRemoteExposureWarnings(exposure) {
+function buildRemoteExposureWarnings(exposure, healthProbe = null) {
+  const warnings = [];
   if (exposure.mode === 'network_wide') {
-    return [
+    warnings.push(
       'Bridge is bound to all interfaces. Keep it behind private network or a controlled tunnel.',
       'Do not share the token in chat logs, screenshots, or public notes.'
-    ];
-  }
-
-  if (exposure.mode === 'specific_interface') {
-    return [
+    );
+  } else if (exposure.mode === 'specific_interface') {
+    warnings.push(
       'Bridge is bound to a specific interface that may be publicly reachable. Verify routing and firewall policy.'
-    ];
-  }
-
-  if (exposure.mode === 'private_interface') {
-    return [
+    );
+  } else if (exposure.mode === 'private_interface') {
+    warnings.push(
       'Bridge is reachable from a private interface. Keep host firewall and token hygiene enabled.'
-    ];
+    );
   }
 
-  return [];
+  if (healthProbe?.attempted && !healthProbe.ok) {
+    warnings.push('Health probe failed. Verify that the remote bridge process is still running and listening on the expected host/port.');
+  }
+
+  return warnings;
 }
 
 function buildRemoteSuccessChecks({ host, port, urls }) {
@@ -684,6 +695,89 @@ function buildSuggestedUrls(host, port) {
     urls.add(`http://${address}:${port}`);
   }
   return [...urls];
+}
+
+async function probeRemoteHealth({ host, port, sessionStatus }) {
+  if (sessionStatus !== 'running') {
+    return {
+      attempted: false,
+      ok: false,
+      skipped_reason: `session_status_${String(sessionStatus || 'unknown')}`
+    };
+  }
+
+  if (!Number.isInteger(port) || port < 0) {
+    return {
+      attempted: false,
+      ok: false,
+      skipped_reason: 'missing_port'
+    };
+  }
+
+  const probeBaseUrl = buildRemoteProbeBaseUrl(host, port);
+  if (!probeBaseUrl) {
+    return {
+      attempted: false,
+      ok: false,
+      skipped_reason: 'unsupported_host'
+    };
+  }
+
+  const url = `${probeBaseUrl}/health`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1200);
+  timeout.unref?.();
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      signal: controller.signal
+    });
+    const body = await response.json().catch(() => ({}));
+    return {
+      attempted: true,
+      ok: response.ok && body?.ok === true,
+      url,
+      status_code: response.status,
+      response_ok: body?.ok === true
+    };
+  } catch (error) {
+    const name = error instanceof Error ? error.name : 'Error';
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      attempted: true,
+      ok: false,
+      url,
+      error: `${name}: ${message}`
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function buildRemoteProbeBaseUrl(hostInput, port) {
+  const host = String(hostInput || '').trim().toLowerCase();
+  if (!host) {
+    return null;
+  }
+
+  if (host === '0.0.0.0' || host === '::') {
+    return `http://127.0.0.1:${port}`;
+  }
+
+  if (host === 'localhost' || host === '127.0.0.1') {
+    return `http://127.0.0.1:${port}`;
+  }
+
+  if (host === '::1') {
+    return `http://[::1]:${port}`;
+  }
+
+  if (isPrivateAddress(host)) {
+    return `http://${host}:${port}`;
+  }
+
+  return null;
 }
 
 function isPrivateAddress(host) {

@@ -108,7 +108,7 @@ Receive remote messages from a phone through a token-protected HTTP bridge tied 
 - accept mobile message submission with token auth
 - save inbound messages as local artifacts
 - expose a CLI inbox view for the latest remote session
-- expose a CLI status snapshot with deployment checks and troubleshooting hints
+- expose a CLI status snapshot with deployment checks, live health probe signals, and troubleshooting hints
 
 **Minimal flags**
 
@@ -214,7 +214,6 @@ Install and control a macOS background service for the Telegram CTO bridge, with
 
 - install a user `launchd` agent for `opencodex im telegram listen --cto`
 - persist the Telegram bot token and proxy-related env in a dedicated env file
-- expose start / stop / restart / status / send-status / task-history / dispatch-detail / uninstall controls
 - expose start / stop / restart / status / send-status / supervise / workflow-history / workflow-detail / task-history / dispatch-detail / set-setting / reset-cto-soul / uninstall controls
 - optionally compile a lightweight stay-open menu bar app with task browsing and task-detail dialogs
 

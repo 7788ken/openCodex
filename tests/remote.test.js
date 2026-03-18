@@ -138,10 +138,49 @@ test('remote status returns deployment checks and troubleshooting hints in json 
   assert.equal(payload.exposure.mode, 'network_wide');
   assert.equal(payload.message_count, 2);
   assert.equal(payload.latest_message.text, 'second');
+  assert.equal(payload.health_probe.attempted, true);
+  assert.equal(payload.health_probe.ok, false);
+  assert.equal(payload.health_probe.url, 'http://127.0.0.1:3789/health');
   assert.ok(payload.urls.some((url) => url.includes(':3789')));
   assert.ok(payload.warnings.some((line) => line.includes('all interfaces')));
+  assert.ok(payload.warnings.some((line) => line.includes('Health probe failed')));
   assert.ok(payload.success_checks.some((line) => line.includes('/health')));
   assert.ok(payload.common_failures.some((line) => line.includes('Unauthorized')));
+});
+
+test('remote status probes health successfully while remote serve is running', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-status-live-'));
+  const token = 'test-remote-status-live-token';
+  const child = spawn('node', [cli, 'remote', 'serve', '--cwd', cwd, '--host', '127.0.0.1', '--port', '0', '--token', token], {
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  const port = await waitForPort(() => extractPort(stdout));
+  const status = await runCli(['remote', 'status', '--cwd', cwd, '--json']);
+  assert.equal(status.code, 0);
+  const payload = JSON.parse(status.stdout);
+  assert.equal(payload.status, 'running');
+  assert.equal(payload.port, port);
+  assert.equal(payload.health_probe.attempted, true);
+  assert.equal(payload.health_probe.ok, true);
+  assert.equal(payload.health_probe.status_code, 200);
+  assert.equal(payload.health_probe.response_ok, true);
+  assert.equal(payload.health_probe.url, `http://127.0.0.1:${port}/health`);
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
 });
 
 function runCli(args) {
