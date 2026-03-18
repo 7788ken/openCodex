@@ -215,6 +215,7 @@ Install and control a macOS background service for the Telegram CTO bridge, with
 - install a user `launchd` agent for `opencodex im telegram listen --cto`
 - persist the Telegram bot token and proxy-related env in a dedicated env file
 - expose start / stop / restart / status / send-status / task-history / dispatch-detail / uninstall controls
+- expose start / stop / restart / status / send-status / supervise / workflow-history / workflow-detail / task-history / dispatch-detail / set-setting / reset-cto-soul / uninstall controls
 - optionally compile a lightweight stay-open menu bar app with task browsing and task-detail dialogs
 
 **Minimal flags**
@@ -225,10 +226,15 @@ Install and control a macOS background service for the Telegram CTO bridge, with
 - `telegram stop`
 - `telegram restart`
 - `telegram send-status`
+- `telegram supervise`
 - `telegram set-workspace`
 - `telegram relink`
+- `telegram workflow-history`
+- `telegram workflow-detail`
 - `telegram task-history`
 - `telegram dispatch-detail`
+- `telegram set-setting`
+- `telegram reset-cto-soul`
 - `telegram uninstall`
 - `--cwd <dir>`
 - `--chat-id <id>`

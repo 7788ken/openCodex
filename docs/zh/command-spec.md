@@ -215,6 +215,7 @@ openCodex 是架在 Codex CLI 之上的轻量 CLI 层。
 - 为 `opencodex im telegram listen --cto` 安装用户级 `launchd` agent
 - 把 Telegram bot token 和代理相关 env 固化到独立 env 文件
 - 提供 start / stop / restart / status / send-status / task-history / dispatch-detail / uninstall 控制
+- 提供 start / stop / restart / status / send-status / supervise / workflow-history / workflow-detail / task-history / dispatch-detail / set-setting / reset-cto-soul / uninstall 控制
 - 可选编译一个轻量的 stay-open 菜单栏 app，并支持任务浏览与任务详情弹窗
 
 **Minimal flags**
@@ -225,10 +226,15 @@ openCodex 是架在 Codex CLI 之上的轻量 CLI 层。
 - `telegram stop`
 - `telegram restart`
 - `telegram send-status`
+- `telegram supervise`
 - `telegram set-workspace`
 - `telegram relink`
+- `telegram workflow-history`
+- `telegram workflow-detail`
 - `telegram task-history`
 - `telegram dispatch-detail`
+- `telegram set-setting`
+- `telegram reset-cto-soul`
 - `telegram uninstall`
 - `--cwd <dir>`
 - `--chat-id <id>`

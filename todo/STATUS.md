@@ -1,5 +1,16 @@
 # Status Log
 
+## 2026-03-19
+
+- Service workflow/dispatch aggregation now reconciles child-session contract metadata from child `session.json` artifacts, reducing stale parent-link fallback noise.
+- Rehydrated supervisor resume handling was hardened so a tick re-reads persisted workflow/session state after acquiring the resume lease before resuming.
+- Added regression coverage for stale parent child-session metadata vs child-session contract reconciliation in `tests/service.test.js`.
+- Validated the resume-race hardening with focused coverage:
+  - `node --test tests/im.test.js --test-name-pattern "does not duplicate a rehydrated workflow when two supervisor ticks race$"`
+- Full regression is green after the follow-up:
+  - `npm test` (`179/179`)
+- Synced command and status docs to current service surface (`supervise`, workflow history/detail, settings/reset controls, contract-source and hydration notes).
+
 ## 2026-03-18
 
 - Reviewed the retained `mobileCodexHelper` comparison notes after manual trimming and converted the surviving direction into a dedicated follow-up todo.
