@@ -1,4 +1,4 @@
-# Project Status Snapshot (2026-03-18)
+# Project Status Snapshot (2026-03-19)
 
 ## Positioning
 
@@ -33,8 +33,8 @@ The product focus is workflow orchestration, normalized sessions, policy mapping
   - `im`
   - `service`
   - `install`
-- Test status (2026-03-18):
-  - `npm test` is green, `172/172` passed.
+- Test status (2026-03-19):
+  - `npm test` is green, `179/179` passed.
 
 ### Board Status Summary
 
@@ -58,6 +58,8 @@ The product focus is workflow orchestration, normalized sessions, policy mapping
 
 - Strengthened host-supervisor recovery paths, concurrency leases, and periodic supervisor ticks in service mode.
 - Extended session-contract metadata across `im/auto/run/review/session/service` flows.
+- Service workflow/dispatch aggregation now hydrates child-session contract snapshots from child `session.json` artifacts when parent linkage metadata is stale.
+- Rehydrated supervisor resume now re-checks persisted workflow/session state after lease acquisition to prevent duplicate resume in race windows.
 - Completed detached install bundle/install/status flows, service relink path, and bootstrap install path.
 - Added bilingual `mobile-control-plane` boundary notes and linked follow-up tracking in `T020`.
 
@@ -67,4 +69,3 @@ The product focus is workflow orchestration, normalized sessions, policy mapping
 - Historical sessions and legacy producers still require some contract inference/backfill paths.
 - Phone/web control plane is at "boundary converged, implementation pending" stage.
 - Detached install is usable, but broader packaging/product polish remains.
-

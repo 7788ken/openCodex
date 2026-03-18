@@ -102,6 +102,7 @@ If the new workspace has no `.opencodex/sessions` tree yet, openCodex also copie
 
 `telegram supervise` runs one installed-service host-supervisor tick by reusing the saved workspace, profile, and Telegram bot environment.
 Unlike `start` / `restart`, it does not boot the long-poll listener; it only resumes already persisted CTO workflows and queued host-executor work once.
+During rehydration races, the supervisor now refreshes workflow/session artifacts after acquiring the resume lease before continuing, which prevents stale ticks from re-running an already-finished workflow.
 
 ### `telegram workflow-history`
 
@@ -183,6 +184,7 @@ The app can:
 `telegram task-history` exposes the full known dispatch history collected from CTO workflow sessions, not just the latest 5 records shown by `telegram status`.
 
 `telegram workflow-detail` and `telegram dispatch-detail` JSON payloads include `session_contract_source` (`explicit`, `fallback`, `inferred`, `none`) so older inferred metadata is distinguishable from explicitly stored contracts.
+When parent `child_sessions` metadata is stale, service aggregation now hydrates child contract snapshots from the child `session.json` record where available.
 
 `telegram dispatch-detail --index <n>` resolves one history entry into a human-readable task detail view, including:
 

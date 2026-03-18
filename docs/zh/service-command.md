@@ -102,6 +102,7 @@
 
 `telegram supervise` 会复用已安装 service 保存下来的 workspace、profile 和 Telegram bot 环境，执行一次宿主 supervisor tick。
 它不会像 `start` / `restart` 那样启动长轮询 listener，而是只把已经落盘的 CTO workflow 和排队中的 host-executor 工作推进一轮。
+在 rehydrated workflow 并发恢复场景下，supervisor 现在会在拿到 resume lease 后先刷新 workflow/session 落盘状态再继续，避免旧 tick 对已完成工作流重复恢复。
 
 ### `telegram workflow-history`
 
@@ -183,6 +184,7 @@
 `telegram task-history` 会输出当前已知的完整任务派发历史，而不只是 `telegram status` 中默认展示的最近 5 条。
 
 `telegram workflow-detail` 和 `telegram dispatch-detail` 的 JSON 载荷会额外给出 `session_contract_source`（`explicit` / `fallback` / `inferred` / `none`），用于区分显式保存的 contract 与旧记录推断出的元数据。
+当父会话 `child_sessions` 元数据过期时，service 聚合层现在会优先尝试从子会话 `session.json` 回填 contract 快照，减少不必要的 fallback 标记。
 
 `telegram dispatch-detail --index <n>` 会把某一条历史任务解析成适合 UI 展示的人类可读详情，内容包括：
 

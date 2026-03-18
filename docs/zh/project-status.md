@@ -1,4 +1,4 @@
-# 项目状态快照（2026-03-18）
+# 项目状态快照（2026-03-19）
 
 ## 定位
 
@@ -33,8 +33,8 @@ openCodex 是构建在 Codex CLI 之上的本地编排层，不重写本地 codi
   - `im`
   - `service`
   - `install`
-- 测试状态（2026-03-18）：
-  - `npm test` 通过，`172/172` 通过。
+- 测试状态（2026-03-19）：
+  - `npm test` 通过，`179/179` 通过。
 
 ### 看板状态摘要
 
@@ -58,6 +58,8 @@ openCodex 是构建在 Codex CLI 之上的本地编排层，不重写本地 codi
 
 - 增加并强化 host-supervisor 恢复路径、并发 lease 防重机制与 service 周期性 supervisor tick。
 - 将 session-contract 元数据扩展到 `im/auto/run/review/session/service` 相关链路。
+- service 在 workflow/dispatch 聚合时，父会话 child metadata 过期时会从子会话 `session.json` 回填 contract 快照。
+- rehydrated supervisor 在拿到 resume lease 后会重新核对持久化 workflow/session 状态，避免并发窗口下重复恢复。
 - 完成 detached install 的 bundle/install/status、service relink 和 bootstrap 安装链路。
 - 补齐 `mobile-control-plane` 中英文边界文档，并建立 `T020` 跟踪。
 
@@ -67,4 +69,3 @@ openCodex 是构建在 Codex CLI 之上的本地编排层，不重写本地 codi
 - 历史 session 与旧生产路径仍存在部分 contract 推断/回填逻辑。
 - 手机/Web 控制面仍处于“边界已收敛、实现待落地”的阶段。
 - detached 安装链路可用，但产品化 packaging 细节仍需持续打磨。
-
