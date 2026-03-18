@@ -2129,7 +2129,7 @@ function renderWorkflowHistoryOutput(payload, json, title) {
     payload.items.forEach((item, index) => {
       lines.push(`Workflow ${index + 1}: ${item.label}`);
       if (item.thread_kind_label || item.session_role) {
-        lines.push(`Workflow ${index + 1} Thread: ${item.thread_kind_label || item.thread_kind || 'unknown'}${item.session_role ? ` • role ${item.session_role}` : ''}`);
+        lines.push(`Workflow ${index + 1} Thread: ${item.thread_kind_label || item.thread_kind || 'unknown'}${item.session_role ? ` • role ${item.session_role}` : ''}${formatSessionContractSourceSuffix(item.session_contract_source)}`);
       }
       if (item.updated_at) {
         lines.push(`Workflow ${index + 1} Updated: ${item.updated_at}`);
@@ -2288,7 +2288,7 @@ function renderWorkflowDetailOutput(payload, json, title) {
   }
   lines.push(`Status: ${payload.status || 'unknown'}`);
   if (payload.thread_kind_label || payload.session_role) {
-    lines.push(`Thread: ${payload.thread_kind_label || payload.thread_kind || 'unknown'}${payload.session_role ? ` • role ${payload.session_role}` : ''}`);
+    lines.push(`Thread: ${payload.thread_kind_label || payload.thread_kind || 'unknown'}${payload.session_role ? ` • role ${payload.session_role}` : ''}${formatSessionContractSourceSuffix(payload.session_contract_source)}`);
   }
   if (payload.goal) {
     lines.push(`Goal: ${truncateInline(payload.goal, 160)}`);
@@ -2530,7 +2530,7 @@ function renderDispatchDetailOutput(payload, json, title) {
   lines.push(`Status: ${payload.status || 'unknown'}`);
   if (payload.thread_kind_label || payload.session_role || payload.execution_surface) {
     lines.push(`Execution Surface: ${payload.execution_surface || payload.thread_kind_label || payload.thread_kind || 'unknown'}`);
-    lines.push(`Session Thread: ${payload.thread_kind_label || payload.thread_kind || 'unknown'}${payload.session_role ? ` • role ${payload.session_role}` : ''}`);
+    lines.push(`Session Thread: ${payload.thread_kind_label || payload.thread_kind || 'unknown'}${payload.session_role ? ` • role ${payload.session_role}` : ''}${formatSessionContractSourceSuffix(payload.session_contract_source)}`);
   }
   if (payload.updated_at) {
     lines.push(`Updated: ${payload.updated_at}`);
@@ -2568,6 +2568,10 @@ function renderDispatchDetailOutput(payload, json, title) {
   }
 
   process.stdout.write(lines.join('\n') + '\n');
+}
+
+function formatSessionContractSourceSuffix(source) {
+  return source && source !== 'none' ? ` • source ${source}` : '';
 }
 
 function appendDispatchDetailSection(lines, heading, items, maxCount, maxLength) {

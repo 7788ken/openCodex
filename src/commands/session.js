@@ -1268,8 +1268,8 @@ function outputSession(session, asJson) {
   }
   process.stdout.write(renderHumanSummary(payload.summary));
   process.stdout.write(`\nSession: ${payload.session_id}\n`);
-  if (payload.thread_kind_label || payload.session_role) {
-    process.stdout.write(`Thread: ${payload.thread_kind_label || payload.thread_kind || 'unknown'}${payload.session_role ? ` • role ${payload.session_role}` : ''}\n`);
+  if (payload.thread_kind_label || payload.session_role || payload.session_contract_source) {
+    process.stdout.write(`Thread: ${payload.thread_kind_label || payload.thread_kind || 'unknown'}${payload.session_role ? ` • role ${payload.session_role}` : ''}${formatSessionContractSourceSuffix(payload.session_contract_source)}\n`);
   }
   if (payload.parent_session_id) {
     process.stdout.write(`Parent: ${payload.parent_session_id}\n`);
@@ -1295,7 +1295,7 @@ function outputSessionTree(tree, asJson) {
 
 function renderSessionTree(node, prefix, isLastChild, lines) {
   const threadLabel = node.thread_kind_label || node.thread_kind
-    ? `  ${node.thread_kind_label || node.thread_kind}${node.session_role ? ` • role ${node.session_role}` : ''}`
+    ? `  ${node.thread_kind_label || node.thread_kind}${node.session_role ? ` • role ${node.session_role}` : ''}${formatSessionContractSourceSuffix(node.session_contract_source)}`
     : '';
   const label = `${node.session_id}  ${node.command}  ${node.status}${threadLabel}`;
   if (!prefix) {
@@ -1333,7 +1333,11 @@ function buildSessionPresentation(session, fallback = null) {
 function formatSessionListLine(session) {
   const payload = buildSessionCliPayload(session);
   const threadLabel = payload.thread_kind_label || payload.session_role
-    ? `  ${payload.thread_kind_label || payload.thread_kind || 'unknown'}${payload.session_role ? ` • role ${payload.session_role}` : ''}`
+    ? `  ${payload.thread_kind_label || payload.thread_kind || 'unknown'}${payload.session_role ? ` • role ${payload.session_role}` : ''}${formatSessionContractSourceSuffix(payload.session_contract_source)}`
     : '';
   return `${payload.session_id}  ${payload.command}  ${payload.status}  ${payload.updated_at}${threadLabel}`;
+}
+
+function formatSessionContractSourceSuffix(source) {
+  return source && source !== 'none' ? ` • source ${source}` : '';
 }

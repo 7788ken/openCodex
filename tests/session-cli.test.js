@@ -46,6 +46,10 @@ test('session show exposes derived thread metadata in json mode', async () => {
   assert.equal(payload.session_scope, 'telegram_cto');
   assert.equal(payload.session_layer, 'host');
   assert.equal(payload.session_contract_source, 'inferred');
+
+  const humanResult = await runCli(['session', 'show', sessionId, '--cwd', cwd]);
+  assert.equal(humanResult.code, 0);
+  assert.match(humanResult.stdout, /Thread: host workflow • role cto_supervisor • source inferred/);
 });
 
 test('session show keeps explicit session contract metadata and marks source as explicit', async () => {
@@ -151,6 +155,11 @@ test('session tree prefers recorded child session contract metadata for child no
   assert.equal(payload.children[0].session_scope, 'auto');
   assert.equal(payload.children[0].session_layer, 'child');
   assert.equal(payload.children[0].session_contract_source, 'fallback');
+
+  const humanTree = await runCli(['session', 'tree', childId, '--cwd', cwd]);
+  assert.equal(humanTree.code, 0);
+  assert.match(humanTree.stdout, /auto-20260308-000000-root\s+auto\s+completed\s+host workflow • role auto_orchestrator • source inferred/);
+  assert.match(humanTree.stdout, /run-20260308-000100-child\s+run\s+completed\s+child session • role executor • source fallback/);
 });
 
 test('session repair backfills stale failed sessions from terminal events', async () => {

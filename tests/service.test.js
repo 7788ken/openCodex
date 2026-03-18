@@ -490,6 +490,17 @@ test('service telegram workflow-detail returns workflow execution details for UI
   assert.equal(payload.tasks[1].session_contract_source, 'fallback');
   assert.match(payload.workflow_state_path, /cto-workflow\.json$/);
   assert.match(payload.session_path, /cto-20260309-100500-waiting\/session\.json$/);
+
+  const humanDetail = await runCli([
+    'service', 'telegram', 'workflow-detail',
+    '--state-dir', stateDir,
+    '--index', '1'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+  assert.equal(humanDetail.code, 0);
+  assert.match(humanDetail.stdout, /Thread: host workflow • role cto_supervisor • source inferred/);
 });
 
 test('service telegram dispatch-detail returns task execution details for UI viewing', async () => {
@@ -565,6 +576,17 @@ test('service telegram dispatch-detail returns task execution details for UI vie
   assert.match(payload.last_message_path, /run-task-2\/last-message\.txt$/);
   assert.ok(payload.recent_activity.some((item) => item.includes('Checklist updated')));
   assert.match(payload.last_message, /Waiting for CEO confirmation/);
+
+  const humanDetail = await runCli([
+    'service', 'telegram', 'dispatch-detail',
+    '--state-dir', stateDir,
+    '--index', String(dispatchIndex + 1)
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+  assert.equal(humanDetail.code, 0);
+  assert.match(humanDetail.stdout, /Session Thread: child session • role worker • source fallback/);
 });
 
 
