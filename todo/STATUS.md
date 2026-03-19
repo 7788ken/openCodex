@@ -2,6 +2,12 @@
 
 ## 2026-03-19
 
+- Extended explicit session targeting to remote inbox:
+  - `remote inbox` now supports `--session-id <id|latest>` and uses the same selector contract as `remote status`.
+  - text-mode inbox selection output now reuses the same explicit selection rendering (`explicit_latest(<requested>)`, `explicit_id(<requested>)`).
+- Added regression coverage for inbox explicit targeting and missing-session fast-fail in `tests/remote.test.js`.
+- Synced EN/ZH remote docs and command-spec docs for inbox/status selector parity.
+
 - Added explicit remote-session targeting for operational diagnostics:
   - `remote status` now supports `--session-id <id|latest>` to inspect one exact remote session without relying on default active-first selection.
   - selection provenance now includes explicit modes (`explicit_latest`, `explicit_id`) and preserves requested selector metadata.

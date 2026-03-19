@@ -78,6 +78,7 @@ That note should define:
   - `remote inbox` / `remote status` now prefer active `remote` sessions before falling back to historical records, reducing stale status reads during multi-session diagnostics.
   - `remote inbox` / `remote status` now expose explicit session-selection provenance (`active` vs `latest_history`) so mobile/control-plane diagnostics are explainable.
   - `remote status` now supports `--session-id <id|latest>` for explicit historical-session diagnostics when operators need exact session targeting.
+  - `remote inbox` now also supports `--session-id <id|latest>`, so message inspection and status diagnostics share one selector contract.
   - `remote` command docs and command-spec docs now include the new status surface and support guidance entrypoint.
 - The remaining work is broader phone/web control-plane implementation follow-through, not boundary discovery.
 - The retained direction is:

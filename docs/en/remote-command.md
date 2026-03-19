@@ -15,8 +15,8 @@ The first version provides three subcommands:
 
 `remote serve` starts a token-protected local HTTP server.
 It creates a `remote` session, prints phone URLs, stores incoming messages in a session artifact, and keeps a normal openCodex audit trail.
-`remote inbox` reads the latest stored messages from the preferred `remote` session (active first, otherwise latest completed/failed record).
-`remote status` reads the same preferred `remote` session and prints a deployment-oriented status snapshot:
+`remote inbox` reads stored messages from the preferred `remote` session by default (active first, otherwise latest completed/failed record), and can explicitly target one session.
+`remote status` reads the same selection model and prints a deployment-oriented status snapshot:
 
 - session selection source (`active`, `latest_history`, `explicit_latest`, `explicit_id`)
 - bind scope and exposure label
@@ -39,6 +39,7 @@ It creates a `remote` session, prints phone URLs, stores incoming messages in a 
 
 - `--cwd <dir>`
 - `--limit <n>`
+- `--session-id <id|latest>` (optional)
 - `--json`
 
 ### `remote status`
@@ -47,7 +48,7 @@ It creates a `remote` session, prints phone URLs, stores incoming messages in a 
 - `--json`
 - `--session-id <id|latest>` (optional, status only)
 
-Status selection rules:
+Session selection rules (`remote inbox` and `remote status`):
 
 - default: prefer active `remote` session (`running` / `queued`), otherwise use latest history (`latest_history`)
 - `--session-id latest`: force latest remote session by update time (`explicit_latest`)

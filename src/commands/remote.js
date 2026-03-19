@@ -18,7 +18,8 @@ const SERVE_OPTION_SPEC = {
 const INBOX_OPTION_SPEC = {
   cwd: { type: 'string' },
   json: { type: 'boolean' },
-  limit: { type: 'string' }
+  limit: { type: 'string' },
+  'session-id': { type: 'string' }
 };
 
 const STATUS_OPTION_SPEC = {
@@ -31,7 +32,7 @@ export async function runRemoteCommand(args) {
   const [subcommand, ...rest] = args;
 
   if (!subcommand || subcommand === '--help' || subcommand === '-h') {
-    process.stdout.write('Usage:\n  opencodex remote serve [--cwd <dir>] [--host <host>] [--port <n>] [--token <value>] [--json]\n  opencodex remote inbox [--cwd <dir>] [--limit <n>] [--json]\n  opencodex remote status [--cwd <dir>] [--session-id <id|latest>] [--json]\n');
+    process.stdout.write('Usage:\n  opencodex remote serve [--cwd <dir>] [--host <host>] [--port <n>] [--token <value>] [--json]\n  opencodex remote inbox [--cwd <dir>] [--limit <n>] [--session-id <id|latest>] [--json]\n  opencodex remote status [--cwd <dir>] [--session-id <id|latest>] [--json]\n');
     return;
   }
 
@@ -203,7 +204,10 @@ async function runRemoteInbox(args) {
 
   const cwd = path.resolve(options.cwd || process.cwd());
   const limit = parsePositiveInteger(options.limit || '20', '--limit');
-  const remoteSelection = await resolvePreferredRemoteSession(cwd, 'opencodex remote inbox');
+  const requestedSessionId = typeof options['session-id'] === 'string' ? options['session-id'].trim() : '';
+  const remoteSelection = await resolvePreferredRemoteSession(cwd, 'opencodex remote inbox', {
+    sessionIdSelector: requestedSessionId
+  });
   const remoteSession = remoteSelection.session;
 
   const messagesPath = resolveMessagesPath(cwd, remoteSession);
@@ -222,7 +226,7 @@ async function runRemoteInbox(args) {
   }
 
   process.stdout.write(`Remote inbox for ${remoteSession.session_id}\n`);
-  process.stdout.write(`Session selection: ${remoteSelection.selection.mode}\n`);
+  process.stdout.write(`Session selection: ${renderSessionSelectionText(remoteSelection.selection)}\n`);
   if (!messages.length) {
     process.stdout.write('\nNo messages received yet.\n');
     return;

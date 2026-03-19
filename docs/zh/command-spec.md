@@ -120,7 +120,7 @@ openCodex 是架在 Codex CLI 之上的轻量 CLI 层。
 - `--port <n>`
 - `--token <value>`
 - `--limit <n>`
-- `--session-id <id|latest>`（仅 status）
+- `--session-id <id|latest>`（inbox/status）
 - `--json`
 
 **Non-goals**

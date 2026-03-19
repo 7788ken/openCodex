@@ -120,7 +120,7 @@ Receive remote messages from a phone through a token-protected HTTP bridge tied 
 - `--port <n>`
 - `--token <value>`
 - `--limit <n>`
-- `--session-id <id|latest>` (status only)
+- `--session-id <id|latest>` (inbox/status)
 - `--json`
 
 **Non-goals**

@@ -161,6 +161,22 @@ test('remote inbox/status prefer an active remote session over a newer completed
   assert.equal(inboxPayload.session_selection.mode, 'active');
   assert.equal(inboxPayload.messages[0].text, 'running message');
 
+  const latestInbox = await runCli(['remote', 'inbox', '--cwd', cwd, '--session-id', 'latest', '--json']);
+  assert.equal(latestInbox.code, 0);
+  const latestInboxPayload = JSON.parse(latestInbox.stdout);
+  assert.equal(latestInboxPayload.session_id, completedSessionId);
+  assert.equal(latestInboxPayload.session_selection.mode, 'explicit_latest');
+  assert.equal(latestInboxPayload.session_selection.requested, 'latest');
+  assert.equal(latestInboxPayload.messages[0].text, 'completed message');
+
+  const explicitInbox = await runCli(['remote', 'inbox', '--cwd', cwd, '--session-id', completedSessionId, '--json']);
+  assert.equal(explicitInbox.code, 0);
+  const explicitInboxPayload = JSON.parse(explicitInbox.stdout);
+  assert.equal(explicitInboxPayload.session_id, completedSessionId);
+  assert.equal(explicitInboxPayload.session_selection.mode, 'explicit_id');
+  assert.equal(explicitInboxPayload.session_selection.requested, completedSessionId);
+  assert.equal(explicitInboxPayload.messages[0].text, 'completed message');
+
   const status = await runCli(['remote', 'status', '--cwd', cwd, '--json']);
   assert.equal(status.code, 0);
   const statusPayload = JSON.parse(status.stdout);
@@ -184,6 +200,33 @@ test('remote inbox/status prefer an active remote session over a newer completed
   assert.equal(explicitStatusPayload.session_id, completedSessionId);
   assert.equal(explicitStatusPayload.session_selection.mode, 'explicit_id');
   assert.equal(explicitStatusPayload.session_selection.requested, completedSessionId);
+});
+
+test('remote inbox fails fast when --session-id does not match any remote session', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-inbox-missing-id-'));
+  const sessionId = 'remote-20260319-one-inbox';
+  const sessionDir = path.join(cwd, '.opencodex', 'sessions', sessionId);
+  const artifactsDir = path.join(sessionDir, 'artifacts');
+  const messagesPath = path.join(artifactsDir, 'messages.jsonl');
+
+  await mkdir(artifactsDir, { recursive: true });
+  await writeFile(path.join(sessionDir, 'session.json'), `${JSON.stringify({
+    session_id: sessionId,
+    command: 'remote',
+    status: 'completed',
+    created_at: '2026-03-19T00:00:00.000Z',
+    updated_at: '2026-03-19T00:01:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'embedded-http',
+    input: { prompt: '', arguments: { host: '127.0.0.1', port: 3789, auth: 'token', token_configured: true } },
+    summary: { title: 'Remote bridge completed', result: 'ok', status: 'completed', highlights: [], next_steps: [], findings: [] },
+    artifacts: [{ type: 'messages_log', path: messagesPath, description: 'Remote messages received by the mobile bridge.' }]
+  }, null, 2)}\n`, 'utf8');
+  await writeFile(messagesPath, '', 'utf8');
+
+  const result = await runCli(['remote', 'inbox', '--cwd', cwd, '--session-id', 'remote-does-not-exist']);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /Remote bridge session not found/);
 });
 
 test('remote status fails fast when --session-id does not match any remote session', async () => {

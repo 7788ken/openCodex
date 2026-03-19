@@ -15,8 +15,8 @@
 
 `remote serve` 会启动一个带 token 保护的本地 HTTP 服务。
 它会创建一个 `remote` session，打印手机访问 URL，把收到的消息保存到当前 `remote` session 的 artifact 中，同时保留正常的 openCodex 审计轨迹。
-`remote inbox` 会从“优先 remote session”读取最近消息（优先 active，会话不存在时回退到最新历史记录）。
-`remote status` 会读取同一条“优先 remote session”，输出面向部署与排障的状态快照，包括：
+`remote inbox` 默认从“优先 remote session”读取最近消息（优先 active，会话不存在时回退到最新历史记录），也支持显式指定目标会话。
+`remote status` 使用同一套选择模型，输出面向部署与排障的状态快照，包括：
 
 - 会话选择来源（`active`、`latest_history`、`explicit_latest`、`explicit_id`）
 - 绑定范围与暴露级别
@@ -39,6 +39,7 @@
 
 - `--cwd <dir>`
 - `--limit <n>`
+- `--session-id <id|latest>`（可选）
 - `--json`
 
 ### `remote status`
@@ -47,7 +48,7 @@
 - `--json`
 - `--session-id <id|latest>`（可选，仅 status 使用）
 
-status 会话选择规则：
+会话选择规则（`remote inbox` 与 `remote status` 共用）：
 
 - 默认：优先 active `remote` session（`running` / `queued`），否则回退最新历史（`latest_history`）
 - `--session-id latest`：强制按更新时间选择最新 `remote` session（`explicit_latest`）
