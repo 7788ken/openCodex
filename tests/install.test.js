@@ -359,6 +359,7 @@ test('install status text output lists preview prune candidate slot names', asyn
 
   assert.equal(result.code, 0);
   assert.match(result.stdout, /Prune Candidates \(preview keep 2\): 2/);
+  assert.match(result.stdout, /Prune Candidates \(default keep 3\): 1/);
   assert.match(result.stdout, /Prune Candidate Slots \(preview\):/);
   assert.match(result.stdout, /- slot-a/);
   assert.match(result.stdout, /- slot-c/);

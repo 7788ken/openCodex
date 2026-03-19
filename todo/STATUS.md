@@ -2,6 +2,10 @@
 
 ## 2026-03-19
 
+- Improved side-by-side retention readability in `install status` text mode:
+  - when `--keep <n>` differs from the default, status now prints both preview and default-policy prune candidate counts
+  - this makes retention impact comparison visible without switching to JSON
+
 - Improved install lifecycle readability for operators in text mode:
   - `opencodex install status` now lists preview prune candidate slot names (`Prune Candidate Slots (preview)`) in addition to candidate counts
   - this keeps JSON and text surfaces aligned for pre-cleanup decisions

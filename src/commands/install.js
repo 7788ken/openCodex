@@ -873,6 +873,14 @@ function renderInstallOutput(payload, json, title) {
   if (typeof payload.prune_candidate_count_preview === 'number') {
     lines.push(`Prune Candidates (preview keep ${payload.prune_keep_preview || 3}): ${payload.prune_candidate_count_preview}`);
   }
+  if (
+    typeof payload.prune_candidate_count_default === 'number'
+    && typeof payload.prune_keep_default === 'number'
+    && typeof payload.prune_keep_preview === 'number'
+    && payload.prune_keep_default !== payload.prune_keep_preview
+  ) {
+    lines.push(`Prune Candidates (default keep ${payload.prune_keep_default}): ${payload.prune_candidate_count_default}`);
+  }
   if (Array.isArray(payload.prune_candidates_preview) && payload.prune_candidates_preview.length) {
     lines.push('Prune Candidate Slots (preview):');
     for (const slot of payload.prune_candidates_preview) {

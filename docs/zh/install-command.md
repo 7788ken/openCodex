@@ -96,6 +96,7 @@ OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
 同时还会给出安装槽位生命周期信息，包括槽位总数、当前槽位名和 prune 预览信号。
 默认按 `keep=3` 预览，也可以通过 `--keep <n>` 先预估其他保留策略下的清理范围，再决定是否执行 `prune`。
 在文本模式下，`status` 还会直接列出预览候选槽位名，便于在清理前明确知道哪些 runtime 会被视为过期。
+当 `--keep` 与默认值不同，文本模式也会同时显示默认策略下的候选数，方便快速横向比较。
 如果这套安装来自 bundle，`status` 还会显示 bundle 路径以及 bundle manifest 里记录的原始来源。
 
 `prune` 会报告哪些安装槽位被保留、哪些被清理，并支持 dry-run 预览模式。

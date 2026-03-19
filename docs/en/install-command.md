@@ -96,6 +96,7 @@ OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
 It also reports install-slot lifecycle metadata, including total slot count, the current slot name, and prune preview signals.
 By default the preview uses `keep=3`, and `--keep <n>` can be used to preview a different retention policy before running `prune`.
 In text mode, `status` also lists preview candidate slot names directly so operators can see exactly which runtime slots are stale before cleanup.
+When `--keep` differs from the default, text mode also prints a default-policy candidate count for quick side-by-side comparison.
 If the install was created from a bundle, `status` also reports the bundle path plus the original source provenance captured in the bundle manifest.
 
 `prune` reports which install slots were kept or removed, and supports a dry-run mode for previewing cleanup before applying it.
