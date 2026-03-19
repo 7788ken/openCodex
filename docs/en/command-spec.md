@@ -179,6 +179,7 @@ Create and inspect a detached local runtime so the installed CLI and long-lived 
 - compile a thin `OpenCodex.app` shell that launches the same detached runtime
 - report the runtime CLI path that `service relink` should use
 - expose install-slot lifecycle preview in `status` before cleanup
+- support `status --keep <n>` to preview alternate prune retention without deleting slots
 - prune stale install slots while preserving the active runtime target
 
 **Minimal flags**

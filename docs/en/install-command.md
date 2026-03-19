@@ -62,6 +62,7 @@ OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
 - `--root <dir>`
 - `--bin-dir <dir>`
 - `--applications-dir <dir>`
+- `--keep <n>`; preview prune candidates using retention `n` (no deletion)
 - `--json`
 
 ### `prune`
@@ -92,7 +93,8 @@ OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
 - bundle provenance when `--bundle` was used
 
 `status` reports whether the detached runtime, CLI shim, and app shell are present, and which runtime `current` resolves to.
-It also reports install-slot lifecycle metadata, including total slot count, the current slot name, and default prune preview signals (`keep=3`) so stale slot cleanup can be planned before running `prune`.
+It also reports install-slot lifecycle metadata, including total slot count, the current slot name, and prune preview signals.
+By default the preview uses `keep=3`, and `--keep <n>` can be used to preview a different retention policy before running `prune`.
 If the install was created from a bundle, `status` also reports the bundle path plus the original source provenance captured in the bundle manifest.
 
 `prune` reports which install slots were kept or removed, and supports a dry-run mode for previewing cleanup before applying it.

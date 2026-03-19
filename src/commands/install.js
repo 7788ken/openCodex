@@ -37,6 +37,7 @@ const STATUS_OPTION_SPEC = {
   root: { type: 'string' },
   'bin-dir': { type: 'string' },
   'applications-dir': { type: 'string' },
+  keep: { type: 'string' },
   json: { type: 'boolean' }
 };
 
@@ -55,7 +56,7 @@ export async function runInstallCommand(args) {
       'Usage:\n' +
       '  opencodex install bundle [--output <path>] [--force] [--json]\n' +
       '  opencodex install detached [--root <dir>] [--bin-dir <dir>] [--applications-dir <dir>] [--bundle <path>] [--name <id>] [--link-source] [--force] [--json]\n' +
-      '  opencodex install status [--root <dir>] [--bin-dir <dir>] [--applications-dir <dir>] [--json]\n' +
+      '  opencodex install status [--root <dir>] [--bin-dir <dir>] [--applications-dir <dir>] [--keep <n>] [--json]\n' +
       '  opencodex install prune [--root <dir>] [--keep <n>] [--dry-run] [--json]\n'
     );
     return;
@@ -232,6 +233,7 @@ async function runInstallStatus(args) {
 
   const paths = resolveInstallPaths(options);
   const defaultPruneKeepCount = 3;
+  const previewPruneKeepCount = parseKeepCount(options.keep || String(defaultPruneKeepCount));
   const currentCliPath = path.join(paths.currentPath, 'bin', 'opencodex.js');
   const installed = await pathExists(currentCliPath);
   const shimExists = await pathExists(paths.shimPath);
@@ -240,12 +242,16 @@ async function runInstallStatus(args) {
   const statePath = path.join(paths.rootDir, INSTALL_STATE_FILE);
   const state = await loadInstallState(statePath);
   const currentTargetPath = await resolveCurrentTargetPath(paths.currentPath);
-  const prunePlan = planInstallSlotPrune(slots, currentTargetPath, defaultPruneKeepCount);
-  const staleSlotCount = prunePlan.removedSlots.length;
+  const defaultPrunePlan = planInstallSlotPrune(slots, currentTargetPath, defaultPruneKeepCount);
+  const previewPrunePlan = previewPruneKeepCount === defaultPruneKeepCount
+    ? defaultPrunePlan
+    : planInstallSlotPrune(slots, currentTargetPath, previewPruneKeepCount);
+  const staleSlotCount = previewPrunePlan.removedSlots.length;
   const statusNextSteps = [];
   if (staleSlotCount > 0) {
+    const keepFlag = previewPruneKeepCount === defaultPruneKeepCount ? '' : ` --keep ${previewPruneKeepCount}`;
     statusNextSteps.push(
-      `Run \`opencodex install prune${paths.rootDir ? ` --root ${shellQuote(paths.rootDir)}` : ''} --dry-run\` to preview cleanup of ${staleSlotCount} stale install slot${staleSlotCount === 1 ? '' : 's'}.`
+      `Run \`opencodex install prune${paths.rootDir ? ` --root ${shellQuote(paths.rootDir)}` : ''}${keepFlag} --dry-run\` to preview cleanup of ${staleSlotCount} stale install slot${staleSlotCount === 1 ? '' : 's'}.`
     );
   }
 
@@ -275,15 +281,21 @@ async function runInstallStatus(args) {
     bundle_source_root: state?.bundle_source_root || '',
     bundle_source_scope: state?.bundle_source_scope || '',
     slots_total: slots.length,
-    current_slot_name: prunePlan.currentSlot?.name || '',
-    slots_by_recency: prunePlan.slotsByRecency.map((slot) => ({
+    current_slot_name: previewPrunePlan.currentSlot?.name || '',
+    slots_by_recency: previewPrunePlan.slotsByRecency.map((slot) => ({
       name: slot.name,
       path: slot.path,
-      current: Boolean(prunePlan.currentSlot && slot.name === prunePlan.currentSlot.name)
+      current: Boolean(previewPrunePlan.currentSlot && slot.name === previewPrunePlan.currentSlot.name)
+    })),
+    prune_keep_preview: previewPruneKeepCount,
+    prune_candidate_count_preview: staleSlotCount,
+    prune_candidates_preview: previewPrunePlan.removedSlots.map((slot) => ({
+      name: slot.name,
+      path: slot.path
     })),
     prune_keep_default: defaultPruneKeepCount,
-    prune_candidate_count_default: staleSlotCount,
-    prune_candidates_default: prunePlan.removedSlots.map((slot) => ({
+    prune_candidate_count_default: defaultPrunePlan.removedSlots.length,
+    prune_candidates_default: defaultPrunePlan.removedSlots.map((slot) => ({
       name: slot.name,
       path: slot.path
     })),
@@ -858,8 +870,8 @@ function renderInstallOutput(payload, json, title) {
   if (typeof payload.slots_total === 'number') {
     lines.push(`Install Slots: ${payload.slots_total}`);
   }
-  if (typeof payload.prune_candidate_count_default === 'number') {
-    lines.push(`Prune Candidates (keep ${payload.prune_keep_default || 3}): ${payload.prune_candidate_count_default}`);
+  if (typeof payload.prune_candidate_count_preview === 'number') {
+    lines.push(`Prune Candidates (preview keep ${payload.prune_keep_preview || 3}): ${payload.prune_candidate_count_preview}`);
   }
   if (payload.runtime_path) {
     lines.push(`Runtime Path: ${payload.runtime_path}`);

@@ -179,6 +179,7 @@ openCodex 是架在 Codex CLI 之上的轻量 CLI 层。
 - 编译一个启动同一 detached runtime 的轻量 `OpenCodex.app` 宿主壳
 - 输出供 `service relink` 使用的 runtime CLI 路径
 - 在 `status` 中暴露安装槽位生命周期预览，先看清再清理
+- 支持 `status --keep <n>` 预览不同保留策略下的 prune 范围（不删除）
 - 清理过期安装槽位，同时保留当前活动 runtime
 
 **Minimal flags**

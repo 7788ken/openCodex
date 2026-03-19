@@ -237,6 +237,9 @@ test('install status reports the detached runtime and shim', async () => {
   assert.equal(payload.app_installed, true);
   assert.equal(payload.slots_total, 1);
   assert.equal(payload.current_slot_name, 'status-runtime');
+  assert.equal(payload.prune_keep_preview, 3);
+  assert.equal(payload.prune_candidate_count_preview, 0);
+  assert.deepEqual(payload.prune_candidates_preview, []);
   assert.equal(payload.prune_keep_default, 3);
   assert.equal(payload.prune_candidate_count_default, 0);
   assert.deepEqual(payload.prune_candidates_default, []);
@@ -277,12 +280,72 @@ test('install status previews stale slot prune candidates with default keep coun
   assert.equal(payload.installed, true);
   assert.equal(payload.slots_total, 4);
   assert.equal(payload.current_slot_name, 'slot-b');
+  assert.equal(payload.prune_keep_preview, 3);
+  assert.equal(payload.prune_candidate_count_preview, 1);
+  assert.deepEqual(payload.prune_candidates_preview.map((slot) => slot.name), ['slot-a']);
   assert.equal(payload.prune_keep_default, 3);
   assert.equal(payload.prune_candidate_count_default, 1);
   assert.deepEqual(payload.prune_candidates_default.map((slot) => slot.name), ['slot-a']);
   assert.deepEqual(payload.slots_by_recency.map((slot) => slot.name), ['slot-d', 'slot-c', 'slot-b', 'slot-a']);
   assert.ok(payload.slots_by_recency.some((slot) => slot.name === 'slot-b' && slot.current));
   assert.match(payload.next_steps[0] || '', /install prune --root '.*OpenCodex' --dry-run/);
+});
+
+test('install status supports custom prune preview keep count without deleting slots', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-install-status-prune-keep-'));
+  const installRoot = path.join(root, 'OpenCodex');
+  const installsDir = path.join(installRoot, 'installs');
+  const currentPath = path.join(installRoot, 'current');
+
+  const slotA = await createInstallSlot(installsDir, 'slot-a');
+  const slotB = await createInstallSlot(installsDir, 'slot-b');
+  const slotC = await createInstallSlot(installsDir, 'slot-c');
+  const slotD = await createInstallSlot(installsDir, 'slot-d');
+
+  await symlink(path.relative(installRoot, slotB), currentPath);
+
+  await utimes(slotA, new Date('2026-03-08T00:00:01.000Z'), new Date('2026-03-08T00:00:01.000Z'));
+  await utimes(slotB, new Date('2026-03-08T00:00:02.000Z'), new Date('2026-03-08T00:00:02.000Z'));
+  await utimes(slotC, new Date('2026-03-08T00:00:03.000Z'), new Date('2026-03-08T00:00:03.000Z'));
+  await utimes(slotD, new Date('2026-03-08T00:00:04.000Z'), new Date('2026-03-08T00:00:04.000Z'));
+
+  const result = await runCli([
+    'install', 'status',
+    '--root', installRoot,
+    '--keep', '2',
+    '--json'
+  ]);
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.action, 'status');
+  assert.equal(payload.prune_keep_preview, 2);
+  assert.equal(payload.prune_candidate_count_preview, 2);
+  assert.deepEqual(payload.prune_candidates_preview.map((slot) => slot.name).sort(), ['slot-a', 'slot-c']);
+  assert.equal(payload.prune_keep_default, 3);
+  assert.equal(payload.prune_candidate_count_default, 1);
+  assert.deepEqual(payload.prune_candidates_default.map((slot) => slot.name), ['slot-a']);
+  assert.match(payload.next_steps[0] || '', /install prune --root '.*OpenCodex' --keep 2 --dry-run/);
+
+  await access(slotA);
+  await access(slotB);
+  await access(slotC);
+  await access(slotD);
+});
+
+test('install status rejects invalid keep values', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-install-status-invalid-keep-'));
+  const installRoot = path.join(root, 'OpenCodex');
+
+  const result = await runCli([
+    'install', 'status',
+    '--root', installRoot,
+    '--keep', '0',
+    '--json'
+  ]);
+
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /`--keep` must be a positive integer/);
 });
 
 test('install prune keeps current runtime and the newest remaining slots', async () => {

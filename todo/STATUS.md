@@ -2,10 +2,16 @@
 
 ## 2026-03-19
 
+- Extended install lifecycle preview control in `opencodex install status`:
+  - status now accepts `--keep <n>` to preview prune candidates under custom retention without deleting slots
+  - status JSON now includes both preview (`prune_keep_preview`, `prune_candidate_count_preview`) and default-policy (`keep=3`) candidate fields
+  - next-step guidance now mirrors non-default keep values when suggesting `install prune --dry-run`
+- Added regression coverage for status keep-preview customization and invalid-keep validation in `tests/install.test.js`.
+
 - Extended `opencodex install status` with detached-runtime lifecycle preview data:
   - status payload now includes `slots_total`, `current_slot_name`, and slot ordering by recency
   - status payload also includes default prune preview fields (`prune_keep_default=3`, candidate count, and candidate slots)
-  - text-mode status now prints current slot, slot count, and default prune candidate summary
+  - text-mode status now prints current slot, slot count, and prune candidate summary for the active preview keep value
 - Added regression coverage for install lifecycle preview reporting in `tests/install.test.js`.
 - Validation passed for the install lifecycle follow-up:
   - `node --test tests/install.test.js`
