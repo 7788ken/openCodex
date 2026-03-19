@@ -968,7 +968,11 @@ function renderInstallPruneOutput(payload, json) {
 
   lines.push('');
   lines.push('Kept Slots:');
-  for (const slot of payload.slots_kept || []) {
+  const keptSlots = payload.slots_kept || [];
+  if (!keptSlots.length) {
+    lines.push('- (none)');
+  }
+  for (const slot of keptSlots) {
     const slotFlags = [
       slot.current ? 'current' : '',
       slot.updated_at || ''
@@ -978,7 +982,11 @@ function renderInstallPruneOutput(payload, json) {
 
   lines.push('');
   lines.push(payload.dry_run ? 'Would Remove:' : 'Removed Slots:');
-  for (const slot of payload.slots_removed || []) {
+  const removedSlots = payload.slots_removed || [];
+  if (!removedSlots.length) {
+    lines.push('- (none)');
+  }
+  for (const slot of removedSlots) {
     lines.push(`- ${slot.name}${slot.updated_at ? ` (${slot.updated_at})` : ''}`);
   }
 

@@ -102,6 +102,7 @@ Per-slot timestamp metadata is included in JSON and shown in text mode so age/re
 If the install was created from a bundle, `status` also reports the bundle path plus the original source provenance captured in the bundle manifest.
 
 `prune` reports which install slots were kept or removed, including per-slot timestamps, and supports a dry-run mode for previewing cleanup before applying it.
+When a section is empty in text mode, it now renders `(none)` explicitly.
 
 ## Preferred Flow
 

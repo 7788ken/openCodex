@@ -517,6 +517,22 @@ test('install prune text output includes kept and removed slot timestamps', asyn
   await access(slotD);
 });
 
+test('install prune text output renders explicit empty sections when no slots exist', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-install-prune-empty-text-'));
+  const installRoot = path.join(root, 'OpenCodex');
+
+  const result = await runCli([
+    'install', 'prune',
+    '--root', installRoot,
+    '--dry-run'
+  ]);
+
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Slots Total: 0/);
+  assert.match(result.stdout, /Kept Slots:\n- \(none\)/);
+  assert.match(result.stdout, /Would Remove:\n- \(none\)/);
+});
+
 test('bootstrap install script installs a detached runtime from an existing checkout', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-bootstrap-script-'));
   const homeDir = path.join(root, 'home');

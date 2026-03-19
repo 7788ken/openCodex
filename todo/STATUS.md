@@ -2,6 +2,11 @@
 
 ## 2026-03-19
 
+- Improved prune text readability for empty cleanup states:
+  - `install prune` now renders explicit `(none)` placeholders when kept/removed sections are empty
+  - avoids ambiguous blank sections in dry-run/no-slot scenarios
+- Added regression coverage for empty-section prune text rendering in `tests/install.test.js`.
+
 - Unified prune lifecycle timestamps across JSON and text surfaces:
   - `install prune` now includes `updated_at` for both kept and removed slots in JSON
   - text-mode prune output now renders those timestamps inline (including current-slot marking)
