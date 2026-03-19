@@ -98,6 +98,7 @@ OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
 在文本模式下，`status` 还会直接列出预览候选槽位名，便于在清理前明确知道哪些 runtime 会被视为过期。
 当 `--keep` 与默认值不同，文本模式也会同时显示默认策略下的候选数，方便快速横向比较。
 文本模式也会按新旧顺序列出槽位清单，并明确标记当前槽位。
+JSON 和文本模式都会带出槽位时间戳信息，便于按“新旧程度”做清理决策，不需要额外去查文件元数据。
 如果这套安装来自 bundle，`status` 还会显示 bundle 路径以及 bundle manifest 里记录的原始来源。
 
 `prune` 会报告哪些安装槽位被保留、哪些被清理，并支持 dry-run 预览模式。

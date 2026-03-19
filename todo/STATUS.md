@@ -2,6 +2,11 @@
 
 ## 2026-03-19
 
+- Added slot timestamp visibility to install lifecycle status output:
+  - `install status` JSON now includes `updated_at` for recency-ordered slots and prune preview candidates
+  - text mode now shows the same timestamps inline for candidate and inventory rows
+- Extended install status tests to assert deterministic timestamp rendering for preview and inventory lines.
+
 - Improved slot inventory visibility in `install status` text mode:
   - status now prints `Slots (newest first)` and marks the active slot as `(current)`
   - this makes retention and pointer state readable without inspecting JSON fields

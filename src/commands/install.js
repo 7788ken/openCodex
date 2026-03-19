@@ -285,19 +285,22 @@ async function runInstallStatus(args) {
     slots_by_recency: previewPrunePlan.slotsByRecency.map((slot) => ({
       name: slot.name,
       path: slot.path,
+      updated_at: formatTimestampIso(slot.mtime_ms),
       current: Boolean(previewPrunePlan.currentSlot && slot.name === previewPrunePlan.currentSlot.name)
     })),
     prune_keep_preview: previewPruneKeepCount,
     prune_candidate_count_preview: staleSlotCount,
     prune_candidates_preview: previewPrunePlan.removedSlots.map((slot) => ({
       name: slot.name,
-      path: slot.path
+      path: slot.path,
+      updated_at: formatTimestampIso(slot.mtime_ms)
     })),
     prune_keep_default: defaultPruneKeepCount,
     prune_candidate_count_default: defaultPrunePlan.removedSlots.length,
     prune_candidates_default: defaultPrunePlan.removedSlots.map((slot) => ({
       name: slot.name,
-      path: slot.path
+      path: slot.path,
+      updated_at: formatTimestampIso(slot.mtime_ms)
     })),
     next_steps: statusNextSteps
   };
@@ -884,13 +887,17 @@ function renderInstallOutput(payload, json, title) {
   if (Array.isArray(payload.prune_candidates_preview) && payload.prune_candidates_preview.length) {
     lines.push('Prune Candidate Slots (preview):');
     for (const slot of payload.prune_candidates_preview) {
-      lines.push(`- ${slot.name}`);
+      lines.push(`- ${slot.name}${slot.updated_at ? ` (${slot.updated_at})` : ''}`);
     }
   }
   if (Array.isArray(payload.slots_by_recency) && payload.slots_by_recency.length) {
     lines.push('Slots (newest first):');
     for (const slot of payload.slots_by_recency) {
-      lines.push(`- ${slot.name}${slot.current ? ' (current)' : ''}`);
+      const slotFlags = [
+        slot.current ? 'current' : '',
+        slot.updated_at || ''
+      ].filter(Boolean);
+      lines.push(`- ${slot.name}${slotFlags.length ? ` (${slotFlags.join(', ')})` : ''}`);
     }
   }
   if (payload.runtime_path) {
@@ -994,6 +1001,17 @@ function resolveOsacompileBin() {
 
 function resolveTarBin() {
   return process.env.OPENCODEX_TAR_BIN || '/usr/bin/tar';
+}
+
+function formatTimestampIso(value) {
+  if (!Number.isFinite(value)) {
+    return '';
+  }
+  try {
+    return new Date(value).toISOString();
+  } catch {
+    return '';
+  }
 }
 
 function appleScriptString(value) {

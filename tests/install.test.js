@@ -286,7 +286,12 @@ test('install status previews stale slot prune candidates with default keep coun
   assert.equal(payload.prune_keep_default, 3);
   assert.equal(payload.prune_candidate_count_default, 1);
   assert.deepEqual(payload.prune_candidates_default.map((slot) => slot.name), ['slot-a']);
+  assert.equal(payload.prune_candidates_default[0].updated_at, '2026-03-08T00:00:01.000Z');
   assert.deepEqual(payload.slots_by_recency.map((slot) => slot.name), ['slot-d', 'slot-c', 'slot-b', 'slot-a']);
+  assert.equal(payload.slots_by_recency[0].updated_at, '2026-03-08T00:00:04.000Z');
+  assert.equal(payload.slots_by_recency[1].updated_at, '2026-03-08T00:00:03.000Z');
+  assert.equal(payload.slots_by_recency[2].updated_at, '2026-03-08T00:00:02.000Z');
+  assert.equal(payload.slots_by_recency[3].updated_at, '2026-03-08T00:00:01.000Z');
   assert.ok(payload.slots_by_recency.some((slot) => slot.name === 'slot-b' && slot.current));
   assert.match(payload.next_steps[0] || '', /install prune --root '.*OpenCodex' --dry-run/);
 });
@@ -322,9 +327,11 @@ test('install status supports custom prune preview keep count without deleting s
   assert.equal(payload.prune_keep_preview, 2);
   assert.equal(payload.prune_candidate_count_preview, 2);
   assert.deepEqual(payload.prune_candidates_preview.map((slot) => slot.name).sort(), ['slot-a', 'slot-c']);
+  assert.deepEqual(payload.prune_candidates_preview.map((slot) => slot.updated_at).sort(), ['2026-03-08T00:00:01.000Z', '2026-03-08T00:00:03.000Z']);
   assert.equal(payload.prune_keep_default, 3);
   assert.equal(payload.prune_candidate_count_default, 1);
   assert.deepEqual(payload.prune_candidates_default.map((slot) => slot.name), ['slot-a']);
+  assert.equal(payload.prune_candidates_default[0].updated_at, '2026-03-08T00:00:01.000Z');
   assert.match(payload.next_steps[0] || '', /install prune --root '.*OpenCodex' --keep 2 --dry-run/);
 
   await access(slotA);
@@ -361,11 +368,13 @@ test('install status text output lists preview prune candidate slot names', asyn
   assert.match(result.stdout, /Prune Candidates \(preview keep 2\): 2/);
   assert.match(result.stdout, /Prune Candidates \(default keep 3\): 1/);
   assert.match(result.stdout, /Prune Candidate Slots \(preview\):/);
+  assert.match(result.stdout, /- slot-a \(2026-03-08T00:00:01.000Z\)/);
+  assert.match(result.stdout, /- slot-c \(2026-03-08T00:00:03.000Z\)/);
   assert.match(result.stdout, /Slots \(newest first\):/);
-  assert.match(result.stdout, /- slot-b \(current\)/);
-  assert.match(result.stdout, /- slot-d/);
-  assert.match(result.stdout, /- slot-a/);
-  assert.match(result.stdout, /- slot-c/);
+  assert.match(result.stdout, /- slot-d \(2026-03-08T00:00:04.000Z\)/);
+  assert.match(result.stdout, /- slot-c \(2026-03-08T00:00:03.000Z\)/);
+  assert.match(result.stdout, /- slot-b \(current, 2026-03-08T00:00:02.000Z\)/);
+  assert.match(result.stdout, /- slot-a \(2026-03-08T00:00:01.000Z\)/);
   assert.match(result.stdout, /install prune .* --keep 2 --dry-run/);
 });
 

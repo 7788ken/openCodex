@@ -98,6 +98,7 @@ By default the preview uses `keep=3`, and `--keep <n>` can be used to preview a 
 In text mode, `status` also lists preview candidate slot names directly so operators can see exactly which runtime slots are stale before cleanup.
 When `--keep` differs from the default, text mode also prints a default-policy candidate count for quick side-by-side comparison.
 Text mode also renders the slot inventory in recency order and marks the current slot explicitly.
+Per-slot timestamp metadata is included in JSON and shown in text mode so age/recency decisions do not require manual file inspection.
 If the install was created from a bundle, `status` also reports the bundle path plus the original source provenance captured in the bundle manifest.
 
 `prune` reports which install slots were kept or removed, and supports a dry-run mode for previewing cleanup before applying it.
