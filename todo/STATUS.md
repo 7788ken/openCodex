@@ -2,6 +2,11 @@
 
 ## 2026-03-19
 
+- Unified prune lifecycle timestamps across JSON and text surfaces:
+  - `install prune` now includes `updated_at` for both kept and removed slots in JSON
+  - text-mode prune output now renders those timestamps inline (including current-slot marking)
+- Added regression coverage for prune timestamp fields and text-mode prune rendering in `tests/install.test.js`.
+
 - Added slot timestamp visibility to install lifecycle status output:
   - `install status` JSON now includes `updated_at` for recency-ordered slots and prune preview candidates
   - text mode now shows the same timestamps inline for candidate and inventory rows

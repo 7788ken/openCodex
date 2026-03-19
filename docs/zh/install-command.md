@@ -101,7 +101,7 @@ OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
 JSON 和文本模式都会带出槽位时间戳信息，便于按“新旧程度”做清理决策，不需要额外去查文件元数据。
 如果这套安装来自 bundle，`status` 还会显示 bundle 路径以及 bundle manifest 里记录的原始来源。
 
-`prune` 会报告哪些安装槽位被保留、哪些被清理，并支持 dry-run 预览模式。
+`prune` 会报告哪些安装槽位被保留、哪些被清理，并带出每个槽位的时间戳，同时支持 dry-run 预览模式。
 
 ## 推荐流程
 

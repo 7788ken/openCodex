@@ -343,11 +343,13 @@ async function runInstallPrune(args) {
     slots_kept: keptSlots.map((slot) => ({
       name: slot.name,
       path: slot.path,
+      updated_at: formatTimestampIso(slot.mtime_ms),
       current: Boolean(currentSlot && slot.name === currentSlot.name)
     })),
     slots_removed: removedSlots.map((slot) => ({
       name: slot.name,
-      path: slot.path
+      path: slot.path,
+      updated_at: formatTimestampIso(slot.mtime_ms)
     })),
     next_steps: dryRun
       ? ['Run the same command without `--dry-run` to apply this cleanup.']
@@ -967,13 +969,17 @@ function renderInstallPruneOutput(payload, json) {
   lines.push('');
   lines.push('Kept Slots:');
   for (const slot of payload.slots_kept || []) {
-    lines.push(`- ${slot.name}${slot.current ? ' (current)' : ''}`);
+    const slotFlags = [
+      slot.current ? 'current' : '',
+      slot.updated_at || ''
+    ].filter(Boolean);
+    lines.push(`- ${slot.name}${slotFlags.length ? ` (${slotFlags.join(', ')})` : ''}`);
   }
 
   lines.push('');
   lines.push(payload.dry_run ? 'Would Remove:' : 'Removed Slots:');
   for (const slot of payload.slots_removed || []) {
-    lines.push(`- ${slot.name}`);
+    lines.push(`- ${slot.name}${slot.updated_at ? ` (${slot.updated_at})` : ''}`);
   }
 
   if (Array.isArray(payload.next_steps) && payload.next_steps.length) {

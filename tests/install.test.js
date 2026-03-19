@@ -428,7 +428,9 @@ test('install prune keeps current runtime and the newest remaining slots', async
   assert.equal(payload.removed_count, 2);
   assert.deepEqual(payload.slots_kept.map((slot) => slot.name).sort(), ['slot-b', 'slot-d']);
   assert.ok(payload.slots_kept.some((slot) => slot.name === 'slot-b' && slot.current));
+  assert.deepEqual(payload.slots_kept.map((slot) => slot.updated_at).sort(), ['2026-03-08T00:00:02.000Z', '2026-03-08T00:00:04.000Z']);
   assert.deepEqual(payload.slots_removed.map((slot) => slot.name).sort(), ['slot-a', 'slot-c']);
+  assert.deepEqual(payload.slots_removed.map((slot) => slot.updated_at).sort(), ['2026-03-08T00:00:01.000Z', '2026-03-08T00:00:03.000Z']);
 
   await access(slotB);
   await access(slotD);
@@ -467,11 +469,52 @@ test('install prune dry-run reports candidates without deleting runtimes', async
   assert.equal(payload.keep, 1);
   assert.equal(payload.removed_count, 2);
   assert.deepEqual(payload.slots_kept.map((slot) => slot.name), ['slot-b']);
+  assert.equal(payload.slots_kept[0].updated_at, '2026-03-08T00:00:02.000Z');
   assert.deepEqual(payload.slots_removed.map((slot) => slot.name).sort(), ['slot-a', 'slot-c']);
+  assert.deepEqual(payload.slots_removed.map((slot) => slot.updated_at).sort(), ['2026-03-08T00:00:01.000Z', '2026-03-08T00:00:03.000Z']);
 
   await access(slotA);
   await access(slotB);
   await access(slotC);
+});
+
+test('install prune text output includes kept and removed slot timestamps', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-install-prune-text-'));
+  const installRoot = path.join(root, 'OpenCodex');
+  const installsDir = path.join(installRoot, 'installs');
+  const currentPath = path.join(installRoot, 'current');
+
+  const slotA = await createInstallSlot(installsDir, 'slot-a');
+  const slotB = await createInstallSlot(installsDir, 'slot-b');
+  const slotC = await createInstallSlot(installsDir, 'slot-c');
+  const slotD = await createInstallSlot(installsDir, 'slot-d');
+
+  await symlink(path.relative(installRoot, slotB), currentPath);
+
+  await utimes(slotA, new Date('2026-03-08T00:00:01.000Z'), new Date('2026-03-08T00:00:01.000Z'));
+  await utimes(slotB, new Date('2026-03-08T00:00:02.000Z'), new Date('2026-03-08T00:00:02.000Z'));
+  await utimes(slotC, new Date('2026-03-08T00:00:03.000Z'), new Date('2026-03-08T00:00:03.000Z'));
+  await utimes(slotD, new Date('2026-03-08T00:00:04.000Z'), new Date('2026-03-08T00:00:04.000Z'));
+
+  const result = await runCli([
+    'install', 'prune',
+    '--root', installRoot,
+    '--keep', '2',
+    '--dry-run'
+  ]);
+
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Kept Slots:/);
+  assert.match(result.stdout, /- slot-d \(2026-03-08T00:00:04.000Z\)/);
+  assert.match(result.stdout, /- slot-b \(current, 2026-03-08T00:00:02.000Z\)/);
+  assert.match(result.stdout, /Would Remove:/);
+  assert.match(result.stdout, /- slot-c \(2026-03-08T00:00:03.000Z\)/);
+  assert.match(result.stdout, /- slot-a \(2026-03-08T00:00:01.000Z\)/);
+
+  await access(slotA);
+  await access(slotB);
+  await access(slotC);
+  await access(slotD);
 });
 
 test('bootstrap install script installs a detached runtime from an existing checkout', async () => {

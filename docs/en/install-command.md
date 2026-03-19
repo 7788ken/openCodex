@@ -101,7 +101,7 @@ Text mode also renders the slot inventory in recency order and marks the current
 Per-slot timestamp metadata is included in JSON and shown in text mode so age/recency decisions do not require manual file inspection.
 If the install was created from a bundle, `status` also reports the bundle path plus the original source provenance captured in the bundle manifest.
 
-`prune` reports which install slots were kept or removed, and supports a dry-run mode for previewing cleanup before applying it.
+`prune` reports which install slots were kept or removed, including per-slot timestamps, and supports a dry-run mode for previewing cleanup before applying it.
 
 ## Preferred Flow
 
