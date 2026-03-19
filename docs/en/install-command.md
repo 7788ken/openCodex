@@ -95,6 +95,7 @@ OPENCODEX_SOURCE_DIR="$PWD" bash ./scripts/install-opencodex.sh
 `status` reports whether the detached runtime, CLI shim, and app shell are present, and which runtime `current` resolves to.
 It also reports install-slot lifecycle metadata, including total slot count, the current slot name, and prune preview signals.
 By default the preview uses `keep=3`, and `--keep <n>` can be used to preview a different retention policy before running `prune`.
+In text mode, `status` also lists preview candidate slot names directly so operators can see exactly which runtime slots are stale before cleanup.
 If the install was created from a bundle, `status` also reports the bundle path plus the original source provenance captured in the bundle manifest.
 
 `prune` reports which install slots were kept or removed, and supports a dry-run mode for previewing cleanup before applying it.

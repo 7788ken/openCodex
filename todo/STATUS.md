@@ -2,6 +2,11 @@
 
 ## 2026-03-19
 
+- Improved install lifecycle readability for operators in text mode:
+  - `opencodex install status` now lists preview prune candidate slot names (`Prune Candidate Slots (preview)`) in addition to candidate counts
+  - this keeps JSON and text surfaces aligned for pre-cleanup decisions
+- Added regression coverage for text-mode preview candidate rendering in `tests/install.test.js`.
+
 - Extended install lifecycle preview control in `opencodex install status`:
   - status now accepts `--keep <n>` to preview prune candidates under custom retention without deleting slots
   - status JSON now includes both preview (`prune_keep_preview`, `prune_candidate_count_preview`) and default-policy (`keep=3`) candidate fields

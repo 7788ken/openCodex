@@ -873,6 +873,12 @@ function renderInstallOutput(payload, json, title) {
   if (typeof payload.prune_candidate_count_preview === 'number') {
     lines.push(`Prune Candidates (preview keep ${payload.prune_keep_preview || 3}): ${payload.prune_candidate_count_preview}`);
   }
+  if (Array.isArray(payload.prune_candidates_preview) && payload.prune_candidates_preview.length) {
+    lines.push('Prune Candidate Slots (preview):');
+    for (const slot of payload.prune_candidates_preview) {
+      lines.push(`- ${slot.name}`);
+    }
+  }
   if (payload.runtime_path) {
     lines.push(`Runtime Path: ${payload.runtime_path}`);
   }

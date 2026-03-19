@@ -333,6 +333,38 @@ test('install status supports custom prune preview keep count without deleting s
   await access(slotD);
 });
 
+test('install status text output lists preview prune candidate slot names', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-install-status-text-preview-'));
+  const installRoot = path.join(root, 'OpenCodex');
+  const installsDir = path.join(installRoot, 'installs');
+  const currentPath = path.join(installRoot, 'current');
+
+  const slotA = await createInstallSlot(installsDir, 'slot-a');
+  const slotB = await createInstallSlot(installsDir, 'slot-b');
+  const slotC = await createInstallSlot(installsDir, 'slot-c');
+  const slotD = await createInstallSlot(installsDir, 'slot-d');
+
+  await symlink(path.relative(installRoot, slotB), currentPath);
+
+  await utimes(slotA, new Date('2026-03-08T00:00:01.000Z'), new Date('2026-03-08T00:00:01.000Z'));
+  await utimes(slotB, new Date('2026-03-08T00:00:02.000Z'), new Date('2026-03-08T00:00:02.000Z'));
+  await utimes(slotC, new Date('2026-03-08T00:00:03.000Z'), new Date('2026-03-08T00:00:03.000Z'));
+  await utimes(slotD, new Date('2026-03-08T00:00:04.000Z'), new Date('2026-03-08T00:00:04.000Z'));
+
+  const result = await runCli([
+    'install', 'status',
+    '--root', installRoot,
+    '--keep', '2'
+  ]);
+
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Prune Candidates \(preview keep 2\): 2/);
+  assert.match(result.stdout, /Prune Candidate Slots \(preview\):/);
+  assert.match(result.stdout, /- slot-a/);
+  assert.match(result.stdout, /- slot-c/);
+  assert.match(result.stdout, /install prune .* --keep 2 --dry-run/);
+});
+
 test('install status rejects invalid keep values', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-install-status-invalid-keep-'));
   const installRoot = path.join(root, 'OpenCodex');
