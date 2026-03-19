@@ -20,7 +20,7 @@ It creates a `remote` session, prints phone URLs, stores incoming messages in a 
 
 - bind scope and exposure label
 - message count and latest message
-- live `/health` probe result (when the latest remote session is running)
+- live `/health` probe result (when the latest remote session is running), including probe timestamp and latency
 - success checks (health URL, form submit, inbox visibility)
 - common troubleshooting hints
 

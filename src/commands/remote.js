@@ -287,6 +287,13 @@ async function runRemoteStatus(args) {
   process.stdout.write(`Messages received: ${payload.message_count}\n`);
   if (payload.health_probe?.attempted) {
     process.stdout.write(`Health probe: ${payload.health_probe.ok ? 'ok' : 'failed'}  ${payload.health_probe.url || ''}\n`);
+    if (Number.isFinite(payload.health_probe.duration_ms)) {
+      process.stdout.write(`  latency: ${payload.health_probe.duration_ms} ms`);
+      if (payload.health_probe.probed_at) {
+        process.stdout.write(` at ${payload.health_probe.probed_at}`);
+      }
+      process.stdout.write('\n');
+    }
     if (!payload.health_probe.ok && payload.health_probe.error) {
       process.stdout.write(`  ${payload.health_probe.error}\n`);
     }
@@ -724,6 +731,7 @@ async function probeRemoteHealth({ host, port, sessionStatus }) {
   }
 
   const url = `${probeBaseUrl}/health`;
+  const startedAtMs = Date.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 1200);
   timeout.unref?.();
@@ -738,6 +746,8 @@ async function probeRemoteHealth({ host, port, sessionStatus }) {
       attempted: true,
       ok: response.ok && body?.ok === true,
       url,
+      probed_at: toIsoString(),
+      duration_ms: Date.now() - startedAtMs,
       status_code: response.status,
       response_ok: body?.ok === true
     };
@@ -748,6 +758,8 @@ async function probeRemoteHealth({ host, port, sessionStatus }) {
       attempted: true,
       ok: false,
       url,
+      probed_at: toIsoString(),
+      duration_ms: Date.now() - startedAtMs,
       error: `${name}: ${message}`
     };
   } finally {

@@ -2,6 +2,11 @@
 
 ## 2026-03-19
 
+- Extended `remote status` probe diagnostics with timing metadata:
+  - `health_probe` now includes `probed_at` and `duration_ms`
+  - text-mode remote status now prints probe latency and timestamp when a probe is attempted
+- Added regression coverage for remote probe timing metadata in both JSON and text output paths (`tests/remote.test.js`).
+
 - Improved prune text readability for empty cleanup states:
   - `install prune` now renders explicit `(none)` placeholders when kept/removed sections are empty
   - avoids ambiguous blank sections in dry-run/no-slot scenarios

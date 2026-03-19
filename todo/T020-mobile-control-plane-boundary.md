@@ -74,7 +74,7 @@ That note should define:
   - [docs/en/mobile-control-plane.md](/Users/lijianqian/svn/tools/openCodex/docs/en/mobile-control-plane.md)
 - Command-adjacent implementation follow-through started:
   - `opencodex remote status` now exposes a lightweight status snapshot with deployment checks and common troubleshooting hints.
-  - `remote status` now also includes a live `/health` probe signal for running bridge sessions, reducing blind troubleshooting loops.
+  - `remote status` now also includes a live `/health` probe signal for running bridge sessions, including probe timestamp/latency metadata to reduce blind troubleshooting loops.
   - `remote` command docs and command-spec docs now include the new status surface and support guidance entrypoint.
 - The remaining work is broader phone/web control-plane implementation follow-through, not boundary discovery.
 - The retained direction is:

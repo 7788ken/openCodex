@@ -141,11 +141,43 @@ test('remote status returns deployment checks and troubleshooting hints in json 
   assert.equal(payload.health_probe.attempted, true);
   assert.equal(payload.health_probe.ok, false);
   assert.equal(payload.health_probe.url, 'http://127.0.0.1:3789/health');
+  assert.ok(Number.isFinite(payload.health_probe.duration_ms));
+  assert.match(payload.health_probe.probed_at, /^\d{4}-\d{2}-\d{2}T/);
   assert.ok(payload.urls.some((url) => url.includes(':3789')));
   assert.ok(payload.warnings.some((line) => line.includes('all interfaces')));
   assert.ok(payload.warnings.some((line) => line.includes('Health probe failed')));
   assert.ok(payload.success_checks.some((line) => line.includes('/health')));
   assert.ok(payload.common_failures.some((line) => line.includes('Unauthorized')));
+});
+
+test('remote status text output includes health probe latency metadata', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-status-text-'));
+  const sessionId = 'remote-20260318-status-text';
+  const sessionDir = path.join(cwd, '.opencodex', 'sessions', sessionId);
+  const artifactsDir = path.join(sessionDir, 'artifacts');
+  const messagesPath = path.join(artifactsDir, 'messages.jsonl');
+
+  await mkdir(artifactsDir, { recursive: true });
+  await writeFile(path.join(sessionDir, 'session.json'), `${JSON.stringify({
+    session_id: sessionId,
+    command: 'remote',
+    status: 'running',
+    created_at: '2026-03-18T00:00:00.000Z',
+    updated_at: '2026-03-18T00:01:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'embedded-http',
+    input: { prompt: '', arguments: { host: '0.0.0.0', port: 3789, auth: 'token', token_configured: true } },
+    summary: { title: 'Remote bridge running', result: 'ok', status: 'running', highlights: [], next_steps: [], findings: [] },
+    artifacts: [{ type: 'messages_log', path: messagesPath, description: 'Remote messages received by the mobile bridge.' }]
+  }, null, 2)}\n`, 'utf8');
+  await writeFile(messagesPath, [
+    JSON.stringify({ message_id: 'msg-1', created_at: '2026-03-18T00:00:10.000Z', sender: 'phone', text: 'first' })
+  ].join('\n') + '\n', 'utf8');
+
+  const result = await runCli(['remote', 'status', '--cwd', cwd]);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Health probe: failed/);
+  assert.match(result.stdout, /latency: \d+ ms at \d{4}-\d{2}-\d{2}T/);
 });
 
 test('remote status probes health successfully while remote serve is running', async () => {
@@ -173,6 +205,8 @@ test('remote status probes health successfully while remote serve is running', a
   assert.equal(payload.port, port);
   assert.equal(payload.health_probe.attempted, true);
   assert.equal(payload.health_probe.ok, true);
+  assert.ok(Number.isFinite(payload.health_probe.duration_ms));
+  assert.match(payload.health_probe.probed_at, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(payload.health_probe.status_code, 200);
   assert.equal(payload.health_probe.response_ok, true);
   assert.equal(payload.health_probe.url, `http://127.0.0.1:${port}/health`);
