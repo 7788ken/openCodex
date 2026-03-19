@@ -2,6 +2,24 @@
 
 ## 2026-03-19
 
+- Added explicit remote-session targeting for operational diagnostics:
+  - `remote status` now supports `--session-id <id|latest>` to inspect one exact remote session without relying on default active-first selection.
+  - selection provenance now includes explicit modes (`explicit_latest`, `explicit_id`) and preserves requested selector metadata.
+- Added regression coverage for explicit status targeting and missing-session fast-fail in `tests/remote.test.js`.
+- Synced EN/ZH remote docs and command-spec docs with the new `remote status --session-id` surface.
+
+- Added explicit remote session-selection provenance to operator surfaces:
+  - `remote inbox` / `remote status` JSON now include `session_selection` (`active` or `latest_history`) with a short description.
+  - text-mode `remote inbox` / `remote status` now print the same selection mode for quick diagnostics.
+- Added regression assertions for `session_selection` metadata in `tests/remote.test.js` (active and fallback paths).
+- Synced EN/ZH remote docs and command-spec wording to include session-selection source visibility.
+
+- Tightened remote diagnostic session selection for deployment support:
+  - `remote inbox` / `remote status` now prefer active `remote` sessions (`running` / `queued`) before falling back to the latest historical session record.
+  - this avoids stale diagnostics when a newer completed remote session exists but another bridge is still active.
+- Added regression coverage for active-session preference in both inbox and status paths (`tests/remote.test.js`).
+- Synced remote docs and command-spec docs in English/Chinese to match the active-first session selection contract.
+
 - Synced command-spec docs to reflect remote probe timing visibility in `remote status` (`probed_at` / `duration_ms`).
 
 - Extended `remote status` probe diagnostics with timing metadata:

@@ -15,12 +15,13 @@
 
 `remote serve` 会启动一个带 token 保护的本地 HTTP 服务。
 它会创建一个 `remote` session，打印手机访问 URL，把收到的消息保存到当前 `remote` session 的 artifact 中，同时保留正常的 openCodex 审计轨迹。
-`remote inbox` 则负责从最新的 `remote` session 中读取最近消息。
-`remote status` 会读取最新 `remote` session，输出面向部署与排障的状态快照，包括：
+`remote inbox` 会从“优先 remote session”读取最近消息（优先 active，会话不存在时回退到最新历史记录）。
+`remote status` 会读取同一条“优先 remote session”，输出面向部署与排障的状态快照，包括：
 
+- 会话选择来源（`active`、`latest_history`、`explicit_latest`、`explicit_id`）
 - 绑定范围与暴露级别
 - 消息数量与最近一条消息
-- 运行中会话的实时 `/health` 探测结果（含探测时间与延迟）
+- 优先会话处于运行中时的实时 `/health` 探测结果（含探测时间与延迟）
 - 成功检查项（`/health`、表单投递、inbox 可见性）
 - 常见故障提示
 
@@ -44,6 +45,13 @@
 
 - `--cwd <dir>`
 - `--json`
+- `--session-id <id|latest>`（可选，仅 status 使用）
+
+status 会话选择规则：
+
+- 默认：优先 active `remote` session（`running` / `queued`），否则回退最新历史（`latest_history`）
+- `--session-id latest`：强制按更新时间选择最新 `remote` session（`explicit_latest`）
+- `--session-id <id>`：仅查看指定 `remote` session（`explicit_id`）
 
 ## HTTP 接口
 
@@ -67,7 +75,7 @@ bridge 会把收到的消息保存到当前 `remote` session 的 artifact 中：
 
 - `messages.jsonl` — 位于 session artifacts 目录下的追加式消息日志
 
-最新的 `remote` session 可以继续通过 `opencodex session` 和 `opencodex remote inbox` 查看。
+`remote` 会优先展示 active 会话；没有 active 时回退到最新历史会话。这个优先会话可以继续通过 `opencodex session` 和 `opencodex remote inbox` 查看。
 如果需要快速查看运行状态并按清单排障，使用 `opencodex remote status`。
 
 ## 安全说明

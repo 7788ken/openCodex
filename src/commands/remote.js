@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { appendFile } from 'node:fs/promises';
 import { parseOptions } from '../lib/args.js';
 import { ensureDir, readTextIfExists, toIsoString } from '../lib/fs.js';
-import { createSession, getSessionDir, listSessions, saveSession } from '../lib/session-store.js';
+import { createSession, getSessionDir, isTerminalSessionStatus, listSessions, saveSession } from '../lib/session-store.js';
 
 const SERVE_OPTION_SPEC = {
   cwd: { type: 'string' },
@@ -23,14 +23,15 @@ const INBOX_OPTION_SPEC = {
 
 const STATUS_OPTION_SPEC = {
   cwd: { type: 'string' },
-  json: { type: 'boolean' }
+  json: { type: 'boolean' },
+  'session-id': { type: 'string' }
 };
 
 export async function runRemoteCommand(args) {
   const [subcommand, ...rest] = args;
 
   if (!subcommand || subcommand === '--help' || subcommand === '-h') {
-    process.stdout.write('Usage:\n  opencodex remote serve [--cwd <dir>] [--host <host>] [--port <n>] [--token <value>] [--json]\n  opencodex remote inbox [--cwd <dir>] [--limit <n>] [--json]\n  opencodex remote status [--cwd <dir>] [--json]\n');
+    process.stdout.write('Usage:\n  opencodex remote serve [--cwd <dir>] [--host <host>] [--port <n>] [--token <value>] [--json]\n  opencodex remote inbox [--cwd <dir>] [--limit <n>] [--json]\n  opencodex remote status [--cwd <dir>] [--session-id <id|latest>] [--json]\n');
     return;
   }
 
@@ -202,16 +203,15 @@ async function runRemoteInbox(args) {
 
   const cwd = path.resolve(options.cwd || process.cwd());
   const limit = parsePositiveInteger(options.limit || '20', '--limit');
-  const remoteSession = (await listSessions(cwd)).find((session) => session.command === 'remote');
-  if (!remoteSession) {
-    throw new Error('No remote bridge session found for `opencodex remote inbox`');
-  }
+  const remoteSelection = await resolvePreferredRemoteSession(cwd, 'opencodex remote inbox');
+  const remoteSession = remoteSelection.session;
 
   const messagesPath = resolveMessagesPath(cwd, remoteSession);
   const messages = (await readMessageLog(messagesPath)).slice(-limit);
   const payload = {
     session_id: remoteSession.session_id,
     status: remoteSession.status,
+    session_selection: remoteSelection.selection,
     count: messages.length,
     messages
   };
@@ -222,6 +222,7 @@ async function runRemoteInbox(args) {
   }
 
   process.stdout.write(`Remote inbox for ${remoteSession.session_id}\n`);
+  process.stdout.write(`Session selection: ${remoteSelection.selection.mode}\n`);
   if (!messages.length) {
     process.stdout.write('\nNo messages received yet.\n');
     return;
@@ -240,10 +241,11 @@ async function runRemoteStatus(args) {
   }
 
   const cwd = path.resolve(options.cwd || process.cwd());
-  const remoteSession = (await listSessions(cwd)).find((session) => session.command === 'remote');
-  if (!remoteSession) {
-    throw new Error('No remote bridge session found for `opencodex remote status`');
-  }
+  const requestedSessionId = typeof options['session-id'] === 'string' ? options['session-id'].trim() : '';
+  const remoteSelection = await resolvePreferredRemoteSession(cwd, 'opencodex remote status', {
+    sessionIdSelector: requestedSessionId
+  });
+  const remoteSession = remoteSelection.session;
 
   const host = String(remoteSession?.input?.arguments?.host || '');
   const port = Number.parseInt(String(remoteSession?.input?.arguments?.port || ''), 10);
@@ -257,6 +259,7 @@ async function runRemoteStatus(args) {
   const payload = {
     session_id: remoteSession.session_id,
     status: remoteSession.status,
+    session_selection: remoteSelection.selection,
     host: host || null,
     port: Number.isInteger(port) ? port : null,
     exposure,
@@ -282,6 +285,7 @@ async function runRemoteStatus(args) {
 
   process.stdout.write(`Remote status for ${payload.session_id}\n`);
   process.stdout.write(`Status: ${payload.status}\n`);
+  process.stdout.write(`Session selection: ${renderSessionSelectionText(payload.session_selection)}\n`);
   process.stdout.write(`Bind: ${payload.host || 'unknown'}:${payload.port ?? 'unknown'}\n`);
   process.stdout.write(`Exposure: ${payload.exposure.label}\n`);
   process.stdout.write(`Messages received: ${payload.message_count}\n`);
@@ -497,6 +501,94 @@ function parsePositiveInteger(value, optionName) {
     throw new Error(`${optionName} must be a positive integer`);
   }
   return parsed;
+}
+
+async function resolvePreferredRemoteSession(cwd, commandLabel, options = {}) {
+  const sessionIdSelector = typeof options.sessionIdSelector === 'string'
+    ? options.sessionIdSelector.trim()
+    : '';
+  const remoteSessions = listRemoteSessions(await listSessions(cwd));
+  if (!remoteSessions.length) {
+    throw new Error(`No remote bridge session found for \`${commandLabel}\``);
+  }
+
+  if (sessionIdSelector) {
+    return selectRemoteSessionBySelector(remoteSessions, sessionIdSelector, commandLabel);
+  }
+
+  const remoteSelection = selectPreferredRemoteSession(remoteSessions);
+  if (!remoteSelection) {
+    throw new Error(`No remote bridge session found for \`${commandLabel}\``);
+  }
+  return remoteSelection;
+}
+
+function listRemoteSessions(sessions) {
+  return Array.isArray(sessions)
+    ? sessions.filter((session) => session?.command === 'remote')
+    : [];
+}
+
+function selectPreferredRemoteSession(remoteSessions) {
+  if (!remoteSessions.length) {
+    return null;
+  }
+
+  const activeSession = remoteSessions.find((session) => !isTerminalSessionStatus(session?.status));
+  if (activeSession) {
+    return {
+      session: activeSession,
+      selection: {
+        mode: 'active',
+        description: 'Selected active remote session (running or queued).'
+      }
+    };
+  }
+
+  return {
+    session: remoteSessions[0],
+    selection: {
+      mode: 'latest_history',
+      description: 'No active remote session found; selected latest historical remote session.'
+    }
+  };
+}
+
+function selectRemoteSessionBySelector(remoteSessions, sessionIdSelector, commandLabel) {
+  if (sessionIdSelector === 'latest') {
+    return {
+      session: remoteSessions[0],
+      selection: {
+        mode: 'explicit_latest',
+        description: 'Selected latest remote session by update time via --session-id latest.',
+        requested: 'latest'
+      }
+    };
+  }
+
+  const matched = remoteSessions.find((session) => session?.session_id === sessionIdSelector);
+  if (!matched) {
+    throw new Error(`Remote bridge session not found for \`${commandLabel}\`: ${sessionIdSelector}`);
+  }
+
+  return {
+    session: matched,
+    selection: {
+      mode: 'explicit_id',
+      description: 'Selected remote session via --session-id.',
+      requested: sessionIdSelector
+    }
+  };
+}
+
+function renderSessionSelectionText(selection) {
+  if (!selection || typeof selection.mode !== 'string') {
+    return 'unknown';
+  }
+  if (typeof selection.requested === 'string' && selection.requested) {
+    return `${selection.mode} (${selection.requested})`;
+  }
+  return selection.mode;
 }
 
 function resolveMessagesPath(cwd, session) {

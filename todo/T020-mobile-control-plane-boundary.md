@@ -75,6 +75,9 @@ That note should define:
 - Command-adjacent implementation follow-through started:
   - `opencodex remote status` now exposes a lightweight status snapshot with deployment checks and common troubleshooting hints.
   - `remote status` now also includes a live `/health` probe signal for running bridge sessions, including probe timestamp/latency metadata to reduce blind troubleshooting loops.
+  - `remote inbox` / `remote status` now prefer active `remote` sessions before falling back to historical records, reducing stale status reads during multi-session diagnostics.
+  - `remote inbox` / `remote status` now expose explicit session-selection provenance (`active` vs `latest_history`) so mobile/control-plane diagnostics are explainable.
+  - `remote status` now supports `--session-id <id|latest>` for explicit historical-session diagnostics when operators need exact session targeting.
   - `remote` command docs and command-spec docs now include the new status surface and support guidance entrypoint.
 - The remaining work is broader phone/web control-plane implementation follow-through, not boundary discovery.
 - The retained direction is:

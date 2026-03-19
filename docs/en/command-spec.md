@@ -107,8 +107,8 @@ Receive remote messages from a phone through a token-protected HTTP bridge tied 
 - run a lightweight local HTTP server
 - accept mobile message submission with token auth
 - save inbound messages as local artifacts
-- expose a CLI inbox view for the latest remote session
-- expose a CLI status snapshot with deployment checks, live health probe signals (including probe timing), and troubleshooting hints
+- expose a CLI inbox view for the preferred remote session (active first, fallback to latest historical record)
+- expose a CLI status snapshot for that same preferred session, with session-selection source metadata, deployment checks, live health probe signals (including probe timing), and troubleshooting hints
 
 **Minimal flags**
 
@@ -120,6 +120,7 @@ Receive remote messages from a phone through a token-protected HTTP bridge tied 
 - `--port <n>`
 - `--token <value>`
 - `--limit <n>`
+- `--session-id <id|latest>` (status only)
 - `--json`
 
 **Non-goals**

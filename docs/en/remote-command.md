@@ -15,12 +15,13 @@ The first version provides three subcommands:
 
 `remote serve` starts a token-protected local HTTP server.
 It creates a `remote` session, prints phone URLs, stores incoming messages in a session artifact, and keeps a normal openCodex audit trail.
-`remote inbox` reads the latest stored messages from the newest `remote` session.
-`remote status` reads the latest `remote` session and prints a deployment-oriented status snapshot:
+`remote inbox` reads the latest stored messages from the preferred `remote` session (active first, otherwise latest completed/failed record).
+`remote status` reads the same preferred `remote` session and prints a deployment-oriented status snapshot:
 
+- session selection source (`active`, `latest_history`, `explicit_latest`, `explicit_id`)
 - bind scope and exposure label
 - message count and latest message
-- live `/health` probe result (when the latest remote session is running), including probe timestamp and latency
+- live `/health` probe result (when the preferred remote session is running), including probe timestamp and latency
 - success checks (health URL, form submit, inbox visibility)
 - common troubleshooting hints
 
@@ -44,6 +45,13 @@ It creates a `remote` session, prints phone URLs, stores incoming messages in a 
 
 - `--cwd <dir>`
 - `--json`
+- `--session-id <id|latest>` (optional, status only)
+
+Status selection rules:
+
+- default: prefer active `remote` session (`running` / `queued`), otherwise use latest history (`latest_history`)
+- `--session-id latest`: force latest remote session by update time (`explicit_latest`)
+- `--session-id <id>`: inspect exactly one stored remote session (`explicit_id`)
 
 ## HTTP Surface
 
@@ -67,7 +75,7 @@ The bridge stores incoming messages in the active `remote` session artifact:
 
 - `messages.jsonl` — append-only message log under the session artifacts directory
 
-The newest `remote` session remains visible through `opencodex session` and `opencodex remote inbox`.
+The preferred `remote` session remains visible through `opencodex session` and `opencodex remote inbox` (active first, fallback to the latest historical record).
 Use `opencodex remote status` when you want a quick operational snapshot plus validation/troubleshooting guidance.
 
 ## Security Notes

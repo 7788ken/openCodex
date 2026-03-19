@@ -98,8 +98,119 @@ test('remote inbox returns the latest received messages in json mode', async () 
 
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.session_id, sessionId);
+  assert.equal(payload.session_selection.mode, 'latest_history');
   assert.equal(payload.count, 1);
   assert.equal(payload.messages[0].text, 'second');
+});
+
+test('remote inbox/status prefer an active remote session over a newer completed one', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-active-prefer-'));
+  const runningSessionId = 'remote-20260319-running';
+  const completedSessionId = 'remote-20260319-completed';
+
+  const runningSessionDir = path.join(cwd, '.opencodex', 'sessions', runningSessionId);
+  const runningArtifactsDir = path.join(runningSessionDir, 'artifacts');
+  const runningMessagesPath = path.join(runningArtifactsDir, 'messages.jsonl');
+  await mkdir(runningArtifactsDir, { recursive: true });
+  await writeFile(path.join(runningSessionDir, 'session.json'), `${JSON.stringify({
+    session_id: runningSessionId,
+    command: 'remote',
+    status: 'running',
+    created_at: '2026-03-19T00:00:00.000Z',
+    updated_at: '2026-03-19T00:01:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'embedded-http',
+    input: { prompt: '', arguments: { host: '127.0.0.1', port: 3799, auth: 'token', token_configured: true } },
+    summary: { title: 'Remote bridge running', result: 'ok', status: 'running', highlights: [], next_steps: [], findings: [] },
+    artifacts: [{ type: 'messages_log', path: runningMessagesPath, description: 'Remote messages received by the mobile bridge.' }]
+  }, null, 2)}\n`, 'utf8');
+  await writeFile(runningMessagesPath, `${JSON.stringify({
+    message_id: 'msg-running',
+    created_at: '2026-03-19T00:00:10.000Z',
+    sender: 'phone',
+    text: 'running message'
+  })}\n`, 'utf8');
+
+  const completedSessionDir = path.join(cwd, '.opencodex', 'sessions', completedSessionId);
+  const completedArtifactsDir = path.join(completedSessionDir, 'artifacts');
+  const completedMessagesPath = path.join(completedArtifactsDir, 'messages.jsonl');
+  await mkdir(completedArtifactsDir, { recursive: true });
+  await writeFile(path.join(completedSessionDir, 'session.json'), `${JSON.stringify({
+    session_id: completedSessionId,
+    command: 'remote',
+    status: 'completed',
+    created_at: '2026-03-19T00:03:00.000Z',
+    updated_at: '2026-03-19T00:05:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'embedded-http',
+    input: { prompt: '', arguments: { host: '127.0.0.1', port: 3789, auth: 'token', token_configured: true } },
+    summary: { title: 'Remote bridge completed', result: 'ok', status: 'completed', highlights: [], next_steps: [], findings: [] },
+    artifacts: [{ type: 'messages_log', path: completedMessagesPath, description: 'Remote messages received by the mobile bridge.' }]
+  }, null, 2)}\n`, 'utf8');
+  await writeFile(completedMessagesPath, `${JSON.stringify({
+    message_id: 'msg-completed',
+    created_at: '2026-03-19T00:04:10.000Z',
+    sender: 'phone',
+    text: 'completed message'
+  })}\n`, 'utf8');
+
+  const inbox = await runCli(['remote', 'inbox', '--cwd', cwd, '--json']);
+  assert.equal(inbox.code, 0);
+  const inboxPayload = JSON.parse(inbox.stdout);
+  assert.equal(inboxPayload.session_id, runningSessionId);
+  assert.equal(inboxPayload.session_selection.mode, 'active');
+  assert.equal(inboxPayload.messages[0].text, 'running message');
+
+  const status = await runCli(['remote', 'status', '--cwd', cwd, '--json']);
+  assert.equal(status.code, 0);
+  const statusPayload = JSON.parse(status.stdout);
+  assert.equal(statusPayload.session_id, runningSessionId);
+  assert.equal(statusPayload.session_selection.mode, 'active');
+  assert.equal(statusPayload.message_count, 1);
+  assert.equal(statusPayload.latest_message.text, 'running message');
+  assert.equal(statusPayload.health_probe.attempted, true);
+
+  const latestStatus = await runCli(['remote', 'status', '--cwd', cwd, '--session-id', 'latest', '--json']);
+  assert.equal(latestStatus.code, 0);
+  const latestStatusPayload = JSON.parse(latestStatus.stdout);
+  assert.equal(latestStatusPayload.session_id, completedSessionId);
+  assert.equal(latestStatusPayload.session_selection.mode, 'explicit_latest');
+  assert.equal(latestStatusPayload.session_selection.requested, 'latest');
+  assert.equal(latestStatusPayload.health_probe.attempted, false);
+
+  const explicitStatus = await runCli(['remote', 'status', '--cwd', cwd, '--session-id', completedSessionId, '--json']);
+  assert.equal(explicitStatus.code, 0);
+  const explicitStatusPayload = JSON.parse(explicitStatus.stdout);
+  assert.equal(explicitStatusPayload.session_id, completedSessionId);
+  assert.equal(explicitStatusPayload.session_selection.mode, 'explicit_id');
+  assert.equal(explicitStatusPayload.session_selection.requested, completedSessionId);
+});
+
+test('remote status fails fast when --session-id does not match any remote session', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-status-missing-id-'));
+  const sessionId = 'remote-20260319-one';
+  const sessionDir = path.join(cwd, '.opencodex', 'sessions', sessionId);
+  const artifactsDir = path.join(sessionDir, 'artifacts');
+  const messagesPath = path.join(artifactsDir, 'messages.jsonl');
+
+  await mkdir(artifactsDir, { recursive: true });
+  await writeFile(path.join(sessionDir, 'session.json'), `${JSON.stringify({
+    session_id: sessionId,
+    command: 'remote',
+    status: 'completed',
+    created_at: '2026-03-19T00:00:00.000Z',
+    updated_at: '2026-03-19T00:01:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'embedded-http',
+    input: { prompt: '', arguments: { host: '127.0.0.1', port: 3789, auth: 'token', token_configured: true } },
+    summary: { title: 'Remote bridge completed', result: 'ok', status: 'completed', highlights: [], next_steps: [], findings: [] },
+    artifacts: [{ type: 'messages_log', path: messagesPath, description: 'Remote messages received by the mobile bridge.' }]
+  }, null, 2)}\n`, 'utf8');
+  await writeFile(messagesPath, '', 'utf8');
+
+  const result = await runCli(['remote', 'status', '--cwd', cwd, '--session-id', 'remote-does-not-exist']);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /Remote bridge session not found/);
 });
 
 test('remote status returns deployment checks and troubleshooting hints in json mode', async () => {
@@ -132,6 +243,7 @@ test('remote status returns deployment checks and troubleshooting hints in json 
 
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.session_id, sessionId);
+  assert.equal(payload.session_selection.mode, 'active');
   assert.equal(payload.status, 'running');
   assert.equal(payload.host, '0.0.0.0');
   assert.equal(payload.port, 3789);
@@ -202,6 +314,7 @@ test('remote status probes health successfully while remote serve is running', a
   assert.equal(status.code, 0);
   const payload = JSON.parse(status.stdout);
   assert.equal(payload.status, 'running');
+  assert.equal(payload.session_selection.mode, 'active');
   assert.equal(payload.port, port);
   assert.equal(payload.health_probe.attempted, true);
   assert.equal(payload.health_probe.ok, true);
