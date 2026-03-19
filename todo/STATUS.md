@@ -2,6 +2,8 @@
 
 ## 2026-03-19
 
+- Synced command-spec docs to reflect remote probe timing visibility in `remote status` (`probed_at` / `duration_ms`).
+
 - Extended `remote status` probe diagnostics with timing metadata:
   - `health_probe` now includes `probed_at` and `duration_ms`
   - text-mode remote status now prints probe latency and timestamp when a probe is attempted

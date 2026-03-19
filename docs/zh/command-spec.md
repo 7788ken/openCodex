@@ -108,7 +108,7 @@ openCodex 是架在 Codex CLI 之上的轻量 CLI 层。
 - 通过 token 鉴权接收手机提交的消息
 - 把入站消息保存为本地 artifacts
 - 为最近一次 remote session 提供 CLI inbox 查看入口
-- 为最近一次 remote session 提供 CLI 状态快照、实时 health 探测信号、部署检查与排障提示
+- 为最近一次 remote session 提供 CLI 状态快照、实时 health 探测信号（含探测时间/延迟）、部署检查与排障提示
 
 **Minimal flags**
 
