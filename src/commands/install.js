@@ -887,6 +887,12 @@ function renderInstallOutput(payload, json, title) {
       lines.push(`- ${slot.name}`);
     }
   }
+  if (Array.isArray(payload.slots_by_recency) && payload.slots_by_recency.length) {
+    lines.push('Slots (newest first):');
+    for (const slot of payload.slots_by_recency) {
+      lines.push(`- ${slot.name}${slot.current ? ' (current)' : ''}`);
+    }
+  }
   if (payload.runtime_path) {
     lines.push(`Runtime Path: ${payload.runtime_path}`);
   }

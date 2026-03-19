@@ -2,6 +2,10 @@
 
 ## 2026-03-19
 
+- Improved slot inventory visibility in `install status` text mode:
+  - status now prints `Slots (newest first)` and marks the active slot as `(current)`
+  - this makes retention and pointer state readable without inspecting JSON fields
+
 - Improved side-by-side retention readability in `install status` text mode:
   - when `--keep <n>` differs from the default, status now prints both preview and default-policy prune candidate counts
   - this makes retention impact comparison visible without switching to JSON
