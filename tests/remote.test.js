@@ -347,8 +347,44 @@ test('remote status text output includes health probe latency metadata', async (
 
   const result = await runCli(['remote', 'status', '--cwd', cwd]);
   assert.equal(result.code, 0);
+  assert.match(result.stdout, /Session selection: active/);
+  assert.match(result.stdout, /Session candidates: total 1, active 1/);
   assert.match(result.stdout, /Health probe: failed/);
   assert.match(result.stdout, /latency: \d+ ms at \d{4}-\d{2}-\d{2}T/);
+});
+
+test('remote inbox text output includes selector provenance and candidate stats', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-inbox-text-'));
+  const sessionId = 'remote-20260320-inbox-text';
+  const sessionDir = path.join(cwd, '.opencodex', 'sessions', sessionId);
+  const artifactsDir = path.join(sessionDir, 'artifacts');
+  const messagesPath = path.join(artifactsDir, 'messages.jsonl');
+
+  await mkdir(artifactsDir, { recursive: true });
+  await writeFile(path.join(sessionDir, 'session.json'), `${JSON.stringify({
+    session_id: sessionId,
+    command: 'remote',
+    status: 'completed',
+    created_at: '2026-03-20T00:00:00.000Z',
+    updated_at: '2026-03-20T00:01:00.000Z',
+    working_directory: cwd,
+    codex_cli_version: 'embedded-http',
+    input: { prompt: '', arguments: { host: '127.0.0.1', port: 3789, auth: 'token', token_configured: true } },
+    summary: { title: 'Remote bridge completed', result: 'ok', status: 'completed', highlights: [], next_steps: [], findings: [] },
+    artifacts: [{ type: 'messages_log', path: messagesPath, description: 'Remote messages received by the mobile bridge.' }]
+  }, null, 2)}\n`, 'utf8');
+  await writeFile(messagesPath, `${JSON.stringify({
+    message_id: 'msg-1',
+    created_at: '2026-03-20T00:00:10.000Z',
+    sender: 'phone',
+    text: 'hello inbox text'
+  })}\n`, 'utf8');
+
+  const result = await runCli(['remote', 'inbox', '--cwd', cwd, '--session-id', 'latest']);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Session selection: explicit_latest \(latest\)/);
+  assert.match(result.stdout, /Session candidates: total 1, active 0/);
+  assert.match(result.stdout, /hello inbox text/);
 });
 
 test('remote status probes health successfully while remote serve is running', async () => {

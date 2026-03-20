@@ -227,6 +227,7 @@ async function runRemoteInbox(args) {
 
   process.stdout.write(`Remote inbox for ${remoteSession.session_id}\n`);
   process.stdout.write(`Session selection: ${renderSessionSelectionText(remoteSelection.selection)}\n`);
+  process.stdout.write(`Session candidates: ${renderSessionCandidateText(remoteSelection.selection)}\n`);
   if (!messages.length) {
     process.stdout.write('\nNo messages received yet.\n');
     return;
@@ -290,6 +291,7 @@ async function runRemoteStatus(args) {
   process.stdout.write(`Remote status for ${payload.session_id}\n`);
   process.stdout.write(`Status: ${payload.status}\n`);
   process.stdout.write(`Session selection: ${renderSessionSelectionText(payload.session_selection)}\n`);
+  process.stdout.write(`Session candidates: ${renderSessionCandidateText(payload.session_selection)}\n`);
   process.stdout.write(`Bind: ${payload.host || 'unknown'}:${payload.port ?? 'unknown'}\n`);
   process.stdout.write(`Exposure: ${payload.exposure.label}\n`);
   process.stdout.write(`Messages received: ${payload.message_count}\n`);
@@ -619,6 +621,15 @@ function renderSessionSelectionText(selection) {
     return `${selection.mode} (${selection.requested})`;
   }
   return selection.mode;
+}
+
+function renderSessionCandidateText(selection) {
+  const total = selection?.candidate_count;
+  const active = selection?.active_candidate_count;
+  if (!Number.isInteger(total) || total < 0 || !Number.isInteger(active) || active < 0) {
+    return 'unknown';
+  }
+  return `total ${total}, active ${active}`;
 }
 
 function resolveMessagesPath(cwd, session) {

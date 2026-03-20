@@ -2,6 +2,10 @@
 
 ## 2026-03-19
 
+- Brought selector diagnostics parity to human-readable output:
+  - text-mode `remote inbox` / `remote status` now print `Session candidates: total <n>, active <n>` alongside selection mode.
+- Added text-mode regression coverage for selector/candidate rendering in `tests/remote.test.js`.
+
 - Added remote selector candidate statistics for explainable diagnostics:
   - `session_selection` now includes `candidate_count` and `active_candidate_count` for inbox/status JSON output.
   - this makes explicit/default selector outcomes auditable when multiple remote sessions coexist.

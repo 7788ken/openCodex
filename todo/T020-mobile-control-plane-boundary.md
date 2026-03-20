@@ -80,6 +80,7 @@ That note should define:
   - `remote status` now supports `--session-id <id|latest>` for explicit historical-session diagnostics when operators need exact session targeting.
   - `remote inbox` now also supports `--session-id <id|latest>`, so message inspection and status diagnostics share one selector contract.
   - session-selection output now includes candidate statistics (`candidate_count`, `active_candidate_count`) so operators can audit why a selector result was chosen.
+  - text-mode inbox/status now also prints selector candidate statistics, keeping JSON and human-readable diagnostics aligned.
   - `remote` command docs and command-spec docs now include the new status surface and support guidance entrypoint.
 - The remaining work is broader phone/web control-plane implementation follow-through, not boundary discovery.
 - The retained direction is:
