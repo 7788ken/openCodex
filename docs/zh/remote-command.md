@@ -18,7 +18,7 @@
 `remote inbox` 默认从“优先 remote session”读取最近消息（优先 active，会话不存在时回退到最新历史记录），也支持显式指定目标会话。
 `remote status` 使用同一套选择模型，输出面向部署与排障的状态快照，包括：
 
-- 会话选择来源（`active`、`latest_history`、`explicit_latest`、`explicit_id`）
+- 会话选择来源（`active`、`latest_history`、`explicit_latest`、`explicit_id`）及候选统计（`candidate_count`、`active_candidate_count`）
 - 绑定范围与暴露级别
 - 消息数量与最近一条消息
 - 优先会话处于运行中时的实时 `/health` 探测结果（含探测时间与延迟）

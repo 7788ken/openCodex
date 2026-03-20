@@ -99,6 +99,8 @@ test('remote inbox returns the latest received messages in json mode', async () 
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.session_id, sessionId);
   assert.equal(payload.session_selection.mode, 'latest_history');
+  assert.equal(payload.session_selection.candidate_count, 1);
+  assert.equal(payload.session_selection.active_candidate_count, 0);
   assert.equal(payload.count, 1);
   assert.equal(payload.messages[0].text, 'second');
 });
@@ -159,6 +161,8 @@ test('remote inbox/status prefer an active remote session over a newer completed
   const inboxPayload = JSON.parse(inbox.stdout);
   assert.equal(inboxPayload.session_id, runningSessionId);
   assert.equal(inboxPayload.session_selection.mode, 'active');
+  assert.equal(inboxPayload.session_selection.candidate_count, 2);
+  assert.equal(inboxPayload.session_selection.active_candidate_count, 1);
   assert.equal(inboxPayload.messages[0].text, 'running message');
 
   const latestInbox = await runCli(['remote', 'inbox', '--cwd', cwd, '--session-id', 'latest', '--json']);
@@ -167,6 +171,8 @@ test('remote inbox/status prefer an active remote session over a newer completed
   assert.equal(latestInboxPayload.session_id, completedSessionId);
   assert.equal(latestInboxPayload.session_selection.mode, 'explicit_latest');
   assert.equal(latestInboxPayload.session_selection.requested, 'latest');
+  assert.equal(latestInboxPayload.session_selection.candidate_count, 2);
+  assert.equal(latestInboxPayload.session_selection.active_candidate_count, 1);
   assert.equal(latestInboxPayload.messages[0].text, 'completed message');
 
   const explicitInbox = await runCli(['remote', 'inbox', '--cwd', cwd, '--session-id', completedSessionId, '--json']);
@@ -175,6 +181,8 @@ test('remote inbox/status prefer an active remote session over a newer completed
   assert.equal(explicitInboxPayload.session_id, completedSessionId);
   assert.equal(explicitInboxPayload.session_selection.mode, 'explicit_id');
   assert.equal(explicitInboxPayload.session_selection.requested, completedSessionId);
+  assert.equal(explicitInboxPayload.session_selection.candidate_count, 2);
+  assert.equal(explicitInboxPayload.session_selection.active_candidate_count, 1);
   assert.equal(explicitInboxPayload.messages[0].text, 'completed message');
 
   const status = await runCli(['remote', 'status', '--cwd', cwd, '--json']);
@@ -182,6 +190,8 @@ test('remote inbox/status prefer an active remote session over a newer completed
   const statusPayload = JSON.parse(status.stdout);
   assert.equal(statusPayload.session_id, runningSessionId);
   assert.equal(statusPayload.session_selection.mode, 'active');
+  assert.equal(statusPayload.session_selection.candidate_count, 2);
+  assert.equal(statusPayload.session_selection.active_candidate_count, 1);
   assert.equal(statusPayload.message_count, 1);
   assert.equal(statusPayload.latest_message.text, 'running message');
   assert.equal(statusPayload.health_probe.attempted, true);
@@ -192,6 +202,8 @@ test('remote inbox/status prefer an active remote session over a newer completed
   assert.equal(latestStatusPayload.session_id, completedSessionId);
   assert.equal(latestStatusPayload.session_selection.mode, 'explicit_latest');
   assert.equal(latestStatusPayload.session_selection.requested, 'latest');
+  assert.equal(latestStatusPayload.session_selection.candidate_count, 2);
+  assert.equal(latestStatusPayload.session_selection.active_candidate_count, 1);
   assert.equal(latestStatusPayload.health_probe.attempted, false);
 
   const explicitStatus = await runCli(['remote', 'status', '--cwd', cwd, '--session-id', completedSessionId, '--json']);
@@ -200,6 +212,8 @@ test('remote inbox/status prefer an active remote session over a newer completed
   assert.equal(explicitStatusPayload.session_id, completedSessionId);
   assert.equal(explicitStatusPayload.session_selection.mode, 'explicit_id');
   assert.equal(explicitStatusPayload.session_selection.requested, completedSessionId);
+  assert.equal(explicitStatusPayload.session_selection.candidate_count, 2);
+  assert.equal(explicitStatusPayload.session_selection.active_candidate_count, 1);
 });
 
 test('remote inbox fails fast when --session-id does not match any remote session', async () => {
@@ -287,6 +301,8 @@ test('remote status returns deployment checks and troubleshooting hints in json 
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.session_id, sessionId);
   assert.equal(payload.session_selection.mode, 'active');
+  assert.equal(payload.session_selection.candidate_count, 1);
+  assert.equal(payload.session_selection.active_candidate_count, 1);
   assert.equal(payload.status, 'running');
   assert.equal(payload.host, '0.0.0.0');
   assert.equal(payload.port, 3789);
@@ -358,6 +374,8 @@ test('remote status probes health successfully while remote serve is running', a
   const payload = JSON.parse(status.stdout);
   assert.equal(payload.status, 'running');
   assert.equal(payload.session_selection.mode, 'active');
+  assert.equal(payload.session_selection.candidate_count, 1);
+  assert.equal(payload.session_selection.active_candidate_count, 1);
   assert.equal(payload.port, port);
   assert.equal(payload.health_probe.attempted, true);
   assert.equal(payload.health_probe.ok, true);

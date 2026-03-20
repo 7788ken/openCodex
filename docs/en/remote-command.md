@@ -18,7 +18,7 @@ It creates a `remote` session, prints phone URLs, stores incoming messages in a 
 `remote inbox` reads stored messages from the preferred `remote` session by default (active first, otherwise latest completed/failed record), and can explicitly target one session.
 `remote status` reads the same selection model and prints a deployment-oriented status snapshot:
 
-- session selection source (`active`, `latest_history`, `explicit_latest`, `explicit_id`)
+- session selection source (`active`, `latest_history`, `explicit_latest`, `explicit_id`) plus candidate counts (`candidate_count`, `active_candidate_count`)
 - bind scope and exposure label
 - message count and latest message
 - live `/health` probe result (when the preferred remote session is running), including probe timestamp and latency

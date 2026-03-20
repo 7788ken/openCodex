@@ -108,7 +108,7 @@ Receive remote messages from a phone through a token-protected HTTP bridge tied 
 - accept mobile message submission with token auth
 - save inbound messages as local artifacts
 - expose a CLI inbox view for the preferred remote session (active first, fallback to latest historical record)
-- expose a CLI status snapshot for that same preferred session, with session-selection source metadata, deployment checks, live health probe signals (including probe timing), and troubleshooting hints
+- expose a CLI status snapshot for that same preferred session, with session-selection source metadata (including candidate counts), deployment checks, live health probe signals (including probe timing), and troubleshooting hints
 
 **Minimal flags**
 

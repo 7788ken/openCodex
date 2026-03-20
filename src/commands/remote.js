@@ -517,14 +517,17 @@ async function resolvePreferredRemoteSession(cwd, commandLabel, options = {}) {
   }
 
   if (sessionIdSelector) {
-    return selectRemoteSessionBySelector(remoteSessions, sessionIdSelector, commandLabel);
+    return withSelectionStats(
+      selectRemoteSessionBySelector(remoteSessions, sessionIdSelector, commandLabel),
+      remoteSessions
+    );
   }
 
   const remoteSelection = selectPreferredRemoteSession(remoteSessions);
   if (!remoteSelection) {
     throw new Error(`No remote bridge session found for \`${commandLabel}\``);
   }
-  return remoteSelection;
+  return withSelectionStats(remoteSelection, remoteSessions);
 }
 
 function listRemoteSessions(sessions) {
@@ -582,6 +585,29 @@ function selectRemoteSessionBySelector(remoteSessions, sessionIdSelector, comman
       description: 'Selected remote session via --session-id.',
       requested: sessionIdSelector
     }
+  };
+}
+
+function withSelectionStats(remoteSelection, remoteSessions) {
+  if (!remoteSelection?.selection) {
+    return remoteSelection;
+  }
+  const stats = buildRemoteSessionSelectionStats(remoteSessions);
+  return {
+    ...remoteSelection,
+    selection: {
+      ...remoteSelection.selection,
+      ...stats
+    }
+  };
+}
+
+function buildRemoteSessionSelectionStats(remoteSessions) {
+  const candidateCount = remoteSessions.length;
+  const activeCandidateCount = remoteSessions.filter((session) => !isTerminalSessionStatus(session?.status)).length;
+  return {
+    candidate_count: candidateCount,
+    active_candidate_count: activeCandidateCount
   };
 }
 

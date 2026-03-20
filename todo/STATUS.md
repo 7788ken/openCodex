@@ -2,6 +2,12 @@
 
 ## 2026-03-19
 
+- Added remote selector candidate statistics for explainable diagnostics:
+  - `session_selection` now includes `candidate_count` and `active_candidate_count` for inbox/status JSON output.
+  - this makes explicit/default selector outcomes auditable when multiple remote sessions coexist.
+- Added regression assertions for selector candidate statistics in `tests/remote.test.js`.
+- Synced EN/ZH remote docs and command-spec wording for selector statistics visibility.
+
 - Extended explicit session targeting to remote inbox:
   - `remote inbox` now supports `--session-id <id|latest>` and uses the same selector contract as `remote status`.
   - text-mode inbox selection output now reuses the same explicit selection rendering (`explicit_latest(<requested>)`, `explicit_id(<requested>)`).
