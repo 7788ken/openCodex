@@ -2,6 +2,11 @@
 
 ## 2026-03-19
 
+- Added selector-mismatch warning for explicit historical targeting:
+  - `remote status --session-id latest` now warns when it resolves to a terminal session while active remote sessions still exist.
+  - this prevents operators from mistaking historical diagnostics for the active bridge state.
+- Added regression coverage for explicit-latest selector warning behavior in `tests/remote.test.js`.
+
 - Brought selector diagnostics parity to human-readable output:
   - text-mode `remote inbox` / `remote status` now print `Session candidates: total <n>, active <n>` alongside selection mode.
 - Added text-mode regression coverage for selector/candidate rendering in `tests/remote.test.js`.

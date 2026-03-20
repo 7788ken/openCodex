@@ -192,6 +192,7 @@ test('remote inbox/status prefer an active remote session over a newer completed
   assert.equal(statusPayload.session_selection.mode, 'active');
   assert.equal(statusPayload.session_selection.candidate_count, 2);
   assert.equal(statusPayload.session_selection.active_candidate_count, 1);
+  assert.ok(!statusPayload.warnings.some((line) => line.includes('historical remote session')));
   assert.equal(statusPayload.message_count, 1);
   assert.equal(statusPayload.latest_message.text, 'running message');
   assert.equal(statusPayload.health_probe.attempted, true);
@@ -204,6 +205,7 @@ test('remote inbox/status prefer an active remote session over a newer completed
   assert.equal(latestStatusPayload.session_selection.requested, 'latest');
   assert.equal(latestStatusPayload.session_selection.candidate_count, 2);
   assert.equal(latestStatusPayload.session_selection.active_candidate_count, 1);
+  assert.ok(latestStatusPayload.warnings.some((line) => line.includes('historical remote session')));
   assert.equal(latestStatusPayload.health_probe.attempted, false);
 
   const explicitStatus = await runCli(['remote', 'status', '--cwd', cwd, '--session-id', completedSessionId, '--json']);

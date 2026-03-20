@@ -278,7 +278,10 @@ async function runRemoteStatus(args) {
         }
       : null,
     health_probe: healthProbe,
-    warnings: buildRemoteExposureWarnings(exposure, healthProbe),
+    warnings: [
+      ...buildRemoteExposureWarnings(exposure, healthProbe),
+      ...buildRemoteSelectionWarnings(remoteSelection.selection, remoteSession.status)
+    ],
     success_checks: buildRemoteSuccessChecks({ host, port, urls }),
     common_failures: buildRemoteCommonFailures()
   };
@@ -798,6 +801,20 @@ function buildRemoteExposureWarnings(exposure, healthProbe = null) {
 
   if (healthProbe?.attempted && !healthProbe.ok) {
     warnings.push('Health probe failed. Verify that the remote bridge process is still running and listening on the expected host/port.');
+  }
+
+  return warnings;
+}
+
+function buildRemoteSelectionWarnings(selection, sessionStatus) {
+  const warnings = [];
+  if (!selection || typeof selection.mode !== 'string') {
+    return warnings;
+  }
+
+  const hasActiveCandidates = Number.isInteger(selection.active_candidate_count) && selection.active_candidate_count > 0;
+  if (selection.mode === 'explicit_latest' && hasActiveCandidates && isTerminalSessionStatus(sessionStatus)) {
+    warnings.push('`--session-id latest` selected a historical remote session while active sessions still exist. Omit `--session-id` to inspect the active bridge by default.');
   }
 
   return warnings;

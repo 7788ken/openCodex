@@ -53,6 +53,7 @@
 - 默认：优先 active `remote` session（`running` / `queued`），否则回退最新历史（`latest_history`）
 - `--session-id latest`：强制按更新时间选择最新 `remote` session（`explicit_latest`）
 - `--session-id <id>`：仅查看指定 `remote` session（`explicit_id`）
+- 当 `explicit_latest` 命中的是终态会话且仍存在 active 会话时，status 会额外给出提醒，避免把历史记录误判为当前在线 bridge
 
 ## HTTP 接口
 

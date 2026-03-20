@@ -53,6 +53,7 @@ Session selection rules (`remote inbox` and `remote status`):
 - default: prefer active `remote` session (`running` / `queued`), otherwise use latest history (`latest_history`)
 - `--session-id latest`: force latest remote session by update time (`explicit_latest`)
 - `--session-id <id>`: inspect exactly one stored remote session (`explicit_id`)
+- when `explicit_latest` resolves to a terminal session while active sessions still exist, status emits a warning so operators do not confuse history with the active bridge
 
 ## HTTP Surface
 
