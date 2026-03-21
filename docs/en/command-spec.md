@@ -96,6 +96,36 @@ Run a first unattended local workflow by chaining stable openCodex wrapper comma
 - distributed job execution
 - replacing `run` as the actual Codex execution engine
 
+### `opencodex memory`
+
+**Purpose**
+
+Rebuild a latest-view summary and a machine-readable state file from append-only memory notes.
+
+**Initial scope**
+
+- parse append-only session notes with dated headings
+- keep the newest record for the same topic key as the active view
+- merge legacy title-only notes into a keyed topic when the title maps to exactly one explicit topic key
+- write regenerated summary and state artifacts without mutating the source notes
+- store the sync itself as a standard local openCodex session
+
+**Minimal flags**
+
+- `sync`
+- `--source <path>`
+- `--summary <path>`
+- `--state <path>`
+- `--cwd <dir>`
+- `--json`
+- `--now <timestamp>`
+
+**Non-goals**
+
+- turning append-only notes into an editable database
+- embedding a scheduler into the command itself
+- rewriting or deduplicating the source note file
+
 ### `opencodex remote`
 
 **Purpose**

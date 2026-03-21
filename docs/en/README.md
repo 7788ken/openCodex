@@ -91,6 +91,7 @@ The bootstrap script is meant for detached installs, not `--link-source` develop
 - `doctor-command.md` — local readiness checks, output shape, and exit behavior.
 - `review-command.md` — review workflow inputs, artifacts, and summary strategy.
 - `auto-command.md` — unattended local workflow chaining on top of existing wrapper commands.
+- `memory-command.md` — sync append-only memory notes into a latest-view summary and state file.
 - `remote-command.md` — token-protected mobile message bridge over local HTTP.
 - `mobile-control-plane.md` — product boundary, host-owned control, and support limits for the mobile/web control plane.
 - `service-command.md` — macOS launchd service and menu bar app management for Telegram CTO mode.

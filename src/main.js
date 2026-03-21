@@ -8,6 +8,7 @@ import { runImCommand } from './commands/im.js';
 import { runServiceCommand } from './commands/service.js';
 import { runInstallCommand } from './commands/install.js';
 import { runBridgeCommand } from './commands/bridge.js';
+import { runMemoryCommand } from './commands/memory.js';
 
 const HELP_TEXT = `openCodex
 
@@ -25,6 +26,7 @@ Commands:
   service   Install and control local background services
   install   Create or inspect a detached local openCodex runtime
   bridge    Inspect or register installed Codex bridge state
+  memory    Sync append-only memory notes into a current summary
 
 Global options:
   --help    Show help
@@ -85,6 +87,11 @@ export async function main(argv) {
 
   if (command === 'bridge') {
     await runBridgeCommand(rest);
+    return;
+  }
+
+  if (command === 'memory') {
+    await runMemoryCommand(rest);
     return;
   }
 

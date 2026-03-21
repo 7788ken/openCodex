@@ -96,6 +96,7 @@ node ./bin/opencodex.js install detached --link-source
 - `doctor-command.md` — 本地就绪检查、输出结构与退出行为。
 - `review-command.md` — review 工作流输入、artifacts 与 summary 策略。
 - `auto-command.md` — 基于现有 wrapper 命令串联的无人值守本地工作流。
+- `memory-command.md` — 把追加型 memory 记录收敛成最新 summary 与 state 文件。
 - `remote-command.md` — 基于本地 HTTP 的带 token 手机消息桥。
 - `mobile-control-plane.md` — 手机 / Web control plane 的产品边界、宿主控制权与支持范围。
 - `service-command.md` — Telegram CTO 模式的 macOS launchd 服务与菜单栏 app 管理。

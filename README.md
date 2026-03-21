@@ -35,6 +35,7 @@ The goal of this repository is to explore a practical, repo-aware coding workflo
 - `opencodex doctor` — validate local readiness for openCodex workflows.
 - `opencodex review` — run a repository review and store a normalized review session with structured findings when the report format allows.
 - `opencodex auto` — run an unattended local workflow with a parent session, chained child sessions, optional retries, and optional review.
+- `opencodex memory` — sync append-only memory notes into a current summary and state file so recurring automations can reuse one openCodex-owned capability.
 - `opencodex remote` — open a token-protected HTTP bridge so your phone can send messages into the current workspace.
 - `opencodex im` — connect openCodex to IM platforms like Telegram without depending on local IP reachability, and route messages into a host-resident CTO supervisor workflow with task splitting, progress replies, and confirmation gates.
 - `opencodex service` — install a macOS launchd service and optional menu bar app for the Telegram CTO bridge, with a configurable permission mode and host-supervisor control loop.
@@ -130,6 +131,7 @@ open "$HOME/Applications/OpenCodex.app"
 node ./bin/opencodex.js run "summarize this repository"
 node ./bin/opencodex.js review --uncommitted
 node ./bin/opencodex.js auto --review "stabilize this repository"
+node ./bin/opencodex.js memory sync --source "$HOME/.codex/memories/ewallet_session_insights.md"
 node ./bin/opencodex.js remote serve --host 0.0.0.0
 node ./bin/opencodex.js im telegram listen --bot-token "$OPENCODEX_TELEGRAM_BOT_TOKEN"
 node ./bin/opencodex.js im telegram listen --chat-id "$OPENCODEX_TELEGRAM_CHAT_ID" --cto --bot-token "$OPENCODEX_TELEGRAM_BOT_TOKEN"

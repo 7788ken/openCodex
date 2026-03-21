@@ -96,6 +96,36 @@ openCodex 是架在 Codex CLI 之上的轻量 CLI 层。
 - 分布式作业执行
 - 替代 `run` 作为真实 Codex 执行引擎
 
+### `opencodex memory`
+
+**Purpose**
+
+把追加型 memory 记录重建成最新 summary 和 machine-readable state 文件。
+
+**Initial scope**
+
+- 解析带时间标题的追加型 session 记录
+- 同一 `主题键` 下只保留最新记录作为当前视图
+- 当旧记录没有 `主题键` 且标题只映射到一个显式 `主题键` 时，并入该主题
+- 重建 summary 与 state 产物，但不改写原始记录
+- 把本次同步过程也落成标准 openCodex 本地 session
+
+**Minimal flags**
+
+- `sync`
+- `--source <path>`
+- `--summary <path>`
+- `--state <path>`
+- `--cwd <dir>`
+- `--json`
+- `--now <timestamp>`
+
+**Non-goals**
+
+- 把追加型记录改造成可编辑数据库
+- 在命令内部内建 scheduler
+- 回写或去重原始 memory 文件
+
 ### `opencodex remote`
 
 **Purpose**
