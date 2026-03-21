@@ -17,6 +17,13 @@ export function resolveBridgeStatePath(options = {}) {
   return path.join(resolveBridgeStateRoot(options), 'bridge.json');
 }
 
+export function resolveBridgeActiveSessionPath(options = {}) {
+  if (typeof options.statePath === 'string' && options.statePath.trim()) {
+    return path.join(path.dirname(path.resolve(options.statePath.trim())), 'active-session.json');
+  }
+  return path.join(resolveBridgeStateRoot(options), 'active-session.json');
+}
+
 export function resolveBridgeBinDir({ homeDir = os.homedir(), binDir = '' } = {}) {
   return path.resolve(binDir || path.join(homeDir, '.local', 'bin'));
 }
@@ -26,7 +33,9 @@ export function resolveCodexShimPath(options = {}) {
 }
 
 export async function readBridgeStateRecord(options = {}) {
-  const statePath = resolveBridgeStatePath(options);
+  const statePath = typeof options.statePath === 'string' && options.statePath.trim()
+    ? path.resolve(options.statePath.trim())
+    : resolveBridgeStatePath(options);
   const raw = await readTextIfExists(statePath);
 
   if (raw === null) {
@@ -182,6 +191,9 @@ export async function registerCodexBridge({ cwd = process.cwd(), env = process.e
     bridge: {
       default_surface: previous.state?.bridge?.default_surface || 'cli',
       active_session_id: previous.state?.bridge?.active_session_id || '',
+      active_session_cwd: previous.state?.bridge?.active_session_cwd || '',
+      active_session_command: previous.state?.bridge?.active_session_command || '',
+      active_session_started_at: previous.state?.bridge?.active_session_started_at || '',
       active_session_updated_at: previous.state?.bridge?.active_session_updated_at || '',
       bin_dir: previous.state?.bridge?.bin_dir || '',
       shim_path: previous.state?.bridge?.shim_path || '',
@@ -224,6 +236,9 @@ export async function persistBridgeShimState({
       ...bridgeRecord.state.bridge,
       default_surface: bridgeRecord.state?.bridge?.default_surface || 'cli',
       active_session_id: bridgeRecord.state?.bridge?.active_session_id || '',
+      active_session_cwd: bridgeRecord.state?.bridge?.active_session_cwd || '',
+      active_session_command: bridgeRecord.state?.bridge?.active_session_command || '',
+      active_session_started_at: bridgeRecord.state?.bridge?.active_session_started_at || '',
       active_session_updated_at: bridgeRecord.state?.bridge?.active_session_updated_at || '',
       bin_dir: resolveBridgeBinDir({ homeDir, binDir }),
       shim_path: resolveCodexShimPath({ homeDir, binDir }),
@@ -254,6 +269,89 @@ export async function isOpenCodexCodexBridgeShim(targetPath) {
   } catch {
     return false;
   }
+}
+
+export async function markBridgeActiveSession({
+  homeDir = os.homedir(),
+  statePath = '',
+  sessionId = '',
+  sessionCwd = '',
+  commandArgs = [],
+  startedAt = toIsoString()
+} = {}) {
+  const record = await readBridgeStateRecord({ homeDir, statePath });
+  if (!record.exists || record.error || !record.state) {
+    throw new Error('Cannot mark an active bridge session before the bridge state exists.');
+  }
+
+  const nextState = {
+    ...record.state,
+    updated_at: toIsoString(),
+    bridge: {
+      ...record.state.bridge,
+      active_session_id: asTrimmedString(sessionId),
+      active_session_cwd: asTrimmedString(sessionCwd),
+      active_session_command: normalizeBridgeSessionCommand(commandArgs),
+      active_session_started_at: asTrimmedString(startedAt),
+      active_session_updated_at: toIsoString()
+    }
+  };
+
+  await writeJson(record.statePath, nextState);
+  return {
+    statePath: record.statePath,
+    stateRoot: path.dirname(record.statePath),
+    state: nextState
+  };
+}
+
+export async function clearBridgeActiveSession({
+  homeDir = os.homedir(),
+  statePath = '',
+  sessionId = '',
+  updatedAt = toIsoString()
+} = {}) {
+  const record = await readBridgeStateRecord({ homeDir, statePath });
+  if (!record.exists || record.error || !record.state) {
+    return {
+      statePath: record.statePath,
+      stateRoot: path.dirname(record.statePath),
+      state: record.state,
+      cleared: false
+    };
+  }
+
+  const activeSessionId = asTrimmedString(record.state?.bridge?.active_session_id);
+  const requestedSessionId = asTrimmedString(sessionId);
+  if (requestedSessionId && activeSessionId && activeSessionId !== requestedSessionId) {
+    return {
+      statePath: record.statePath,
+      stateRoot: path.dirname(record.statePath),
+      state: record.state,
+      cleared: false
+    };
+  }
+
+  const nextState = {
+    ...record.state,
+    updated_at: toIsoString(),
+    bridge: {
+      ...record.state.bridge,
+      active_session_id: '',
+      active_session_cwd: '',
+      active_session_command: '',
+      active_session_started_at: '',
+      active_session_updated_at: asTrimmedString(updatedAt)
+    }
+  };
+
+  await writeJson(record.statePath, nextState);
+  return {
+    statePath: record.statePath,
+    stateRoot: path.dirname(record.statePath),
+    state: nextState,
+    cleared: true
+  };
 }
 
 function determineCodexTargetSource({ env = process.env, pathValue = '' } = {}) {
@@ -417,4 +515,11 @@ function matchesKnownPath(value, ...candidates) {
   }
 
   return candidates.some((candidate) => normalized === asTrimmedString(candidate));
+}
+
+function normalizeBridgeSessionCommand(commandArgs = []) {
+  return (Array.isArray(commandArgs) ? commandArgs : [])
+    .map((value) => asTrimmedString(value))
+    .filter(Boolean)
+    .join(' ');
 }

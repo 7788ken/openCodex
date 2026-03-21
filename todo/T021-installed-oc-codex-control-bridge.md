@@ -237,9 +237,11 @@ The control-plane entry must be fixed at the installed bridge/runtime layer firs
   - persisted shim install metadata in the global bridge state
   - added `doctor` coverage for shim visibility, PATH precedence, and recursion risk
   - hardened launcher inspection so bridge status and doctor do not recurse when PATH already resolves `codex` to the bridge shim
-- Phase 3 next:
-  - introduce a live session record for bridge-owned Codex launches
-  - replace direct shim passthrough with a bridge-owned runtime boundary that can later accept external control
+- Phase 3 started:
+  - `opencodex bridge exec-codex` now creates a bridge-owned session record under the workspace session store
+  - bridge-launched sessions now persist runtime metadata and lifecycle events
+  - `opencodex bridge status` now reports the current active bridge-owned session through a dedicated runtime pointer under `~/.opencodex/bridge/active-session.json`
+  - the remaining gap is an attachable PTY/inbox control runtime rather than a pure launch/observe flow
 - Product direction is now clear:
   - Codex stays the execution engine.
   - Installed openCodex becomes the control bridge.

@@ -15,6 +15,7 @@ const ROLE_LABELS_ZH = {
   telegram_cto_listener: 'Telegram CTO 监听器',
   telegram_listener: 'Telegram 监听器',
   auto_orchestrator: '自动工作流主线程',
+  bridge_supervisor: 'Bridge 主线程',
   executor: '执行子会话',
   reviewer: '评审子会话'
 };

@@ -2,6 +2,11 @@
 
 ## 2026-03-21
 
+- Started `T021` Phase 3 with the first bridge-owned live-session slice:
+  - `opencodex bridge exec-codex` now creates a bridge-owned session record under the workspace session store before launching the real Codex process
+  - bridge runtime metadata now persists as `bridge-runtime.json` plus lifecycle events for launch/exit auditing
+  - `opencodex bridge status` now reports the current active bridge-owned session through `~/.opencodex/bridge/active-session.json`
+  - validated with `node --test tests/bridge.test.js` and `node --test tests/doctor.test.js`
 - Completed `T021` Phase 2 implementation:
   - added `opencodex bridge install-shim`, `repair-shim`, and the internal `exec-codex` handoff path
   - persisted installed shim metadata in the global bridge state so detached installs can inspect the active control entrypoint

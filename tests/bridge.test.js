@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, readFile, realpath } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, realpath } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const fixture = path.resolve('tests/fixtures/mock-codex.js');
+const liveFixture = path.resolve('tests/fixtures/mock-codex-live.js');
 const cli = path.resolve('bin/opencodex.js');
 
 test('bridge status reports a missing bridge state and the current Codex candidate', async () => {
@@ -103,6 +105,63 @@ test('bridge install-shim writes a transparent codex shim and preserves PATH hab
   assert.equal(statusPayload.shim.path_command.resolved_path, await realpath(path.join(binDir, 'codex')));
 });
 
+test('bridge exec-codex records and clears a bridge-owned live session', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-bridge-live-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-bridge-home-live-'));
+
+  await chmod(liveFixture, 0o755);
+
+  const register = await runCli(['bridge', 'register-codex', '--path', liveFixture, '--json', '--cwd', cwd], {
+    HOME: homeDir
+  });
+  assert.equal(register.code, 0);
+
+  const liveRun = spawnCli(['bridge', 'exec-codex', '--version'], {
+    HOME: homeDir,
+    OPENCODEX_MOCK_CODEX_DELAY_MS: '800'
+  }, { cwd });
+
+  const activeStatusPayload = await waitFor(async () => {
+    const status = await runCli(['bridge', 'status', '--json', '--cwd', cwd], {
+      HOME: homeDir
+    });
+    const payload = JSON.parse(status.stdout);
+    return payload?.active_session?.session_id ? payload : null;
+  });
+
+  assert.ok(activeStatusPayload);
+  const activeSessionId = activeStatusPayload.active_session.session_id;
+  assert.equal(activeStatusPayload.active_session.status, 'running');
+  assert.equal(activeStatusPayload.active_session.record_found, true);
+  assert.equal(activeStatusPayload.active_session.command, '--version');
+
+  const liveResult = await liveRun.result;
+  assert.equal(liveResult.code, 0);
+  assert.match(liveResult.stdout, /codex-cli 0\.222\.0/);
+
+  const finalStatus = await runCli(['bridge', 'status', '--json', '--cwd', cwd], {
+    HOME: homeDir
+  });
+  assert.equal(finalStatus.code, 0);
+  const finalStatusPayload = JSON.parse(finalStatus.stdout);
+  assert.equal(finalStatusPayload.active_session, null);
+
+  const sessionPath = path.join(cwd, '.opencodex', 'sessions', activeSessionId, 'session.json');
+  const eventsPath = path.join(cwd, '.opencodex', 'sessions', activeSessionId, 'events.jsonl');
+  const runtimePath = path.join(cwd, '.opencodex', 'sessions', activeSessionId, 'artifacts', 'bridge-runtime.json');
+  const sessionPayload = JSON.parse(await readFile(sessionPath, 'utf8'));
+  const runtimePayload = JSON.parse(await readFile(runtimePath, 'utf8'));
+  const eventsText = await readFile(eventsPath, 'utf8');
+
+  assert.equal(sessionPayload.command, 'bridge');
+  assert.equal(sessionPayload.status, 'completed');
+  assert.equal(sessionPayload.session_contract?.role, 'bridge_supervisor');
+  assert.equal(runtimePayload.status, 'completed');
+  assert.equal(runtimePayload.real_codex_path, liveFixture);
+  assert.match(eventsText, /bridge\.session\.started/);
+  assert.match(eventsText, /bridge\.session\.exited/);
+});
+
 function runCli(args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [cli, ...args], {
@@ -147,4 +206,52 @@ function runCommand(command, args, extraEnv = {}) {
     child.on('error', reject);
     child.on('close', (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+function spawnCli(args, extraEnv = {}, options = {}) {
+  const child = spawn('node', [cli, ...args], {
+    cwd: options.cwd,
+    env: { ...process.env, ...extraEnv },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  let stdout = '';
+  let stderr = '';
+
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  return {
+    child,
+    result: new Promise((resolve, reject) => {
+      child.on('error', reject);
+      child.on('close', (code) => resolve({ code, stdout, stderr }));
+    })
+  };
+}
+
+async function waitFor(check, { attempts = 30, delayMs = 25 } = {}) {
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const result = await check();
+      if (result) {
+        return result;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await sleep(delayMs);
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  throw new Error('Timed out waiting for bridge state.');
 }
