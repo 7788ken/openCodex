@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { access } from 'node:fs/promises';
+import { access, realpath } from 'node:fs/promises';
 import { appendFile, chmod, rm, writeFile } from 'node:fs/promises';
 import { parseOptions } from '../lib/args.js';
 import {
@@ -21,12 +21,25 @@ import {
 import { ensureDir, readTextIfExists, toIsoString, writeJson } from '../lib/fs.js';
 import { canonicalizeCliLauncherPath, describeOpenCodexLauncher } from '../lib/launcher.js';
 import { applySessionContract, buildSessionContract } from '../lib/session-contract.js';
-import { createSession, getSessionDir, loadSession, saveSession } from '../lib/session-store.js';
+import { createSession, getSessionDir, listSessions, loadSession, saveSession } from '../lib/session-store.js';
 
 const STATUS_OPTION_SPEC = {
   json: { type: 'boolean' },
   cwd: { type: 'string' },
   'bin-dir': { type: 'string' }
+};
+
+const INBOX_OPTION_SPEC = {
+  json: { type: 'boolean' },
+  cwd: { type: 'string' },
+  limit: { type: 'string' },
+  'session-id': { type: 'string' }
+};
+
+const SEND_OPTION_SPEC = {
+  json: { type: 'boolean' },
+  cwd: { type: 'string' },
+  'session-id': { type: 'string' }
 };
 
 const REGISTER_CODEX_OPTION_SPEC = {
@@ -55,6 +68,8 @@ export async function runBridgeCommand(args) {
     process.stdout.write(
       'Usage:\n' +
       '  opencodex bridge status [--json] [--cwd <dir>] [--bin-dir <dir>]\n' +
+      '  opencodex bridge inbox [--json] [--cwd <dir>] [--limit <n>] [--session-id <id|active|latest>]\n' +
+      '  opencodex bridge send [--json] [--cwd <dir>] [--session-id <id|active>] <text>\n' +
       '  opencodex bridge register-codex [--path <path>] [--json] [--cwd <dir>]\n' +
       '  opencodex bridge install-shim [--bin-dir <dir>] [--force] [--json] [--cwd <dir>]\n' +
       '  opencodex bridge repair-shim [--bin-dir <dir>] [--json] [--cwd <dir>]\n'
@@ -64,6 +79,16 @@ export async function runBridgeCommand(args) {
 
   if (subcommand === 'status') {
     await runBridgeStatus(rest);
+    return;
+  }
+
+  if (subcommand === 'inbox') {
+    await runBridgeInbox(rest);
+    return;
+  }
+
+  if (subcommand === 'send') {
+    await runBridgeSend(rest);
     return;
   }
 
@@ -122,6 +147,115 @@ async function runBridgeStatus(args) {
   });
 
   renderBridgePayload(payload, options.json);
+}
+
+async function runBridgeInbox(args) {
+  const { options, positionals } = parseOptions(args, INBOX_OPTION_SPEC);
+  if (positionals.length) {
+    throw new Error('`opencodex bridge inbox` does not accept positional arguments');
+  }
+
+  const cwd = path.resolve(options.cwd || process.cwd());
+  const homeDir = os.homedir();
+  const limit = parsePositiveInteger(options.limit || '20', '--limit');
+  const selection = await resolvePreferredBridgeSession({
+    cwd,
+    homeDir,
+    commandLabel: 'opencodex bridge inbox',
+    sessionIdSelector: typeof options['session-id'] === 'string' ? options['session-id'].trim() : '',
+    requireActive: false
+  });
+  const runtimePaths = getBridgeRuntimePaths(selection.session.working_directory, selection.session.session_id);
+  const inboxMessages = (await readBridgeInboxMessages(runtimePaths.inboxPath)).slice(-limit);
+  const deliveredByMessageId = await readBridgeDeliveryMap(runtimePaths.controlEventsPath);
+  const messages = inboxMessages.map((message) => ({
+    ...message,
+    delivered_at: deliveredByMessageId.get(message.message_id) || ''
+  }));
+
+  const payload = {
+    ok: true,
+    action: 'inbox',
+    session_id: selection.session.session_id,
+    session_selection: selection.selection,
+    count: messages.length,
+    messages
+  };
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+
+  process.stdout.write(`Bridge inbox for ${payload.session_id}\n`);
+  process.stdout.write(`Session selection: ${renderBridgeSessionSelectionText(payload.session_selection)}\n`);
+  if (!messages.length) {
+    process.stdout.write('\nNo external bridge messages recorded yet.\n');
+    return;
+  }
+
+  for (const message of messages) {
+    process.stdout.write(`\n- ${message.created_at}  ${message.source}\n`);
+    process.stdout.write(`  ${message.text}\n`);
+    if (message.delivered_at) {
+      process.stdout.write(`  delivered: ${message.delivered_at}\n`);
+    }
+  }
+}
+
+async function runBridgeSend(args) {
+  const { options, positionals } = parseOptions(args, SEND_OPTION_SPEC);
+  const text = positionals.join(' ').trim();
+  if (!text) {
+    throw new Error('`opencodex bridge send` requires a non-empty text payload');
+  }
+
+  const cwd = path.resolve(options.cwd || process.cwd());
+  const homeDir = os.homedir();
+  const selection = await resolvePreferredBridgeSession({
+    cwd,
+    homeDir,
+    commandLabel: 'opencodex bridge send',
+    sessionIdSelector: typeof options['session-id'] === 'string' ? options['session-id'].trim() : '',
+    requireActive: true
+  });
+  const session = selection.session;
+  if (session.status !== 'running') {
+    throw new Error(`Bridge session is not running: ${session.session_id}`);
+  }
+
+  const runtimePaths = getBridgeRuntimePaths(session.working_directory, session.session_id);
+  await ensureDir(path.dirname(runtimePaths.inboxPath));
+
+  const now = toIsoString();
+  const message = {
+    message_id: createBridgeMessageId(),
+    session_id: session.session_id,
+    created_at: now,
+    source: 'bridge_send',
+    text
+  };
+  await appendBridgeRuntimeJsonl(runtimePaths.inboxPath, message);
+
+  const payload = {
+    ok: true,
+    action: 'send',
+    session_id: session.session_id,
+    session_selection: selection.selection,
+    message,
+    next_steps: [
+      `Use \`opencodex bridge inbox --session-id ${session.session_id}\` to inspect the queued and delivered external messages.`
+    ]
+  };
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+
+  process.stdout.write(`Bridge message queued for ${session.session_id}\n`);
+  process.stdout.write(`Selection: ${renderBridgeSessionSelectionText(selection.selection)}\n`);
+  process.stdout.write(`Text: ${text}\n`);
 }
 
 async function runBridgeRegisterCodex(args) {
@@ -237,6 +371,8 @@ async function runBridgeExecCodex(args) {
   const sessionDir = await saveSession(cwd, session);
   const runtimeArtifactPath = path.join(sessionDir, 'artifacts', 'bridge-runtime.json');
   const eventsPath = path.join(sessionDir, 'events.jsonl');
+  const inboxPath = path.join(sessionDir, 'artifacts', 'bridge-inbox.jsonl');
+  const controlEventsPath = path.join(sessionDir, 'artifacts', 'bridge-control-events.jsonl');
   session.summary = buildBridgeSessionSummary({
     status: 'running',
     realCodexPath,
@@ -252,6 +388,16 @@ async function runBridgeExecCodex(args) {
       type: 'jsonl_events',
       path: eventsPath,
       description: 'Bridge runtime lifecycle events.'
+    },
+    {
+      type: 'bridge_inbox',
+      path: inboxPath,
+      description: 'External messages queued for the running bridge session.'
+    },
+    {
+      type: 'bridge_control_events',
+      path: controlEventsPath,
+      description: 'Bridge control delivery events for the running session.'
     }
   ];
   await saveSession(cwd, session);
@@ -287,12 +433,13 @@ async function runBridgeExecCodex(args) {
     updated_at: startedAt,
     bridge_state_path: bridgeRecord.statePath,
     status: 'running',
-    pid: 0
+    pid: 0,
+    transport: 'pty_inbox'
   });
 
   let runtime = null;
   try {
-    runtime = spawnRealCodex(realCodexPath, args, {
+    runtime = spawnBridgeRuntime(realCodexPath, args, {
       cwd,
       env: {
         ...process.env,
@@ -300,7 +447,9 @@ async function runBridgeExecCodex(args) {
         OPENCODEX_CODEX_BRIDGE_REAL_PATH: realCodexPath,
         OPENCODEX_CODEX_BRIDGE_STATE_PATH: bridgeRecord.statePath,
         OPENCODEX_PARENT_SESSION_ID: session.session_id
-      }
+      },
+      inboxPath,
+      controlEventsPath
     });
 
     await writeJson(runtimeArtifactPath, {
@@ -314,7 +463,10 @@ async function runBridgeExecCodex(args) {
       started_at: startedAt,
       updated_at: toIsoString(),
       status: 'running',
-      pid: runtime.child.pid || 0
+      pid: runtime.child.pid || 0,
+      transport: runtime.transport,
+      inbox_path: inboxPath,
+      control_events_path: controlEventsPath
     });
     await writeJson(activeSessionPath, {
       session_id: session.session_id,
@@ -324,7 +476,8 @@ async function runBridgeExecCodex(args) {
       updated_at: toIsoString(),
       bridge_state_path: bridgeRecord.statePath,
       status: 'running',
-      pid: runtime.child.pid || 0
+      pid: runtime.child.pid || 0,
+      transport: runtime.transport
     });
 
     const result = await runtime.completion;
@@ -358,6 +511,9 @@ async function runBridgeExecCodex(args) {
       finished_at: session.updated_at,
       status: session.status,
       pid: runtime.child.pid || 0,
+      transport: runtime.transport,
+      inbox_path: inboxPath,
+      control_events_path: controlEventsPath,
       exit_code: result.code,
       signal: result.signal || ''
     });
@@ -397,6 +553,9 @@ async function runBridgeExecCodex(args) {
       finished_at: session.updated_at,
       status: 'failed',
       pid: runtime?.child?.pid || 0,
+      transport: runtime?.transport || '',
+      inbox_path: inboxPath,
+      control_events_path: controlEventsPath,
       error: error instanceof Error ? error.message : String(error)
     });
     await saveSession(cwd, session);
@@ -601,6 +760,15 @@ function renderBridgePayload(payload, asJson) {
     lines.push(`Active Session: ${payload.active_session.session_id}`);
     lines.push(`Active Session Status: ${payload.active_session.status || 'unknown'}`);
     lines.push(`Active Session CWD: ${payload.active_session.working_directory || '(unknown)'}`);
+    if (payload.active_session.command) {
+      lines.push(`Active Session Command: ${payload.active_session.command}`);
+    }
+    if (Number.isInteger(payload.active_session.inbox_count)) {
+      lines.push(`Active Session Inbox: ${payload.active_session.inbox_count} queued`);
+    }
+    if (Number.isInteger(payload.active_session.delivered_count)) {
+      lines.push(`Active Session Delivered: ${payload.active_session.delivered_count}`);
+    }
   }
 
   if (payload.detected_codex?.resolved_path) {
@@ -656,16 +824,41 @@ async function fileExists(targetPath) {
   }
 }
 
-function spawnRealCodex(command, args, options = {}) {
-  const child = spawn(command, args, {
+function spawnBridgeRuntime(command, args, options = {}) {
+  const canUsePtyRelay = process.platform !== 'win32' && Boolean(process.stdin?.isTTY);
+  if (!canUsePtyRelay) {
+    return spawnPipeBridgeRuntime(command, args, options);
+  }
+
+  const child = spawn('script', ['-q', '/dev/null', command, ...args], {
     cwd: options.cwd,
     env: options.env || process.env,
-    stdio: 'inherit'
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+
+  const stopLocalInput = forwardLocalBridgeInput(child);
+  const stopInboxRelay = startBridgeInboxRelay({
+    child,
+    inboxPath: options.inboxPath,
+    controlEventsPath: options.controlEventsPath
+  });
+
+  child.stdout.on('data', (chunk) => {
+    process.stdout.write(chunk);
+  });
+  child.stderr.on('data', (chunk) => {
+    process.stderr.write(chunk);
   });
 
   const completion = new Promise((resolve, reject) => {
-    child.on('error', reject);
+    child.on('error', (error) => {
+      stopInboxRelay();
+      stopLocalInput();
+      reject(error);
+    });
     child.on('close', (code, signal) => {
+      stopInboxRelay();
+      stopLocalInput();
       resolve({
         code: typeof code === 'number' ? code : 1,
         signal: signal || '',
@@ -676,7 +869,53 @@ function spawnRealCodex(command, args, options = {}) {
 
   return {
     child,
-    completion
+    completion,
+    transport: 'pty_inbox'
+  };
+}
+
+function spawnPipeBridgeRuntime(command, args, options = {}) {
+  const child = spawn(command, args, {
+    cwd: options.cwd,
+    env: options.env || process.env,
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+
+  const stopLocalInput = forwardLocalBridgeInput(child);
+  const stopInboxRelay = startBridgeInboxRelay({
+    child,
+    inboxPath: options.inboxPath,
+    controlEventsPath: options.controlEventsPath
+  });
+
+  child.stdout.on('data', (chunk) => {
+    process.stdout.write(chunk);
+  });
+  child.stderr.on('data', (chunk) => {
+    process.stderr.write(chunk);
+  });
+
+  const completion = new Promise((resolve, reject) => {
+    child.on('error', (error) => {
+      stopInboxRelay();
+      stopLocalInput();
+      reject(error);
+    });
+    child.on('close', (code, signal) => {
+      stopInboxRelay();
+      stopLocalInput();
+      resolve({
+        code: typeof code === 'number' ? code : 1,
+        signal: signal || '',
+        pid: child.pid || 0
+      });
+    });
+  });
+
+  return {
+    child,
+    completion,
+    transport: 'pipe_inbox'
   };
 }
 
@@ -713,6 +952,9 @@ async function inspectActiveBridgeSession({ bridgeState, statePath = '', homeDir
   const sessionPath = sessionCwd ? path.join(getSessionDir(sessionCwd, sessionId), 'session.json') : '';
   try {
     const session = sessionCwd ? await loadSession(sessionCwd, sessionId) : null;
+    const runtimePaths = session ? getBridgeRuntimePaths(sessionCwd, sessionId) : null;
+    const inboxMessages = runtimePaths ? await readBridgeInboxMessages(runtimePaths.inboxPath) : [];
+    const deliveredByMessageId = runtimePaths ? await readBridgeDeliveryMap(runtimePaths.controlEventsPath) : new Map();
     return {
       session_id: sessionId,
       working_directory: session?.working_directory || sessionCwd,
@@ -726,7 +968,9 @@ async function inspectActiveBridgeSession({ bridgeState, statePath = '', homeDir
       status: session?.status || '',
       session_path: sessionPath,
       record_found: Boolean(session),
-      state_path: activeSessionPath
+      state_path: activeSessionPath,
+      inbox_count: inboxMessages.length,
+      delivered_count: deliveredByMessageId.size
     };
   } catch {
     return {
@@ -831,4 +1075,243 @@ async function clearActiveBridgeSessionFile(activeSessionPath, sessionId) {
   }
 
   await rm(activeSessionPath, { force: true });
+}
+
+function forwardLocalBridgeInput(child) {
+  if (!process.stdin || !child?.stdin) {
+    return () => {};
+  }
+
+  const onData = (chunk) => {
+    if (!child.stdin.destroyed) {
+      child.stdin.write(chunk);
+    }
+  };
+  const restoreRawMode = process.stdin.isTTY && typeof process.stdin.setRawMode === 'function'
+    ? Boolean(process.stdin.isRaw)
+    : null;
+
+  if (process.stdin.isTTY && typeof process.stdin.setRawMode === 'function' && !process.stdin.isRaw) {
+    process.stdin.setRawMode(true);
+  }
+  process.stdin.resume();
+  process.stdin.on('data', onData);
+
+  return () => {
+    process.stdin.off('data', onData);
+    if (process.stdin.isTTY && typeof process.stdin.setRawMode === 'function' && restoreRawMode === false) {
+      process.stdin.setRawMode(false);
+    }
+  };
+}
+
+function startBridgeInboxRelay({ child, inboxPath = '', controlEventsPath = '' } = {}) {
+  if (!inboxPath || !child?.stdin) {
+    return () => {};
+  }
+
+  const deliveredMessageIds = new Set();
+  let stopped = false;
+  let busy = false;
+
+  const timer = setInterval(() => {
+    void flushInbox();
+  }, 100);
+
+  void flushInbox();
+
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+
+  async function flushInbox() {
+    if (stopped || busy) {
+      return;
+    }
+    busy = true;
+    try {
+      const messages = await readBridgeInboxMessages(inboxPath);
+      for (const message of messages) {
+        if (!message?.message_id || deliveredMessageIds.has(message.message_id)) {
+          continue;
+        }
+        if (!child.stdin.destroyed) {
+          child.stdin.write(`${message.text}\n`);
+        }
+        deliveredMessageIds.add(message.message_id);
+        if (controlEventsPath) {
+          await appendBridgeRuntimeJsonl(controlEventsPath, {
+            type: 'bridge.inbox.delivered',
+            created_at: toIsoString(),
+            message_id: message.message_id,
+            session_id: message.session_id || '',
+            text: message.text || ''
+          });
+        }
+      }
+    } finally {
+      busy = false;
+    }
+  }
+}
+
+function getBridgeRuntimePaths(cwd, sessionId) {
+  const sessionDir = getSessionDir(cwd, sessionId);
+  return {
+    sessionDir,
+    inboxPath: path.join(sessionDir, 'artifacts', 'bridge-inbox.jsonl'),
+    controlEventsPath: path.join(sessionDir, 'artifacts', 'bridge-control-events.jsonl'),
+    runtimePath: path.join(sessionDir, 'artifacts', 'bridge-runtime.json')
+  };
+}
+
+async function readBridgeInboxMessages(filePath) {
+  return readBridgeRuntimeJsonl(filePath);
+}
+
+async function readBridgeDeliveryMap(filePath) {
+  const events = await readBridgeRuntimeJsonl(filePath);
+  const deliveredByMessageId = new Map();
+  for (const event of events) {
+    if (event?.type !== 'bridge.inbox.delivered' || !event?.message_id) {
+      continue;
+    }
+    deliveredByMessageId.set(event.message_id, event.created_at || '');
+  }
+  return deliveredByMessageId;
+}
+
+async function readBridgeRuntimeJsonl(filePath) {
+  const raw = await readTextIfExists(filePath);
+  if (!raw) {
+    return [];
+  }
+
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+async function appendBridgeRuntimeJsonl(filePath, value) {
+  await ensureDir(path.dirname(filePath));
+  await appendFile(filePath, `${JSON.stringify(value)}\n`, 'utf8');
+}
+
+async function resolvePreferredBridgeSession({
+  cwd,
+  homeDir = os.homedir(),
+  commandLabel,
+  sessionIdSelector = '',
+  requireActive = false
+}) {
+  const requested = String(sessionIdSelector || '').trim();
+  const activeSession = await inspectActiveBridgeSession({ homeDir });
+
+  if (!requested || requested === 'active') {
+    if (activeSession?.session_id) {
+      return {
+        session: {
+          session_id: activeSession.session_id,
+          status: activeSession.status,
+          working_directory: activeSession.working_directory
+        },
+        selection: {
+          mode: requested === 'active' ? 'explicit_active' : 'active',
+          requested: requested || '',
+          description: requested === 'active'
+            ? `explicit_active(${requested})`
+            : 'active'
+        }
+      };
+    }
+
+  if (requireActive) {
+      throw new Error(`No active bridge session found for \`${commandLabel}\``);
+    }
+  }
+
+  const sessions = await listBridgeSessionsForLookup(cwd);
+
+  if (requested && requested !== 'active' && requested !== 'latest') {
+    const explicit = sessions.find((session) => session.session_id === requested);
+    if (!explicit) {
+      throw new Error(`Bridge session not found for \`${commandLabel}\`: ${requested}`);
+    }
+    return {
+      session: explicit,
+      selection: {
+        mode: 'explicit_id',
+        requested,
+        description: `explicit_id(${requested})`
+      }
+    };
+  }
+
+  if (!sessions.length) {
+    throw new Error(`No bridge session found for \`${commandLabel}\``);
+  }
+
+  return {
+    session: sessions[0],
+    selection: {
+      mode: requested === 'latest' ? 'explicit_latest' : 'latest_history',
+      requested: requested || '',
+      description: requested === 'latest'
+        ? `explicit_latest(${requested})`
+        : 'latest_history'
+    }
+  };
+}
+
+function parsePositiveInteger(value, flagName) {
+  const parsed = Number.parseInt(String(value || '').trim(), 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${flagName} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function renderBridgeSessionSelectionText(selection) {
+  return selection?.description || selection?.mode || 'unknown';
+}
+
+function createBridgeMessageId() {
+  const timestamp = new Date().toISOString().replace(/[-:.]/g, '').replace('T', '-').slice(0, 15);
+  const random = Math.random().toString(36).slice(2, 8);
+  return `bridge-msg-${timestamp}-${random}`;
+}
+
+async function listBridgeSessionsForLookup(cwd) {
+  const lookupRoots = [path.resolve(cwd)];
+  try {
+    const realCwd = await realpath(cwd);
+    if (!lookupRoots.includes(realCwd)) {
+      lookupRoots.push(realCwd);
+    }
+  } catch {
+  }
+
+  const seenIds = new Set();
+  const sessions = [];
+  for (const root of lookupRoots) {
+    for (const session of await listSessions(root)) {
+      if (session?.command !== 'bridge' || !session?.session_id || seenIds.has(session.session_id)) {
+        continue;
+      }
+      seenIds.add(session.session_id);
+      sessions.push(session);
+    }
+  }
+
+  return sessions.sort((left, right) => String(right.updated_at || '').localeCompare(String(left.updated_at || '')));
 }

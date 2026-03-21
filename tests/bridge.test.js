@@ -162,6 +162,62 @@ test('bridge exec-codex records and clears a bridge-owned live session', async (
   assert.match(eventsText, /bridge\.session\.exited/);
 });
 
+test('bridge send injects external input into the active live session and bridge inbox reports delivery', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-bridge-send-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-bridge-home-send-'));
+
+  await chmod(liveFixture, 0o755);
+
+  const register = await runCli(['bridge', 'register-codex', '--path', liveFixture, '--json', '--cwd', cwd], {
+    HOME: homeDir
+  });
+  assert.equal(register.code, 0);
+
+  const liveRun = spawnCli(['bridge', 'exec-codex', '--bridge-stdin'], {
+    HOME: homeDir
+  }, { cwd });
+
+  const activeStatusPayload = await waitFor(async () => {
+    const status = await runCli(['bridge', 'status', '--json', '--cwd', cwd], {
+      HOME: homeDir
+    });
+    const payload = JSON.parse(status.stdout);
+    return payload?.active_session?.session_id ? payload : null;
+  }, { attempts: 80, delayMs: 50 });
+
+  const activeSessionId = activeStatusPayload.active_session.session_id;
+  assert.equal(activeStatusPayload.active_session.status, 'running');
+
+  const send = await runCli(['bridge', 'send', '--cwd', cwd, 'continue from tg'], {
+    HOME: homeDir
+  });
+  assert.equal(send.code, 0);
+  assert.match(send.stdout, /Bridge message queued/);
+
+  const liveResult = await liveRun.result;
+  assert.equal(liveResult.code, 0);
+  assert.match(liveResult.stdout, /mock bridge stdin ready/);
+  assert.match(liveResult.stdout, /received: continue from tg/);
+
+  const inbox = await runCli(['bridge', 'inbox', '--cwd', cwd, '--session-id', activeSessionId, '--json'], {
+    HOME: homeDir
+  });
+  assert.equal(inbox.code, 0);
+  const inboxPayload = JSON.parse(inbox.stdout);
+  assert.equal(inboxPayload.session_id, activeSessionId);
+  assert.equal(inboxPayload.count, 1);
+  assert.equal(inboxPayload.messages[0].text, 'continue from tg');
+  assert.ok(inboxPayload.messages[0].delivered_at);
+
+  const runtimePath = path.join(cwd, '.opencodex', 'sessions', activeSessionId, 'artifacts', 'bridge-runtime.json');
+  const controlEventsPath = path.join(cwd, '.opencodex', 'sessions', activeSessionId, 'artifacts', 'bridge-control-events.jsonl');
+  const runtimePayload = JSON.parse(await readFile(runtimePath, 'utf8'));
+  const controlEventsText = await readFile(controlEventsPath, 'utf8');
+
+  assert.match(runtimePayload.transport, /_inbox$/);
+  assert.match(controlEventsText, /bridge\.inbox\.delivered/);
+});
+
 function runCli(args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [cli, ...args], {

@@ -2,6 +2,11 @@
 
 ## 2026-03-21
 
+- Extended `T021` Phase 3 with the first external control path for bridge-owned live sessions:
+  - added `opencodex bridge send` to queue external messages into the active bridge-owned session
+  - added `opencodex bridge inbox` to inspect queued and delivered bridge messages
+  - bridge runtime now uses a PTY relay for terminal launches and a pipe relay for non-TTY launches while keeping the same inbox-delivery model
+  - validated with `node --test tests/bridge.test.js`, `node --test tests/doctor.test.js`, `node ./bin/opencodex.js bridge --help`, and `node ./bin/opencodex.js bridge status --json`
 - Started `T021` Phase 3 with the first bridge-owned live-session slice:
   - `opencodex bridge exec-codex` now creates a bridge-owned session record under the workspace session store before launching the real Codex process
   - bridge runtime metadata now persists as `bridge-runtime.json` plus lifecycle events for launch/exit auditing

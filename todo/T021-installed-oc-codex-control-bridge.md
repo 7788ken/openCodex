@@ -241,7 +241,10 @@ The control-plane entry must be fixed at the installed bridge/runtime layer firs
   - `opencodex bridge exec-codex` now creates a bridge-owned session record under the workspace session store
   - bridge-launched sessions now persist runtime metadata and lifecycle events
   - `opencodex bridge status` now reports the current active bridge-owned session through a dedicated runtime pointer under `~/.opencodex/bridge/active-session.json`
-  - the remaining gap is an attachable PTY/inbox control runtime rather than a pure launch/observe flow
+  - `opencodex bridge send` now queues external messages into the active bridge-owned session
+  - `opencodex bridge inbox` now exposes the queued and delivered external messages for bridge sessions
+  - bridge runtime now chooses a PTY relay when launched from a real terminal and a pipe relay in non-TTY contexts, while preserving the same inbox delivery path
+  - the remaining gap is a richer attach/runtime contract for bidirectional snapshots and multi-message control, not the first external write path itself
 - Product direction is now clear:
   - Codex stays the execution engine.
   - Installed openCodex becomes the control bridge.
