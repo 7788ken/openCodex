@@ -225,14 +225,21 @@ The control-plane entry must be fixed at the installed bridge/runtime layer firs
 
 ## Current Status
 
-- Phase 1 started:
-  - added an initial installed bridge state file under `~/.opencodex/bridge/bridge.json`
+- Phase 1 completed:
+  - added an installed bridge state file under `~/.opencodex/bridge/bridge.json`
   - added `opencodex bridge status`
   - added `opencodex bridge register-codex`
   - added `doctor` coverage for missing or valid bridge state
-- Remaining Phase 1 work:
-  - tighten status wording and docs around the installed bridge state
-  - decide whether bridge state should carry additional launcher provenance fields before Phase 2
+- Phase 2 completed:
+  - added `opencodex bridge install-shim`
+  - added `opencodex bridge repair-shim`
+  - added a transparent `codex` shim that forwards to `opencodex bridge exec-codex`
+  - persisted shim install metadata in the global bridge state
+  - added `doctor` coverage for shim visibility, PATH precedence, and recursion risk
+  - hardened launcher inspection so bridge status and doctor do not recurse when PATH already resolves `codex` to the bridge shim
+- Phase 3 next:
+  - introduce a live session record for bridge-owned Codex launches
+  - replace direct shim passthrough with a bridge-owned runtime boundary that can later accept external control
 - Product direction is now clear:
   - Codex stays the execution engine.
   - Installed openCodex becomes the control bridge.

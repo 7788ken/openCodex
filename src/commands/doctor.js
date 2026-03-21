@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { access } from 'node:fs/promises';
 import { parseOptions } from '../lib/args.js';
-import { inspectRegisteredBridge } from '../lib/bridge-state.js';
+import { inspectBridgeShim, inspectRegisteredBridge } from '../lib/bridge-state.js';
 import { getCodexBin, runCommandCapture } from '../lib/codex.js';
 import { readJson, writeJson } from '../lib/fs.js';
 import { describeOpenCodexLauncher, describeOpenCodexPath } from '../lib/launcher.js';
@@ -67,6 +67,7 @@ export async function runDoctorCommand(args) {
   ));
 
   checks.push(await inspectCodexBridgeCheck(cwd));
+  checks.push(await inspectCodexBridgeShimCheck(cwd));
   checks.push(await inspectTelegramServiceLauncherCheck());
   checks.push(await inspectTelegramServiceWorkspaceCheck());
 
@@ -155,6 +156,9 @@ async function buildDoctorNextSteps(checks) {
   if (byName.codex_bridge?.status === 'warn') {
     nextSteps.push('Run `opencodex bridge register-codex --path <real-codex-path>` from the detached launcher to persist the Codex bridge target.');
   }
+  if (byName.codex_bridge_shim?.status === 'warn') {
+    nextSteps.push('Run `opencodex bridge install-shim` or `opencodex bridge repair-shim` from the detached launcher to restore the transparent `codex` entrypoint.');
+  }
   if (byName.telegram_service_launcher?.status === 'warn') {
     nextSteps.push('Reinstall or relink the Telegram service from a detached openCodex CLI so it no longer points at a project checkout.');
   }
@@ -207,6 +211,32 @@ async function inspectCodexBridgeCheck(cwd) {
   }
 
   return toCheck('codex_bridge', 'pass', false, `Installed Codex bridge target: ${bridge.registration.resolved_path}`);
+}
+
+async function inspectCodexBridgeShimCheck(cwd) {
+  const bridge = await inspectRegisteredBridge({ cwd, env: process.env, homeDir: os.homedir() });
+  if (!bridge.exists || bridge.error || !bridge.state || !bridge.registration?.valid) {
+    return toCheck('codex_bridge_shim', 'pass', false, 'Codex bridge shim check skipped until a valid bridge target is registered.');
+  }
+
+  const shim = await inspectBridgeShim({ cwd, env: process.env, homeDir: os.homedir() });
+  if (!shim.shim_exists) {
+    return toCheck('codex_bridge_shim', 'warn', false, `No installed Codex bridge shim found at ${shim.shim_path}`);
+  }
+
+  if (shim.recursion_risk) {
+    return toCheck('codex_bridge_shim', 'warn', false, `Installed Codex bridge shim would recurse into the registered target: ${bridge.registration.resolved_path}`);
+  }
+
+  if (!shim.valid) {
+    return toCheck('codex_bridge_shim', 'warn', false, `Installed Codex bridge shim is stale or mismatched: ${shim.shim_path}`);
+  }
+
+  if (shim.path_precedence !== 'bridge_shim') {
+    return toCheck('codex_bridge_shim', 'warn', false, `Installed Codex bridge shim exists but PATH still resolves \`codex\` elsewhere: ${shim.path_command?.resolved_path || '(missing)'}`);
+  }
+
+  return toCheck('codex_bridge_shim', 'pass', false, `Installed Codex bridge shim: ${shim.shim_path}`);
 }
 
 async function inspectTelegramServiceLauncherCheck() {

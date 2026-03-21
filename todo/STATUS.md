@@ -2,6 +2,12 @@
 
 ## 2026-03-21
 
+- Completed `T021` Phase 2 implementation:
+  - added `opencodex bridge install-shim`, `repair-shim`, and the internal `exec-codex` handoff path
+  - persisted installed shim metadata in the global bridge state so detached installs can inspect the active control entrypoint
+  - extended `doctor` with shim-health checks for visibility, PATH precedence, and recursion risk
+  - hardened launcher inspection so bridge status/doctor detect the installed shim without recursively executing it
+  - validated with `node --test tests/bridge.test.js`, `node --test tests/doctor.test.js`, `node ./bin/opencodex.js bridge --help`, and `node ./bin/opencodex.js bridge status --json`
 - Started `T021` Phase 1 implementation:
   - added a first installed bridge state under `~/.opencodex/bridge/bridge.json`
   - added `opencodex bridge status` and `opencodex bridge register-codex`

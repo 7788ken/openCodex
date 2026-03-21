@@ -23,6 +23,7 @@ test('doctor emits structured json with passing core checks', async () => {
   assert.ok(payload.checks.some((check) => check.name === 'codex_login' && check.status === 'pass'));
   assert.ok(payload.checks.some((check) => check.name === 'opencodex_launcher' && check.status === 'warn'));
   assert.ok(payload.checks.some((check) => check.name === 'codex_bridge' && check.status === 'warn'));
+  assert.ok(payload.checks.some((check) => check.name === 'codex_bridge_shim' && check.status === 'pass'));
   assert.ok(payload.checks.some((check) => check.name === 'telegram_service_launcher' && check.status === 'pass'));
   assert.ok(payload.checks.some((check) => check.name === 'telegram_service_workspace' && check.status === 'pass'));
 });
@@ -62,6 +63,34 @@ test('doctor passes the Codex bridge check when a registered bridge state exists
   const bridgeCheck = payload.checks.find((check) => check.name === 'codex_bridge');
   assert.equal(bridgeCheck?.status, 'pass');
   assert.match(bridgeCheck?.details || '', /Installed Codex bridge target/);
+});
+
+test('doctor passes the Codex bridge shim check when a registered shim is on PATH', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-doctor-bridge-shim-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-doctor-home-bridge-shim-'));
+  const binDir = path.join(homeDir, '.local', 'bin');
+
+  const register = await runCli(['bridge', 'register-codex', '--path', fixture, '--json', '--cwd', cwd], {
+    HOME: homeDir
+  });
+  assert.equal(register.code, 0);
+
+  const install = await runCli(['bridge', 'install-shim', '--bin-dir', binDir, '--json', '--cwd', cwd], {
+    HOME: homeDir
+  });
+  assert.equal(install.code, 0);
+
+  const result = await runCli(['doctor', '--json', '--cwd', cwd], {
+    OPENCODEX_CODEX_BIN: fixture,
+    HOME: homeDir,
+    PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}`
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  const shimCheck = payload.checks.find((check) => check.name === 'codex_bridge_shim');
+  assert.equal(shimCheck?.status, 'pass');
+  assert.match(shimCheck?.details || '', /Installed Codex bridge shim/);
 });
 
 test('doctor warns when the installed Telegram service is still bound to a source checkout', async () => {
