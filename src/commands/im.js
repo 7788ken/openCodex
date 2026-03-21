@@ -2714,6 +2714,12 @@ async function resolveTelegramCtoStatusReply({ cwd, message, workflowRuntimes })
   });
 
   if (!runtime) {
+    if (!intent.workflowId) {
+      const bridgeStatusReply = await resolveTelegramActiveBridgeStatusReply();
+      if (bridgeStatusReply) {
+        return bridgeStatusReply;
+      }
+    }
     return {
       workflowId: intent.workflowId,
       text: buildTelegramMissingWorkflowStatusText({
@@ -2726,6 +2732,18 @@ async function resolveTelegramCtoStatusReply({ cwd, message, workflowRuntimes })
   return {
     workflowId: runtime.session.session_id,
     text: buildTelegramCtoStatusText(runtime.state)
+  };
+}
+
+async function resolveTelegramActiveBridgeStatusReply() {
+  const activeBridgeSession = await inspectActiveBridgeSession();
+  if (!activeBridgeSession?.session_id) {
+    return null;
+  }
+
+  return {
+    workflowId: '',
+    text: buildTelegramBridgeStatusText(activeBridgeSession)
   };
 }
 
@@ -2805,6 +2823,31 @@ function isExplicitTelegramBridgeAttachIntent(text) {
 
 function buildTelegramBridgeAttachedText({ sessionId }) {
   return `已接入当前 Codex 主线会话 ${sessionId}，这条消息已经转发进去。需要看最近输出时，请在机器上执行 \`opencodex bridge tail --session-id ${sessionId}\`。`;
+}
+
+function buildTelegramBridgeStatusText(activeBridgeSession) {
+  const status = String(activeBridgeSession?.status || 'unknown').trim() || 'unknown';
+  const lines = [
+    `当前 Codex 主线会话：${activeBridgeSession.session_id}`,
+    `状态：${status}`,
+    `工作目录：${activeBridgeSession.working_directory || '(unknown)'}`,
+    `外部消息：${Number.isInteger(activeBridgeSession.inbox_count) ? activeBridgeSession.inbox_count : 0} 条，已投递 ${Number.isInteger(activeBridgeSession.delivered_count) ? activeBridgeSession.delivered_count : 0} 条`
+  ];
+
+  if (status !== 'running' || !activeBridgeSession.record_found) {
+    lines.push('这条主线当前不可继续接入，请先在机器上执行 `opencodex bridge status` 检查现场。');
+    return lines.join('\n');
+  }
+
+  if (Array.isArray(activeBridgeSession.recent_output_lines) && activeBridgeSession.recent_output_lines.length) {
+    lines.push('最近输出：');
+    for (const line of activeBridgeSession.recent_output_lines) {
+      lines.push(`- ${line}`);
+    }
+  }
+
+  lines.push(`如需继续查看输出，请在机器上执行 \`opencodex bridge tail --session-id ${activeBridgeSession.session_id}\`.`);
+  return lines.join('\n');
 }
 
 function buildTelegramMissingBridgeAttachText() {

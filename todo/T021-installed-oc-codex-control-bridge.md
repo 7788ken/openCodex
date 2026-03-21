@@ -249,6 +249,7 @@ The control-plane entry must be fixed at the installed bridge/runtime layer firs
   - the remaining gap is a richer attach/runtime contract for durable bidirectional control and remote-surface routing, not the first external write/read path itself
 - Phase 4 started:
   - `opencodex im telegram listen --cto` now relays actionable Telegram messages into the active bridge-owned live session instead of defaulting to a parallel CTO workflow when an attachable bridge session exists
+  - generic Telegram status questions now report the active bridge-owned live session when no CTO workflow status is available
   - explicit "continue the current Codex mainline" requests now fail closed with a direct no-session reply when there is no active attachable bridge-owned session
   - bridge-relayed Telegram messages are appended into the same bridge inbox audit trail as `opencodex bridge send`
   - concurrent `opencodex im telegram supervise` ticks now guard final Telegram replies with a shared workflow-scoped lock so rehydrated workflows do not double-send terminal results

@@ -2441,6 +2441,128 @@ test('im telegram listen --cto reports workflow status instead of dispatching a 
   assert.equal(stderr, '');
 });
 
+test('im telegram listen --cto reports active bridge status when no workflow status is available', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-bridge-status-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-bridge-status-home-'));
+  const telegram = await startTelegramMockServer({
+    updates: []
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  await chmod(liveFixture, 0o755);
+
+  const register = await runCli(['bridge', 'register-codex', '--path', liveFixture, '--json', '--cwd', cwd], {
+    HOME: homeDir
+  });
+  assert.equal(register.code, 0);
+
+  const child = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  const bridgeChild = spawn('node', [cli, 'bridge', 'exec-codex', '--bridge-stdin'], {
+    cwd,
+    env: {
+      ...process.env,
+      HOME: homeDir
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!bridgeChild.killed) {
+      bridgeChild.kill('SIGTERM');
+    }
+  });
+  const bridgeExitPromise = waitForExit(bridgeChild);
+
+  let bridgeStdout = '';
+  bridgeChild.stdout.on('data', (chunk) => {
+    bridgeStdout += chunk.toString();
+  });
+
+  let activeBridgeSessionId = '';
+  await waitForCondition(async () => {
+    const status = await runCli(['bridge', 'status', '--json', '--cwd', cwd], {
+      HOME: homeDir
+    });
+    const payload = JSON.parse(status.stdout);
+    activeBridgeSessionId = payload?.active_session?.session_id || '';
+    return Boolean(activeBridgeSessionId);
+  }, 'active bridge session for status relay');
+
+  telegram.state.updates.push({
+    update_id: 213,
+    message: {
+      message_id: 613,
+      date: 1741435312,
+      text: '当前状态如何',
+      chat: { id: 123456, type: 'private' },
+      from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+    }
+  });
+
+  await waitForCondition(
+    () => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 613 && /当前 Codex 主线会话/.test(message.text)),
+    'bridge status reply'
+  );
+
+  const statusReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 613);
+  assert.ok(statusReply);
+  assert.match(statusReply.text, new RegExp(`当前 Codex 主线会话：${activeBridgeSessionId}`));
+  assert.match(statusReply.text, /状态：running/);
+  assert.match(statusReply.text, /mock bridge stdin ready/);
+  assert.equal(telegram.state.reactions.length, 0);
+  assert.match(stdout, /Reported CTO workflow status for update 213/);
+  assert.doesNotMatch(stdout, /started workflow .* for update 213/);
+
+  const release = await runCli(['bridge', 'send', '--cwd', cwd, '--session-id', activeBridgeSessionId, 'status done'], {
+    HOME: homeDir
+  });
+  assert.equal(release.code, 0);
+  const bridgeExitCode = await bridgeExitPromise;
+  assert.equal(bridgeExitCode, 0);
+  assert.match(bridgeStdout, /received: status done/);
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+
+  const sessionsRoot = path.join(cwd, '.opencodex', 'sessions');
+  const sessionIds = await readdir(sessionsRoot);
+  assert.ok(!sessionIds.some((sessionId) => sessionId.startsWith('cto-')));
+});
+
 test('im telegram listen --cto binds colloquial completion follow-ups to the latest waiting workflow', async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-colloquial-status-'));
   const workflowId = 'cto-20260312-012756-0gcurj';
