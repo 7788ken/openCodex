@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { mkdir, readdir, rm } from 'node:fs/promises';
+import { mkdir, readdir, rm, stat } from 'node:fs/promises';
 import { ensureDir, pathExists, readJson, toIsoString, writeJson } from './fs.js';
 
 const HOST_EXECUTOR_DIRNAME = 'host-executor';
@@ -235,6 +235,10 @@ async function tryClaimHostExecutorJob(jobPath) {
         return null;
       }
 
+      if (!existingLease && !(await isExpiredHostExecutorClaimDir(lockDir))) {
+        return null;
+      }
+
       await rm(lockDir, { recursive: true, force: true });
     }
   }
@@ -260,6 +264,15 @@ function buildHostExecutorClaimLease() {
 function isExpiredHostExecutorClaimLease(lease) {
   const expiresAt = Date.parse(String(lease?.expires_at || ''));
   return !Number.isFinite(expiresAt) || expiresAt <= Date.now();
+}
+
+async function isExpiredHostExecutorClaimDir(lockDir) {
+  try {
+    const metadata = await stat(lockDir);
+    return metadata.mtimeMs + HOST_EXECUTOR_CLAIM_LEASE_TTL_MS <= Date.now();
+  } catch {
+    return true;
+  }
 }
 
 function createHostExecutorJobId() {

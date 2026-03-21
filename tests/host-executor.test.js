@@ -69,3 +69,29 @@ test('claimNextPendingHostExecutorJob can recover from an expired stale claim le
   assert.equal(storedJob.status, 'running');
   assert.equal(storedJob.attempt_count, 1);
 });
+
+test('claimNextPendingHostExecutorJob leaves a fresh claim directory without lease to the active claimer', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-host-executor-fresh-claim-dir-'));
+  const rootDir = resolveHostExecutorRoot({ cwd, env: {} });
+
+  const { jobPath } = await enqueueHostExecutorJob({
+    rootDir,
+    cwd,
+    workflowSessionId: 'cto-fresh-claim-dir',
+    parentSessionId: 'cto-fresh-claim-dir',
+    task: { id: 'fresh-claim-task', title: 'Fresh claim task' },
+    message: { update_id: 3, message_id: 3, chat_id: '123', sender_display: 'Tester' },
+    profile: 'full-access',
+    prompt: 'respect the in-flight claim directory',
+    outputPath: path.join(cwd, 'fresh-claim-output.json')
+  });
+
+  await mkdir(`${jobPath}.claim`, { recursive: true });
+
+  const claimed = await claimNextPendingHostExecutorJob(rootDir);
+  assert.equal(claimed, null);
+
+  const storedJob = await loadHostExecutorJob(jobPath);
+  assert.equal(storedJob.status, 'pending');
+  assert.equal(storedJob.attempt_count, 0);
+});
