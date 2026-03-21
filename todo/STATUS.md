@@ -1,5 +1,18 @@
 # Status Log
 
+## 2026-03-21
+
+- Started `T021` Phase 1 implementation:
+  - added a first installed bridge state under `~/.opencodex/bridge/bridge.json`
+  - added `opencodex bridge status` and `opencodex bridge register-codex`
+  - extended `doctor` with bridge-state visibility so detached installs can verify the saved real Codex launcher
+  - added focused bridge and doctor regression coverage
+- Added `T021-installed-oc-codex-control-bridge.md` to define the next execution track:
+  - installed openCodex becomes a path-independent control bridge over Codex CLI
+  - the product keeps the `codex` habit instead of forcing users onto wrapper-only entrypoints
+  - Telegram and remote control are explicitly redirected toward bridge-owned live sessions rather than misleading parallel workflows
+- Synced `todo/README.md` and `todo/BOARD.md` so the new bridge task is visible in the task index and execution order.
+
 ## 2026-03-19
 
 - Added selector-mismatch warning for explicit historical targeting:

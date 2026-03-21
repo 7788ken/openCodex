@@ -37,6 +37,7 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 - `T018-telegram-workflow-reference-follow.md`
 - `T019-telegram-host-export-to-downloads.md`
 - `T017-detached-install-layout.md`
+- `T021-installed-oc-codex-control-bridge.md`
 
 ### P2
 
@@ -48,7 +49,7 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 
 ## Recommended Execution Order
 
-`T001 -> (T002 + T005) -> T003 -> T007 -> T004 -> T006 -> T009 -> T011 -> T012 -> (T013 + T014) -> T015 -> T016 -> (T018 + T019) -> T017 -> T010 -> T020 -> T008`
+`T001 -> (T002 + T005) -> T003 -> T007 -> T004 -> T006 -> T009 -> T011 -> T012 -> (T013 + T014) -> T015 -> T016 -> (T018 + T019) -> T017 -> T020 -> T021 -> T010 -> T008`
 
 ## Dependency Notes
 
@@ -68,7 +69,8 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 14. `T019` lets sandbox-blocked host-only export work continue through the existing host executor queue.
 15. `T017` defines how app, CLI, and long-lived services share one detached installed runtime.
 16. `T020` sharpens the next-stage phone/web control-plane boundary after the minimal `remote` bridge exists.
-17. `T008` is explicitly isolated from MVP.
+17. `T021` turns the installed product into a path-independent Codex control bridge without forcing users off the `codex` entrypoint.
+18. `T008` is explicitly isolated from MVP.
 
 ## Parallelization Guidance
 
@@ -84,6 +86,7 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 - Run `T018` and `T019` as Telegram CTO correctness follow-ups once the chat-first loop is live.
 - Move `T017` in before broader installed-product rollout so the service, tray app, and CLI do not bind to a source checkout by accident.
 - Keep `T020` behind `T010` so the product boundary is refined after the remote MVP exists, not before.
+- Move `T021` right behind `T020` so the installed bridge follows the detached-runtime and control-plane boundary work instead of bypassing it.
 - Keep `T008` parked until the local CLI milestone is complete.
 
 ## Current Status
@@ -108,3 +111,4 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 - `T019` — implemented
 - `T017` — detached install boundary plus bundle/install/status/prune flow implemented (status now includes prune-preview lifecycle signals and `--keep` preview override); broader packaging polish still pending
 - `T020` — partially implemented: boundary docs are in place and `remote status` now provides deployment checks plus troubleshooting hints; broader control-plane follow-through remains
+- `T021` — planned

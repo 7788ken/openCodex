@@ -22,8 +22,46 @@ test('doctor emits structured json with passing core checks', async () => {
   assert.ok(payload.checks.some((check) => check.name === 'codex_cli' && check.status === 'pass'));
   assert.ok(payload.checks.some((check) => check.name === 'codex_login' && check.status === 'pass'));
   assert.ok(payload.checks.some((check) => check.name === 'opencodex_launcher' && check.status === 'warn'));
+  assert.ok(payload.checks.some((check) => check.name === 'codex_bridge' && check.status === 'warn'));
   assert.ok(payload.checks.some((check) => check.name === 'telegram_service_launcher' && check.status === 'pass'));
   assert.ok(payload.checks.some((check) => check.name === 'telegram_service_workspace' && check.status === 'pass'));
+});
+
+test('doctor passes the Codex bridge check when a registered bridge state exists', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-doctor-bridge-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-doctor-home-bridge-'));
+  const bridgeDir = path.join(homeDir, '.opencodex', 'bridge');
+  await mkdir(bridgeDir, { recursive: true });
+  await writeFile(path.join(bridgeDir, 'bridge.json'), JSON.stringify({
+    schema: 'opencodex/bridge-state/v1',
+    created_at: '2026-03-21T00:00:00.000Z',
+    updated_at: '2026-03-21T00:00:00.000Z',
+    codex: {
+      path: fixture,
+      resolved_path: fixture,
+      source: 'manual_register',
+      version: 'codex-cli 0.111.0',
+      validated_at: '2026-03-21T00:00:00.000Z',
+      exists: true,
+      executable: true
+    },
+    bridge: {
+      default_surface: 'cli',
+      active_session_id: '',
+      active_session_updated_at: ''
+    }
+  }, null, 2), 'utf8');
+
+  const result = await runCli(['doctor', '--json', '--cwd', cwd], {
+    OPENCODEX_CODEX_BIN: fixture,
+    HOME: homeDir
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  const bridgeCheck = payload.checks.find((check) => check.name === 'codex_bridge');
+  assert.equal(bridgeCheck?.status, 'pass');
+  assert.match(bridgeCheck?.details || '', /Installed Codex bridge target/);
 });
 
 test('doctor warns when the installed Telegram service is still bound to a source checkout', async () => {

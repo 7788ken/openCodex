@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { access } from 'node:fs/promises';
 import { parseOptions } from '../lib/args.js';
+import { inspectRegisteredBridge } from '../lib/bridge-state.js';
 import { getCodexBin, runCommandCapture } from '../lib/codex.js';
 import { readJson, writeJson } from '../lib/fs.js';
 import { describeOpenCodexLauncher, describeOpenCodexPath } from '../lib/launcher.js';
@@ -65,6 +66,7 @@ export async function runDoctorCommand(args) {
       : `Current openCodex launcher is detached from a source checkout: ${launcher.cliPath}`
   ));
 
+  checks.push(await inspectCodexBridgeCheck(cwd));
   checks.push(await inspectTelegramServiceLauncherCheck());
   checks.push(await inspectTelegramServiceWorkspaceCheck());
 
@@ -150,6 +152,9 @@ async function buildDoctorNextSteps(checks) {
       nextSteps.push('Run `node ./bin/opencodex.js install detached` from the source checkout, then use the detached runtime for long-lived services.');
     }
   }
+  if (byName.codex_bridge?.status === 'warn') {
+    nextSteps.push('Run `opencodex bridge register-codex --path <real-codex-path>` from the detached launcher to persist the Codex bridge target.');
+  }
   if (byName.telegram_service_launcher?.status === 'warn') {
     nextSteps.push('Reinstall or relink the Telegram service from a detached openCodex CLI so it no longer points at a project checkout.');
   }
@@ -183,6 +188,25 @@ function describeMcpResult(stdout, stderr) {
   } catch {
   }
   return pickFirstMeaningfulLine(stdout || stderr) || 'No MCP data available.';
+}
+
+async function inspectCodexBridgeCheck(cwd) {
+  const bridge = await inspectRegisteredBridge({ cwd, env: process.env, homeDir: os.homedir() });
+  if (!bridge.exists) {
+    return toCheck('codex_bridge', 'warn', false, `No installed Codex bridge state found at ${bridge.statePath}`);
+  }
+
+  if (bridge.error) {
+    return toCheck('codex_bridge', 'warn', false, `Installed Codex bridge state could not be parsed: ${bridge.statePath}`);
+  }
+
+  if (!bridge.registration?.valid) {
+    const targetPath = bridge.state?.codex?.resolved_path || bridge.state?.codex?.path || bridge.statePath;
+    const message = bridge.registration?.validation_error || `Saved Codex bridge target is no longer valid: ${targetPath}`;
+    return toCheck('codex_bridge', 'warn', false, message);
+  }
+
+  return toCheck('codex_bridge', 'pass', false, `Installed Codex bridge target: ${bridge.registration.resolved_path}`);
 }
 
 async function inspectTelegramServiceLauncherCheck() {
