@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseOptions } from '../lib/args.js';
 import { readJson, readTextIfExists, writeJson, toIsoString } from '../lib/fs.js';
+import { inspectActiveBridgeSession, queueBridgeSessionMessage } from '../lib/bridge-live-session.js';
 import {
   appendPlanTasksToWorkflow,
   appendWorkflowUserMessage,
@@ -518,6 +519,39 @@ async function runTelegramListen(args) {
           }
           if (chatState) {
             noteTelegramChatDirectReply(chatState, normalizedMessage, workflowDirectReply.replyMode || 'casual');
+          }
+          await persistListenerSession();
+          continue;
+        }
+
+        const bridgeRelayReply = delegateMode === 'cto'
+          ? await resolveTelegramCtoBridgeReply({
+            message: normalizedMessage,
+            waitingWorkflow
+          })
+          : null;
+
+        if (bridgeRelayReply) {
+          try {
+            const bridgeReply = await sendTelegramTextMessage({
+              apiBaseUrl,
+              botToken,
+              chatId: normalizedMessage.chat_id,
+              text: bridgeRelayReply.text,
+              replyToMessageId: normalizedMessage.message_id
+            });
+            await appendTelegramReply(repliesPath, bridgeReply);
+            noteTelegramChatAssistantReply(chatState, {
+              text: bridgeReply.text,
+              mode: bridgeRelayReply.replyMode || 'bridge',
+              workflowSessionId: bridgeRelayReply.workflowId || ''
+            });
+            await appendFile(logPath, `[${toIsoString()}] bridge relay ${bridgeRelayReply.bridgeStatus || 'unknown'} ${bridgeRelayReply.sessionId || 'none'} for update ${normalizedMessage.update_id}\n`, 'utf8');
+            process.stdout.write(`Handled CTO bridge relay for update ${normalizedMessage.update_id} via ${bridgeRelayReply.sessionId || 'no-session'}\n`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            await appendFile(logPath, `[${toIsoString()}] bridge relay reply error for update ${normalizedMessage.update_id}: ${errorMessage}\n`, 'utf8');
+            process.stdout.write(`Bridge relay reply failed for update ${normalizedMessage.update_id}: ${errorMessage}\n`);
           }
           await persistListenerSession();
           continue;
@@ -1418,21 +1452,27 @@ async function continueTelegramCtoWorkflowFromPlan({
     return;
   }
 
-  const finalReply = await sendTelegramTextMessage({
+  const finalReply = await sendTelegramWorkflowFinalReplyOnce({
+    runtime,
     apiBaseUrl,
     botToken,
     chatId: triggerMessage.chat_id,
     text: buildTelegramCtoFinalText(runtime.state),
-    replyToMessageId: triggerMessage.message_id
+    replyToMessageId: triggerMessage.message_id,
+    repliesPath
   });
-  await appendTelegramReply(repliesPath, finalReply);
-  noteTelegramChatAssistantReply(triggerMessage.chat_state, {
-    text: finalReply.text,
-    mode: 'workflow',
-    workflowSessionId: runtime.session.session_id
-  });
-  await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} finished with status ${runtime.state.status}\n`, 'utf8');
-  process.stdout.write(`CTO workflow ${runtime.session.session_id} finished with status ${runtime.state.status}\n`);
+  if (finalReply.sent) {
+    noteTelegramChatAssistantReply(triggerMessage.chat_state, {
+      text: finalReply.reply.text,
+      mode: 'workflow',
+      workflowSessionId: runtime.session.session_id
+    });
+    await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} finished with status ${runtime.state.status}\n`, 'utf8');
+    process.stdout.write(`CTO workflow ${runtime.session.session_id} finished with status ${runtime.state.status}\n`);
+  } else {
+    await appendFile(logPath, `[${toIsoString()}] skipped duplicate final reply for workflow ${runtime.session.session_id}\n`, 'utf8');
+    process.stdout.write(`Skipped duplicate final reply for CTO workflow ${runtime.session.session_id}\n`);
+  }
   workflowRuntimes.delete(runtime.session.session_id);
 }
 
@@ -1881,21 +1921,27 @@ async function processTelegramHostExecutorQueue({
     }
 
     if (runtime.state.status !== 'running') {
-      const finalReply = await sendTelegramTextMessage({
+      const finalReply = await sendTelegramWorkflowFinalReplyOnce({
+        runtime,
         apiBaseUrl,
         botToken,
         chatId: runtime.rootMessage.chat_id,
         text: buildTelegramCtoFinalText(runtime.state),
-        replyToMessageId: runtime.rootMessage.message_id
+        replyToMessageId: runtime.rootMessage.message_id,
+        repliesPath
       });
-      await appendTelegramReply(repliesPath, finalReply);
-      noteTelegramChatAssistantReply(runtime.rootMessage.chat_state, {
-        text: finalReply.text,
-        mode: 'workflow',
-        workflowSessionId: runtime.session.session_id
-      });
-      await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} finished with status ${runtime.state.status} after host executor processing\n`, 'utf8');
-      process.stdout.write(`CTO workflow ${runtime.session.session_id} finished with status ${runtime.state.status} after host executor processing\n`);
+      if (finalReply.sent) {
+        noteTelegramChatAssistantReply(runtime.rootMessage.chat_state, {
+          text: finalReply.reply.text,
+          mode: 'workflow',
+          workflowSessionId: runtime.session.session_id
+        });
+        await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} finished with status ${runtime.state.status} after host executor processing\n`, 'utf8');
+        process.stdout.write(`CTO workflow ${runtime.session.session_id} finished with status ${runtime.state.status} after host executor processing\n`);
+      } else {
+        await appendFile(logPath, `[${toIsoString()}] skipped duplicate final reply for workflow ${runtime.session.session_id} after host executor processing\n`, 'utf8');
+        process.stdout.write(`Skipped duplicate final reply for CTO workflow ${runtime.session.session_id} after host executor processing\n`);
+      }
       workflowRuntimes.delete(runtime.session.session_id);
     }
   }
@@ -1959,6 +2005,82 @@ function buildTelegramRunRecord(message, runResult, extra = {}) {
 
 async function appendTelegramReply(repliesPath, reply) {
   await appendFile(repliesPath, `${JSON.stringify(reply)}\n`, 'utf8');
+}
+
+async function sendTelegramWorkflowFinalReplyOnce({
+  runtime,
+  apiBaseUrl,
+  botToken,
+  chatId,
+  text,
+  replyToMessageId,
+  repliesPath
+}) {
+  const lock = await claimTelegramWorkflowFinalReplyLock(runtime);
+  if (!lock) {
+    return {
+      sent: false,
+      reply: null
+    };
+  }
+
+  try {
+    const reply = await sendTelegramTextMessage({
+      apiBaseUrl,
+      botToken,
+      chatId,
+      text,
+      replyToMessageId
+    });
+    await appendTelegramReply(repliesPath, reply);
+    await writeJson(lock.lockPath, {
+      workflow_session_id: runtime.session.session_id,
+      kind: 'final',
+      owner_pid: process.pid,
+      created_at: lock.createdAt,
+      sent_at: toIsoString(),
+      reply_to_message_id: replyToMessageId,
+      telegram_message_id: reply.message_id
+    });
+    return {
+      sent: true,
+      reply
+    };
+  } catch (error) {
+    await rm(lock.lockDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function claimTelegramWorkflowFinalReplyLock(runtime) {
+  if (!runtime?.sessionDir || !runtime?.session?.session_id) {
+    return null;
+  }
+
+  const lockDir = path.join(runtime.sessionDir, 'artifacts', 'telegram-final-reply-lock');
+  const lockPath = path.join(lockDir, 'lock.json');
+  const createdAt = toIsoString();
+
+  try {
+    await mkdir(lockDir, { recursive: false });
+    await writeJson(lockPath, {
+      workflow_session_id: runtime.session.session_id,
+      kind: 'final',
+      owner_pid: process.pid,
+      created_at: createdAt,
+      sent_at: ''
+    });
+    return {
+      lockDir,
+      lockPath,
+      createdAt
+    };
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      return null;
+    }
+    throw error;
+  }
 }
 
 async function recordTelegramChildSession(session, cwd, {
@@ -2605,6 +2727,92 @@ async function resolveTelegramCtoStatusReply({ cwd, message, workflowRuntimes })
     workflowId: runtime.session.session_id,
     text: buildTelegramCtoStatusText(runtime.state)
   };
+}
+
+async function resolveTelegramCtoBridgeReply({ message, waitingWorkflow }) {
+  if (waitingWorkflow) {
+    return null;
+  }
+
+  const activeBridgeSession = await inspectActiveBridgeSession();
+  const attachIntent = isExplicitTelegramBridgeAttachIntent(message.text);
+  const bridgeAttachable = Boolean(
+    activeBridgeSession?.session_id
+    && activeBridgeSession?.record_found
+    && activeBridgeSession?.status === 'running'
+    && activeBridgeSession?.working_directory
+  );
+
+  if (!bridgeAttachable) {
+    if (!attachIntent) {
+      return null;
+    }
+    return {
+      sessionId: activeBridgeSession?.session_id || '',
+      bridgeStatus: 'missing',
+      replyMode: 'bridge_missing',
+      text: buildTelegramMissingBridgeAttachText()
+    };
+  }
+
+  try {
+    await queueBridgeSessionMessage({
+      cwd: activeBridgeSession.working_directory,
+      sessionId: activeBridgeSession.session_id,
+      text: message.text,
+      source: 'telegram_cto',
+      metadata: {
+        provider: 'telegram',
+        chat_id: message.chat_id,
+        message_id: message.message_id,
+        update_id: message.update_id,
+        sender_display: message.sender_display || ''
+      }
+    });
+    return {
+      sessionId: activeBridgeSession.session_id,
+      bridgeStatus: 'attached',
+      replyMode: 'bridge',
+      text: buildTelegramBridgeAttachedText({
+        sessionId: activeBridgeSession.session_id
+      })
+    };
+  } catch (error) {
+    return {
+      sessionId: activeBridgeSession.session_id,
+      bridgeStatus: 'attach_failed',
+      replyMode: 'bridge_failed',
+      text: buildTelegramBridgeAttachFailedText({
+        sessionId: activeBridgeSession.session_id,
+        errorMessage: error instanceof Error ? error.message : String(error)
+      })
+    };
+  }
+}
+
+function isExplicitTelegramBridgeAttachIntent(text) {
+  const value = String(text || '').trim();
+  if (!value) {
+    return false;
+  }
+
+  const patterns = [
+    /(接入|接管|桥接|继续|接着|续上|续做|跟进).{0,10}(当前|主线|会话|session|codex|任务|工作)/i,
+    /(当前|主线|会话|session|codex|任务|工作).{0,10}(接入|接管|桥接|继续|接着|续上|续做|跟进)/i
+  ];
+  return patterns.some((pattern) => pattern.test(value));
+}
+
+function buildTelegramBridgeAttachedText({ sessionId }) {
+  return `已接入当前 Codex 主线会话 ${sessionId}，这条消息已经转发进去。需要看最近输出时，请在机器上执行 \`opencodex bridge tail --session-id ${sessionId}\`。`;
+}
+
+function buildTelegramMissingBridgeAttachText() {
+  return '当前没有可接入的 Codex 主线会话，所以这条消息不会被伪装成“继续当前工作”。请先在本机通过 bridge-owned 的 `codex ...` 启动主线，再从 Telegram 继续。';
+}
+
+function buildTelegramBridgeAttachFailedText({ sessionId, errorMessage }) {
+  return `检测到当前 Codex 主线会话 ${sessionId}，但这条消息写入失败了：${errorMessage}。这次不会回退成并行 workflow。`;
 }
 
 async function resolveTelegramCtoDirectReply({
@@ -3641,16 +3849,22 @@ async function resumeTelegramRunningWorkflow({
   }
 
   if (runtime.state.status !== 'running') {
-    const finalReply = await sendTelegramTextMessage({
+    const finalReply = await sendTelegramWorkflowFinalReplyOnce({
+      runtime,
       apiBaseUrl,
       botToken,
       chatId: runtime.rootMessage.chat_id,
       text: buildTelegramCtoFinalText(runtime.state),
-      replyToMessageId: runtime.rootMessage.message_id
+      replyToMessageId: runtime.rootMessage.message_id,
+      repliesPath
     });
-    await appendTelegramReply(repliesPath, finalReply);
-    await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} finished after listener restart with status ${runtime.state.status}\n`, 'utf8');
-    process.stdout.write(`CTO workflow ${runtime.session.session_id} finished after listener restart with status ${runtime.state.status}\n`);
+    if (finalReply.sent) {
+      await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} finished after listener restart with status ${runtime.state.status}\n`, 'utf8');
+      process.stdout.write(`CTO workflow ${runtime.session.session_id} finished after listener restart with status ${runtime.state.status}\n`);
+    } else {
+      await appendFile(logPath, `[${toIsoString()}] skipped duplicate final reply for workflow ${runtime.session.session_id} after listener restart\n`, 'utf8');
+      process.stdout.write(`Skipped duplicate final reply for CTO workflow ${runtime.session.session_id} after listener restart\n`);
+    }
     workflowRuntimes.delete(runtime.session.session_id);
   }
 }

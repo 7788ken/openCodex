@@ -2,6 +2,11 @@
 
 ## 2026-03-21
 
+- Started `T021` Phase 4 with the first Telegram attach slice for bridge-owned live sessions:
+  - `opencodex im telegram listen --cto` now relays actionable inbound messages into the active bridge-owned Codex session instead of silently opening a parallel CTO workflow
+  - explicit "attach current mainline" requests now fail closed with a direct "no attachable Codex mainline session" reply when no active bridge-owned session exists
+  - rehydrated supervisor races now use a shared workflow final-reply lock so concurrent `telegram supervise` ticks do not double-send the same terminal Telegram reply
+  - validated with `node --test tests/im.test.js`, `node --test tests/bridge.test.js`, and `node --test tests/doctor.test.js`
 - Extended `T021` Phase 3 snapshot visibility for bridge-owned sessions:
   - added `opencodex bridge tail` to inspect recent output from a bridge-owned session
   - bridge runtime now captures child stdout/stderr into `bridge-output.log`

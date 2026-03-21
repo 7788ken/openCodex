@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 
 const cli = path.resolve('bin/opencodex.js');
 const fixture = path.resolve('tests/fixtures/mock-codex.js');
+const liveFixture = path.resolve('tests/fixtures/mock-codex-live.js');
 
 test('im telegram listen stores inbound messages and im telegram inbox reads them back', async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-'));
@@ -195,6 +196,216 @@ test('im telegram listen --cto orchestrates a workflow and returns structured pr
   assert.deepEqual(workflowState.tasks.map((task) => task.id), ['inspect-repo', 'summarize-findings']);
   assert.ok(workflowState.tasks.every((task) => task.status === 'completed'));
   assert.ok(workflowState.tasks.every((task) => task.session_id));
+});
+
+test('im telegram listen --cto relays actionable messages into the active bridge session instead of spawning a new workflow', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-bridge-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-bridge-home-'));
+  const telegram = await startTelegramMockServer({
+    updates: []
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  await chmod(liveFixture, 0o755);
+
+  const register = await runCli(['bridge', 'register-codex', '--path', liveFixture, '--json', '--cwd', cwd], {
+    HOME: homeDir
+  });
+  assert.equal(register.code, 0);
+
+  const listenerChild = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!listenerChild.killed) {
+      listenerChild.kill('SIGTERM');
+    }
+  });
+  const listenerExitPromise = waitForExit(listenerChild);
+
+  let listenerStdout = '';
+  let listenerStderr = '';
+  listenerChild.stdout.on('data', (chunk) => {
+    listenerStdout += chunk.toString();
+  });
+  listenerChild.stderr.on('data', (chunk) => {
+    listenerStderr += chunk.toString();
+  });
+
+  const bridgeChild = spawn('node', [cli, 'bridge', 'exec-codex', '--bridge-stdin'], {
+    cwd,
+    env: {
+      ...process.env,
+      HOME: homeDir
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!bridgeChild.killed) {
+      bridgeChild.kill('SIGTERM');
+    }
+  });
+  const bridgeExitPromise = waitForExit(bridgeChild);
+
+  let bridgeStdout = '';
+  let bridgeStderr = '';
+  bridgeChild.stdout.on('data', (chunk) => {
+    bridgeStdout += chunk.toString();
+  });
+  bridgeChild.stderr.on('data', (chunk) => {
+    bridgeStderr += chunk.toString();
+  });
+
+  let activeBridgeSessionId = '';
+  await waitForCondition(async () => {
+    const status = await runCli(['bridge', 'status', '--json', '--cwd', cwd], {
+      HOME: homeDir
+    });
+    const payload = JSON.parse(status.stdout);
+    activeBridgeSessionId = payload?.active_session?.session_id || '';
+    return Boolean(activeBridgeSessionId);
+  }, 'active bridge session for telegram relay');
+
+  telegram.state.updates.push({
+    update_id: 211,
+    message: {
+      message_id: 611,
+      date: 1741435310,
+      text: '修一下 bridge relay 的收口并继续推进',
+      chat: { id: 123456, type: 'private' },
+      from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+    }
+  });
+
+  await waitForCondition(
+    () => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 611 && /已接入当前 Codex 主线会话/.test(message.text)),
+    'bridge relay reply'
+  );
+  await waitForCondition(() => bridgeStdout.includes('received: 修一下 bridge relay 的收口并继续推进'), 'bridge relay delivery');
+
+  const bridgeExitCode = await bridgeExitPromise;
+  assert.equal(bridgeExitCode, 0);
+  assert.equal(bridgeStderr, '');
+  assert.match(bridgeStdout, /mock bridge stdin ready/);
+  assert.match(bridgeStdout, /received: 修一下 bridge relay 的收口并继续推进/);
+
+  const relayReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 611);
+  assert.ok(relayReply);
+  assert.match(relayReply.text, new RegExp(`已接入当前 Codex 主线会话 ${activeBridgeSessionId}`));
+  assert.match(relayReply.text, /bridge tail --session-id/);
+  assert.equal(telegram.state.reactions.length, 0);
+
+  const inboxResult = await runCli(['bridge', 'inbox', '--cwd', cwd, '--json', '--session-id', activeBridgeSessionId], {
+    HOME: homeDir
+  });
+  assert.equal(inboxResult.code, 0);
+  const inboxPayload = JSON.parse(inboxResult.stdout);
+  assert.equal(inboxPayload.count, 1);
+  assert.equal(inboxPayload.messages[0].text, '修一下 bridge relay 的收口并继续推进');
+  assert.equal(inboxPayload.messages[0].source, 'telegram_cto');
+  assert.equal(inboxPayload.messages[0].metadata.chat_id, '123456');
+  assert.equal(inboxPayload.messages[0].metadata.message_id, 611);
+
+  const sessionsRoot = path.join(cwd, '.opencodex', 'sessions');
+  const sessionIds = await readdir(sessionsRoot);
+  assert.ok(sessionIds.includes(activeBridgeSessionId));
+  assert.ok(!sessionIds.some((sessionId) => sessionId.startsWith('cto-')));
+
+  listenerChild.kill('SIGTERM');
+  const listenerExitCode = await listenerExitPromise;
+  assert.equal(listenerExitCode, 0);
+  assert.equal(listenerStderr, '');
+  assert.match(listenerStdout, /Handled CTO bridge relay for update 211/);
+});
+
+test('im telegram listen --cto says there is no attachable bridge session for explicit mainline attach requests', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-bridge-missing-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-bridge-home-missing-'));
+  const telegram = await startTelegramMockServer({
+    updates: [
+      {
+        update_id: 212,
+        message: {
+          message_id: 612,
+          date: 1741435311,
+          text: '接入当前 codex 主线继续做',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      }
+    ]
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const listenerChild = spawn('node', [
+    cli,
+    'im', 'telegram', 'listen',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--chat-id', '123456',
+    '--poll-timeout', '0',
+    '--cto'
+  ], {
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+      OPENCODEX_CODEX_BIN: fixture
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!listenerChild.killed) {
+      listenerChild.kill('SIGTERM');
+    }
+  });
+  const listenerExitPromise = waitForExit(listenerChild);
+
+  let listenerStdout = '';
+  let listenerStderr = '';
+  listenerChild.stdout.on('data', (chunk) => {
+    listenerStdout += chunk.toString();
+  });
+  listenerChild.stderr.on('data', (chunk) => {
+    listenerStderr += chunk.toString();
+  });
+
+  await waitForCondition(
+    () => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 612 && /当前没有可接入的 Codex 主线会话/.test(message.text)),
+    'missing bridge relay reply'
+  );
+
+  assert.equal(telegram.state.reactions.length, 0);
+  assert.equal(telegram.state.sentMessages.length, 1);
+  assert.match(telegram.state.sentMessages[0].text, /不会被伪装成“继续当前工作”/);
+
+  listenerChild.kill('SIGTERM');
+  const listenerExitCode = await listenerExitPromise;
+  assert.equal(listenerExitCode, 0);
+  assert.equal(listenerStderr, '');
+  assert.match(listenerStdout, /Handled CTO bridge relay for update 212 via no-session/);
+
+  const sessionsRoot = path.join(cwd, '.opencodex', 'sessions');
+  const sessionIds = await readdir(sessionsRoot);
+  assert.ok(!sessionIds.some((sessionId) => sessionId.startsWith('cto-')));
 });
 
 test('im telegram listen prunes old ended service sessions without touching the chat main line', async (t) => {
