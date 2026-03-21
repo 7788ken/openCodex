@@ -405,6 +405,129 @@ test('remote serve /api/status reports missing bridge state when no active bridg
   assert.equal(stderr, '');
 });
 
+test('remote page shows the active bridge state and recent output for an authorized token', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-page-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-page-home-'));
+  const token = 'test-remote-page-token';
+
+  await chmod(liveFixture, 0o755);
+
+  const register = await runCli(['bridge', 'register-codex', '--path', liveFixture, '--json', '--cwd', cwd], {
+    HOME: homeDir
+  });
+  assert.equal(register.code, 0);
+
+  const bridgeChild = spawn('node', [cli, 'bridge', 'exec-codex', '--bridge-stdin'], {
+    cwd,
+    env: { ...process.env, HOME: homeDir },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  const bridgeExitPromise = waitForExit(bridgeChild);
+
+  let bridgeStdout = '';
+  let bridgeStderr = '';
+  bridgeChild.stdout.on('data', (chunk) => {
+    bridgeStdout += chunk.toString();
+  });
+  bridgeChild.stderr.on('data', (chunk) => {
+    bridgeStderr += chunk.toString();
+  });
+
+  let activeBridgeSessionId = '';
+  await waitForValue(async () => {
+    const status = await runCli(['bridge', 'status', '--json', '--cwd', cwd], {
+      HOME: homeDir
+    });
+    const payload = JSON.parse(status.stdout || '{}');
+    activeBridgeSessionId = payload?.active_session?.session_id || '';
+    return activeBridgeSessionId;
+  }, 'active bridge session');
+
+  const child = spawn('node', [cli, 'remote', 'serve', '--cwd', cwd, '--host', '127.0.0.1', '--port', '0', '--token', token], {
+    env: { ...process.env, HOME: homeDir },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  const port = await waitForPort(() => extractPort(stdout));
+
+  const pageHtml = await waitForValue(async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/?token=${token}`);
+    if (response.status !== 200) {
+      return '';
+    }
+    const html = await response.text();
+    if (!html.includes('mock bridge stdin ready')) {
+      return '';
+    }
+    return html;
+  }, 'remote page bridge status');
+
+  assert.match(pageHtml, /Current Codex Mainline/);
+  assert.match(pageHtml, new RegExp(`attached to ${activeBridgeSessionId}`));
+  assert.match(pageHtml, /mock bridge stdin ready/);
+  assert.match(pageHtml, new RegExp(`Session: ${activeBridgeSessionId}`));
+
+  const accepted = await fetch(`http://127.0.0.1:${port}/api/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token, sender: 'phone', text: 'Close the page bridge test.' })
+  });
+  assert.equal(accepted.status, 200);
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+
+  const bridgeExitCode = await bridgeExitPromise;
+  assert.equal(bridgeExitCode, 0);
+  assert.equal(bridgeStderr, '');
+  assert.match(bridgeStdout, /received: Close the page bridge test\./);
+});
+
+test('remote page hides bridge state until the correct token is provided', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-page-hidden-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-page-hidden-home-'));
+  const token = 'test-remote-page-hidden-token';
+  const child = spawn('node', [cli, 'remote', 'serve', '--cwd', cwd, '--host', '127.0.0.1', '--port', '0', '--token', token], {
+    env: { ...process.env, HOME: homeDir },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  const port = await waitForPort(() => extractPort(stdout));
+
+  const response = await fetch(`http://127.0.0.1:${port}/`);
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /Current Codex Mainline/);
+  assert.match(html, /Enter the correct token to inspect the current Codex mainline\./);
+  assert.match(html, /Bridge output is hidden until the page is opened with the correct token\./);
+  assert.doesNotMatch(html, /Session:/);
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+});
+
 test('remote inbox/status prefer an active remote session over a newer completed one', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-active-prefer-'));
   const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-home-active-prefer-'));

@@ -13,6 +13,7 @@
   - remote HTTP submissions now fail closed with explicit bridge-attach errors when no active bridge-owned session is attachable
   - `opencodex remote status` now reports current bridge attachability and surfaces the latest message relay status
   - token-protected `GET /api/status` on the remote bridge now exposes the active bridge attach state plus recent bridge output lines for phone-side polling
+  - the token-authenticated remote web page now renders the current bridge attach state and recent bridge output instead of only showing message audit history
   - validated with `node --test tests/remote.test.js` and `node --test tests/bridge.test.js`
 - Extended `T021` Phase 3 snapshot visibility for bridge-owned sessions:
   - added `opencodex bridge tail` to inspect recent output from a bridge-owned session

@@ -463,13 +463,16 @@ async function handleRemoteRequest(req, res, state) {
 
   if (method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
     const token = String(url.searchParams.get('token') || '');
-    const messages = token === state.token ? await readMessageLog(state.messagesPath) : [];
+    const authorized = token === state.token;
+    const messages = authorized ? await readMessageLog(state.messagesPath) : [];
+    const bridgeAttach = authorized ? await inspectRemoteBridgeAttach() : null;
     const bridgeStatus = String(url.searchParams.get('bridge') || '').trim();
     writeHtml(res, 200, renderRemotePage({
       token,
       statusMessage: buildRemotePageStatusMessage(bridgeStatus),
       statusTone: resolveRemotePageStatusTone(bridgeStatus),
-      messages
+      messages,
+      bridgeAttach
     }));
     return;
   }
@@ -1188,11 +1191,13 @@ function renderRemoteBridgeAttachText(bridgeAttach) {
   return `attached to ${bridgeAttach.session_id}`;
 }
 
-function renderRemotePage({ token, statusMessage, statusTone, messages }) {
+function renderRemotePage({ token, statusMessage, statusTone, messages, bridgeAttach }) {
   const recent = messages.slice(-20).reverse();
   const listItems = recent.length
     ? recent.map((message) => `<li><strong>${escapeHtml(message.sender)}</strong><br><span>${escapeHtml(message.text)}</span><br><small>${escapeHtml(message.created_at)}</small></li>`).join('')
     : '<li>No messages yet.</li>';
+  const bridgeSummary = renderRemotePageBridgeSummary(bridgeAttach);
+  const bridgeOutputItems = renderRemotePageBridgeOutputItems(bridgeAttach);
   const banner = statusMessage
     ? `<p class="status ${statusTone}">${escapeHtml(statusMessage)}</p>`
     : '';
@@ -1240,12 +1245,46 @@ function renderRemotePage({ token, statusMessage, statusTone, messages }) {
     </form>
 
     <section class="panel">
+      <h2>Current Codex Mainline</h2>
+      ${bridgeSummary}
+      <ul>${bridgeOutputItems}</ul>
+    </section>
+
+    <section class="panel">
       <h2>Recent Messages</h2>
       <ul>${listItems}</ul>
     </section>
   </main>
 </body>
 </html>`;
+}
+
+function renderRemotePageBridgeSummary(bridgeAttach) {
+  if (!bridgeAttach) {
+    return '<p>Enter the correct token to inspect the current Codex mainline.</p>';
+  }
+
+  const sessionId = bridgeAttach.session_id
+    ? `<br><small>Session: ${escapeHtml(bridgeAttach.session_id)}</small>`
+    : '';
+  return `<p>${escapeHtml(renderRemoteBridgeAttachText(bridgeAttach))}${sessionId}</p>`;
+}
+
+function renderRemotePageBridgeOutputItems(bridgeAttach) {
+  if (!bridgeAttach) {
+    return '<li>Bridge output is hidden until the page is opened with the correct token.</li>';
+  }
+
+  const recentOutput = Array.isArray(bridgeAttach.recent_output_lines)
+    ? bridgeAttach.recent_output_lines
+    : [];
+  if (!recentOutput.length) {
+    return '<li>No recent bridge output yet.</li>';
+  }
+
+  return recentOutput
+    .map((line) => `<li><code>${escapeHtml(line)}</code></li>`)
+    .join('');
 }
 
 function escapeHtml(value) {
