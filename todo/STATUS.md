@@ -8,6 +8,11 @@
   - explicit "attach current mainline" requests now fail closed with a direct "no attachable Codex mainline session" reply when no active bridge-owned session exists
   - rehydrated supervisor races now use a shared workflow final-reply lock so concurrent `telegram supervise` ticks do not double-send the same terminal Telegram reply
   - validated with `node --test tests/im.test.js`, `node --test tests/bridge.test.js`, and `node --test tests/doctor.test.js`
+- Extended `T021` Phase 4 from Telegram into the remote/mobile surface:
+  - `opencodex remote serve` now relays inbound mobile messages into the active bridge-owned Codex session through the same live-session inbox contract
+  - remote HTTP submissions now fail closed with explicit bridge-attach errors when no active bridge-owned session is attachable
+  - `opencodex remote status` now reports current bridge attachability and surfaces the latest message relay status
+  - validated with `node --test tests/remote.test.js` and `node --test tests/bridge.test.js`
 - Extended `T021` Phase 3 snapshot visibility for bridge-owned sessions:
   - added `opencodex bridge tail` to inspect recent output from a bridge-owned session
   - bridge runtime now captures child stdout/stderr into `bridge-output.log`

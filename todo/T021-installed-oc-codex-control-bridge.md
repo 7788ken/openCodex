@@ -253,6 +253,9 @@ The control-plane entry must be fixed at the installed bridge/runtime layer firs
   - explicit "continue the current Codex mainline" requests now fail closed with a direct no-session reply when there is no active attachable bridge-owned session
   - bridge-relayed Telegram messages are appended into the same bridge inbox audit trail as `opencodex bridge send`
   - concurrent `opencodex im telegram supervise` ticks now guard final Telegram replies with a shared workflow-scoped lock so rehydrated workflows do not double-send terminal results
+  - `opencodex remote serve` now relays inbound mobile messages into the active bridge-owned live session instead of acting as a detached message sink
+  - remote HTTP requests now fail closed with explicit bridge-attach errors when there is no active attachable bridge-owned session
+  - `opencodex remote status` now reports current bridge attachability together with the latest mobile-message relay status
 - Product direction is now clear:
   - Codex stays the execution engine.
   - Installed openCodex becomes the control bridge.

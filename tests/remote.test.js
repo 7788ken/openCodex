@@ -2,16 +2,52 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 
 const cli = path.resolve('bin/opencodex.js');
+const liveFixture = path.resolve('tests/fixtures/mock-codex-live.js');
 
-test('remote serve accepts token-authenticated mobile messages and stores them in a session artifact', async () => {
+test('remote serve relays token-authenticated mobile messages into the active bridge session and stores the audit record', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-home-'));
   const token = 'test-remote-token';
+
+  await chmod(liveFixture, 0o755);
+
+  const register = await runCli(['bridge', 'register-codex', '--path', liveFixture, '--json', '--cwd', cwd], {
+    HOME: homeDir
+  });
+  assert.equal(register.code, 0);
+
+  const bridgeChild = spawn('node', [cli, 'bridge', 'exec-codex', '--bridge-stdin'], {
+    cwd,
+    env: { ...process.env, HOME: homeDir },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  const bridgeExitPromise = waitForExit(bridgeChild);
+
+  let bridgeStdout = '';
+  let bridgeStderr = '';
+  bridgeChild.stdout.on('data', (chunk) => {
+    bridgeStdout += chunk.toString();
+  });
+  bridgeChild.stderr.on('data', (chunk) => {
+    bridgeStderr += chunk.toString();
+  });
+
+  let activeBridgeSessionId = '';
+  await waitForValue(async () => {
+    const status = await runCli(['bridge', 'status', '--json', '--cwd', cwd], {
+      HOME: homeDir
+    });
+    const payload = JSON.parse(status.stdout || '{}');
+    activeBridgeSessionId = payload?.active_session?.session_id || '';
+    return activeBridgeSessionId;
+  }, 'active bridge session');
+
   const child = spawn('node', [cli, 'remote', 'serve', '--cwd', cwd, '--host', '127.0.0.1', '--port', '0', '--token', token], {
-    env: process.env,
+    env: { ...process.env, HOME: homeDir },
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
@@ -43,12 +79,28 @@ test('remote serve accepts token-authenticated mobile messages and stores them i
   const acceptedPayload = await accepted.json();
   assert.equal(acceptedPayload.ok, true);
   assert.ok(acceptedPayload.message_id);
+  assert.equal(acceptedPayload.bridge.status, 'attached');
+  assert.equal(acceptedPayload.bridge.session_id, activeBridgeSessionId);
+  assert.ok(acceptedPayload.bridge.message_id);
 
   const inboxResponse = await fetch(`http://127.0.0.1:${port}/api/messages?token=${token}`);
   assert.equal(inboxResponse.status, 200);
   const inboxPayload = await inboxResponse.json();
   assert.equal(inboxPayload.count, 1);
   assert.equal(inboxPayload.messages[0].text, 'Ship the remote bridge first.');
+  assert.equal(inboxPayload.messages[0].bridge_status, 'attached');
+  assert.equal(inboxPayload.messages[0].bridge_session_id, activeBridgeSessionId);
+
+  const status = await runCli(['remote', 'status', '--cwd', cwd, '--json'], {
+    HOME: homeDir
+  });
+  assert.equal(status.code, 0);
+  const statusPayload = JSON.parse(status.stdout);
+  assert.ok(statusPayload.bridge_attach);
+  assert.equal(statusPayload.latest_message.bridge_status, 'attached');
+  assert.equal(statusPayload.latest_message.bridge_session_id, activeBridgeSessionId);
+
+  await waitForValue(() => bridgeStdout.includes('received: Ship the remote bridge first.') ? 'ok' : '', 'bridge relay stdout');
 
   child.kill('SIGTERM');
   const exitCode = await waitForExit(child);
@@ -56,6 +108,11 @@ test('remote serve accepts token-authenticated mobile messages and stores them i
   assert.equal(stderr, '');
   assert.match(stdout, /Remote bridge started/);
   assert.match(stdout, /Remote bridge stopped/);
+
+  const bridgeExitCode = await bridgeExitPromise;
+  assert.equal(bridgeExitCode, 0);
+  assert.equal(bridgeStderr, '');
+  assert.match(bridgeStdout, /received: Ship the remote bridge first\./);
 
   const session = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'sessions', sessionId, 'session.json'), 'utf8'));
   assert.equal(session.command, 'remote');
@@ -66,6 +123,67 @@ test('remote serve accepts token-authenticated mobile messages and stores them i
   const messagesLogPath = session.artifacts.find((artifact) => artifact.type === 'messages_log').path;
   const messagesLog = await readFile(messagesLogPath, 'utf8');
   assert.match(messagesLog, /Ship the remote bridge first\./);
+  assert.match(messagesLog, /"bridge_status":"attached"/);
+  assert.match(messagesLog, new RegExp(`"bridge_session_id":"${activeBridgeSessionId}"`));
+});
+
+test('remote serve fails closed when no active bridge session is attachable', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-missing-bridge-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-home-missing-'));
+  const token = 'test-remote-missing-token';
+  const child = spawn('node', [cli, 'remote', 'serve', '--cwd', cwd, '--host', '127.0.0.1', '--port', '0', '--token', token], {
+    env: { ...process.env, HOME: homeDir },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  const port = await waitForPort(() => extractPort(stdout));
+  const sessionId = await waitForSessionId(() => extractSessionId(stdout));
+
+  const rejected = await fetch(`http://127.0.0.1:${port}/api/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token, sender: 'phone', text: 'Continue the current mainline.' })
+  });
+  assert.equal(rejected.status, 409);
+  const rejectedPayload = await rejected.json();
+  assert.equal(rejectedPayload.ok, false);
+  assert.equal(rejectedPayload.bridge.status, 'missing');
+  assert.match(rejectedPayload.error, /No active bridge-owned Codex session/);
+
+  const inbox = await runCli(['remote', 'inbox', '--cwd', cwd, '--json'], {
+    HOME: homeDir
+  });
+  assert.equal(inbox.code, 0);
+  const inboxPayload = JSON.parse(inbox.stdout);
+  assert.equal(inboxPayload.count, 1);
+  assert.equal(inboxPayload.messages[0].bridge_status, 'missing');
+  assert.equal(inboxPayload.messages[0].text, 'Continue the current mainline.');
+
+  const status = await runCli(['remote', 'status', '--cwd', cwd, '--json'], {
+    HOME: homeDir
+  });
+  assert.equal(status.code, 0);
+  const statusPayload = JSON.parse(status.stdout);
+  assert.equal(statusPayload.bridge_attach.status, 'missing');
+  assert.ok(statusPayload.warnings.some((line) => line.includes('No active bridge-owned Codex session')));
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+
+  const session = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'sessions', sessionId, 'session.json'), 'utf8'));
+  assert.equal(session.command, 'remote');
+  assert.equal(session.status, 'completed');
 });
 
 test('remote inbox returns the latest received messages in json mode', async () => {
@@ -107,6 +225,7 @@ test('remote inbox returns the latest received messages in json mode', async () 
 
 test('remote inbox/status prefer an active remote session over a newer completed one', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-active-prefer-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-home-active-prefer-'));
   const runningSessionId = 'remote-20260319-running';
   const completedSessionId = 'remote-20260319-completed';
 
@@ -156,7 +275,9 @@ test('remote inbox/status prefer an active remote session over a newer completed
     text: 'completed message'
   })}\n`, 'utf8');
 
-  const inbox = await runCli(['remote', 'inbox', '--cwd', cwd, '--json']);
+  const inbox = await runCli(['remote', 'inbox', '--cwd', cwd, '--json'], {
+    HOME: homeDir
+  });
   assert.equal(inbox.code, 0);
   const inboxPayload = JSON.parse(inbox.stdout);
   assert.equal(inboxPayload.session_id, runningSessionId);
@@ -165,7 +286,9 @@ test('remote inbox/status prefer an active remote session over a newer completed
   assert.equal(inboxPayload.session_selection.active_candidate_count, 1);
   assert.equal(inboxPayload.messages[0].text, 'running message');
 
-  const latestInbox = await runCli(['remote', 'inbox', '--cwd', cwd, '--session-id', 'latest', '--json']);
+  const latestInbox = await runCli(['remote', 'inbox', '--cwd', cwd, '--session-id', 'latest', '--json'], {
+    HOME: homeDir
+  });
   assert.equal(latestInbox.code, 0);
   const latestInboxPayload = JSON.parse(latestInbox.stdout);
   assert.equal(latestInboxPayload.session_id, completedSessionId);
@@ -175,7 +298,9 @@ test('remote inbox/status prefer an active remote session over a newer completed
   assert.equal(latestInboxPayload.session_selection.active_candidate_count, 1);
   assert.equal(latestInboxPayload.messages[0].text, 'completed message');
 
-  const explicitInbox = await runCli(['remote', 'inbox', '--cwd', cwd, '--session-id', completedSessionId, '--json']);
+  const explicitInbox = await runCli(['remote', 'inbox', '--cwd', cwd, '--session-id', completedSessionId, '--json'], {
+    HOME: homeDir
+  });
   assert.equal(explicitInbox.code, 0);
   const explicitInboxPayload = JSON.parse(explicitInbox.stdout);
   assert.equal(explicitInboxPayload.session_id, completedSessionId);
@@ -185,7 +310,9 @@ test('remote inbox/status prefer an active remote session over a newer completed
   assert.equal(explicitInboxPayload.session_selection.active_candidate_count, 1);
   assert.equal(explicitInboxPayload.messages[0].text, 'completed message');
 
-  const status = await runCli(['remote', 'status', '--cwd', cwd, '--json']);
+  const status = await runCli(['remote', 'status', '--cwd', cwd, '--json'], {
+    HOME: homeDir
+  });
   assert.equal(status.code, 0);
   const statusPayload = JSON.parse(status.stdout);
   assert.equal(statusPayload.session_id, runningSessionId);
@@ -197,7 +324,9 @@ test('remote inbox/status prefer an active remote session over a newer completed
   assert.equal(statusPayload.latest_message.text, 'running message');
   assert.equal(statusPayload.health_probe.attempted, true);
 
-  const latestStatus = await runCli(['remote', 'status', '--cwd', cwd, '--session-id', 'latest', '--json']);
+  const latestStatus = await runCli(['remote', 'status', '--cwd', cwd, '--session-id', 'latest', '--json'], {
+    HOME: homeDir
+  });
   assert.equal(latestStatus.code, 0);
   const latestStatusPayload = JSON.parse(latestStatus.stdout);
   assert.equal(latestStatusPayload.session_id, completedSessionId);
@@ -208,7 +337,9 @@ test('remote inbox/status prefer an active remote session over a newer completed
   assert.ok(latestStatusPayload.warnings.some((line) => line.includes('historical remote session')));
   assert.equal(latestStatusPayload.health_probe.attempted, false);
 
-  const explicitStatus = await runCli(['remote', 'status', '--cwd', cwd, '--session-id', completedSessionId, '--json']);
+  const explicitStatus = await runCli(['remote', 'status', '--cwd', cwd, '--session-id', completedSessionId, '--json'], {
+    HOME: homeDir
+  });
   assert.equal(explicitStatus.code, 0);
   const explicitStatusPayload = JSON.parse(explicitStatus.stdout);
   assert.equal(explicitStatusPayload.session_id, completedSessionId);
@@ -274,6 +405,7 @@ test('remote status fails fast when --session-id does not match any remote sessi
 
 test('remote status returns deployment checks and troubleshooting hints in json mode', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-status-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-home-status-'));
   const sessionId = 'remote-20260318-status';
   const sessionDir = path.join(cwd, '.opencodex', 'sessions', sessionId);
   const artifactsDir = path.join(sessionDir, 'artifacts');
@@ -297,7 +429,9 @@ test('remote status returns deployment checks and troubleshooting hints in json 
     JSON.stringify({ message_id: 'msg-2', created_at: '2026-03-18T00:00:20.000Z', sender: 'phone', text: 'second' })
   ].join('\n') + '\n', 'utf8');
 
-  const result = await runCli(['remote', 'status', '--cwd', cwd, '--json']);
+  const result = await runCli(['remote', 'status', '--cwd', cwd, '--json'], {
+    HOME: homeDir
+  });
   assert.equal(result.code, 0);
 
   const payload = JSON.parse(result.stdout);
@@ -316,15 +450,18 @@ test('remote status returns deployment checks and troubleshooting hints in json 
   assert.equal(payload.health_probe.url, 'http://127.0.0.1:3789/health');
   assert.ok(Number.isFinite(payload.health_probe.duration_ms));
   assert.match(payload.health_probe.probed_at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(payload.bridge_attach.status, 'missing');
   assert.ok(payload.urls.some((url) => url.includes(':3789')));
   assert.ok(payload.warnings.some((line) => line.includes('all interfaces')));
   assert.ok(payload.warnings.some((line) => line.includes('Health probe failed')));
+  assert.ok(payload.warnings.some((line) => line.includes('No active bridge-owned Codex session')));
   assert.ok(payload.success_checks.some((line) => line.includes('/health')));
   assert.ok(payload.common_failures.some((line) => line.includes('Unauthorized')));
 });
 
 test('remote status text output includes health probe latency metadata', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-status-text-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-home-status-text-'));
   const sessionId = 'remote-20260318-status-text';
   const sessionDir = path.join(cwd, '.opencodex', 'sessions', sessionId);
   const artifactsDir = path.join(sessionDir, 'artifacts');
@@ -347,11 +484,14 @@ test('remote status text output includes health probe latency metadata', async (
     JSON.stringify({ message_id: 'msg-1', created_at: '2026-03-18T00:00:10.000Z', sender: 'phone', text: 'first' })
   ].join('\n') + '\n', 'utf8');
 
-  const result = await runCli(['remote', 'status', '--cwd', cwd]);
+  const result = await runCli(['remote', 'status', '--cwd', cwd], {
+    HOME: homeDir
+  });
   assert.equal(result.code, 0);
   assert.match(result.stdout, /Session selection: active/);
   assert.match(result.stdout, /Session candidates: total 1, active 1/);
   assert.match(result.stdout, /Health probe: failed/);
+  assert.match(result.stdout, /Bridge attach: no attachable bridge-owned session/);
   assert.match(result.stdout, /latency: \d+ ms at \d{4}-\d{2}-\d{2}T/);
 });
 
@@ -391,9 +531,10 @@ test('remote inbox text output includes selector provenance and candidate stats'
 
 test('remote status probes health successfully while remote serve is running', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-status-live-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-home-status-live-'));
   const token = 'test-remote-status-live-token';
   const child = spawn('node', [cli, 'remote', 'serve', '--cwd', cwd, '--host', '127.0.0.1', '--port', '0', '--token', token], {
-    env: process.env,
+    env: { ...process.env, HOME: homeDir },
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
@@ -407,7 +548,9 @@ test('remote status probes health successfully while remote serve is running', a
   });
 
   const port = await waitForPort(() => extractPort(stdout));
-  const status = await runCli(['remote', 'status', '--cwd', cwd, '--json']);
+  const status = await runCli(['remote', 'status', '--cwd', cwd, '--json'], {
+    HOME: homeDir
+  });
   assert.equal(status.code, 0);
   const payload = JSON.parse(status.stdout);
   assert.equal(payload.status, 'running');
@@ -422,6 +565,7 @@ test('remote status probes health successfully while remote serve is running', a
   assert.equal(payload.health_probe.status_code, 200);
   assert.equal(payload.health_probe.response_ok, true);
   assert.equal(payload.health_probe.url, `http://127.0.0.1:${port}/health`);
+  assert.equal(payload.bridge_attach.status, 'missing');
 
   child.kill('SIGTERM');
   const exitCode = await waitForExit(child);
@@ -429,10 +573,10 @@ test('remote status probes health successfully while remote serve is running', a
   assert.equal(stderr, '');
 });
 
-function runCli(args) {
+function runCli(args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [cli, ...args], {
-      env: process.env,
+      env: { ...process.env, ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
@@ -463,7 +607,7 @@ async function waitForSessionId(readValue) {
 async function waitForValue(readValue, label) {
   const start = Date.now();
   while (Date.now() - start < 5000) {
-    const value = readValue();
+    const value = await Promise.resolve(readValue());
     if (value) {
       return value;
     }

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { appendFile } from 'node:fs/promises';
 import { parseOptions } from '../lib/args.js';
+import { inspectActiveBridgeSession, queueBridgeSessionMessage } from '../lib/bridge-live-session.js';
 import { ensureDir, readTextIfExists, toIsoString } from '../lib/fs.js';
 import { createSession, getSessionDir, isTerminalSessionStatus, listSessions, saveSession } from '../lib/session-store.js';
 
@@ -260,6 +261,7 @@ async function runRemoteStatus(args) {
   const messages = await readMessageLog(messagesPath);
   const latestMessage = messages.length ? messages[messages.length - 1] : null;
   const healthProbe = await probeRemoteHealth({ host, port, sessionStatus: remoteSession.status });
+  const bridgeAttach = await inspectRemoteBridgeAttach();
 
   const payload = {
     session_id: remoteSession.session_id,
@@ -274,12 +276,16 @@ async function runRemoteStatus(args) {
       ? {
           created_at: latestMessage.created_at || null,
           sender: latestMessage.sender || null,
-          text: latestMessage.text || null
+          text: latestMessage.text || null,
+          bridge_status: latestMessage.bridge_status || '',
+          bridge_session_id: latestMessage.bridge_session_id || ''
         }
       : null,
     health_probe: healthProbe,
+    bridge_attach: bridgeAttach,
     warnings: [
       ...buildRemoteExposureWarnings(exposure, healthProbe),
+      ...buildRemoteBridgeWarnings(bridgeAttach, remoteSession.status),
       ...buildRemoteSelectionWarnings(remoteSelection.selection, remoteSession.status)
     ],
     success_checks: buildRemoteSuccessChecks({ host, port, urls }),
@@ -313,9 +319,17 @@ async function runRemoteStatus(args) {
   } else if (payload.health_probe?.skipped_reason) {
     process.stdout.write(`Health probe: skipped (${payload.health_probe.skipped_reason})\n`);
   }
+  process.stdout.write(`Bridge attach: ${renderRemoteBridgeAttachText(payload.bridge_attach)}\n`);
   if (payload.latest_message) {
     process.stdout.write(`Latest message: ${payload.latest_message.created_at}  ${payload.latest_message.sender}\n`);
     process.stdout.write(`  ${payload.latest_message.text}\n`);
+    if (payload.latest_message.bridge_status) {
+      process.stdout.write(`  bridge: ${payload.latest_message.bridge_status}`);
+      if (payload.latest_message.bridge_session_id) {
+        process.stdout.write(` (${payload.latest_message.bridge_session_id})`);
+      }
+      process.stdout.write('\n');
+    }
   }
 
   if (payload.warnings.length) {
@@ -387,20 +401,43 @@ async function handleRemoteRequest(req, res, state) {
       return;
     }
 
-    const message = await saveInboundMessage(state, req, {
+    const { message, bridgeRelay } = await saveInboundMessage(state, req, {
       sender: typeof payload.sender === 'string' && payload.sender.trim() ? payload.sender.trim() : 'phone',
       text
     });
 
     if (url.pathname === '/send') {
-      redirect(res, `/?token=${encodeURIComponent(state.token)}&sent=1`);
+      redirect(res, `/?token=${encodeURIComponent(state.token)}&bridge=${encodeURIComponent(bridgeRelay.status)}`);
+      return;
+    }
+
+    if (bridgeRelay.status === 'missing') {
+      writeJson(res, 409, {
+        ok: false,
+        error: bridgeRelay.error || 'No active bridge-owned Codex session is currently attachable.',
+        session_id: state.session.session_id,
+        message_id: message.message_id,
+        bridge: buildRemoteBridgeResponsePayload(bridgeRelay)
+      });
+      return;
+    }
+
+    if (bridgeRelay.status === 'attach_failed') {
+      writeJson(res, 502, {
+        ok: false,
+        error: bridgeRelay.error || 'Failed to relay the message into the active bridge session.',
+        session_id: state.session.session_id,
+        message_id: message.message_id,
+        bridge: buildRemoteBridgeResponsePayload(bridgeRelay)
+      });
       return;
     }
 
     writeJson(res, 200, {
       ok: true,
       session_id: state.session.session_id,
-      message_id: message.message_id
+      message_id: message.message_id,
+      bridge: buildRemoteBridgeResponsePayload(bridgeRelay)
     });
     return;
   }
@@ -408,11 +445,11 @@ async function handleRemoteRequest(req, res, state) {
   if (method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
     const token = String(url.searchParams.get('token') || '');
     const messages = token === state.token ? await readMessageLog(state.messagesPath) : [];
-    const sent = url.searchParams.get('sent') === '1';
+    const bridgeStatus = String(url.searchParams.get('bridge') || '').trim();
     writeHtml(res, 200, renderRemotePage({
       token,
-      statusMessage: sent ? 'Message delivered to openCodex.' : '',
-      statusTone: sent ? 'success' : 'idle',
+      statusMessage: buildRemotePageStatusMessage(bridgeStatus),
+      statusTone: resolveRemotePageStatusTone(bridgeStatus),
       messages
     }));
     return;
@@ -428,6 +465,11 @@ async function handleRemoteRequest(req, res, state) {
 }
 
 async function saveInboundMessage(state, req, payload) {
+  const bridgeRelay = await relayRemoteMessageToActiveBridge({
+    text: payload.text,
+    sender: payload.sender,
+    remoteSessionId: state.session.session_id
+  });
   const message = {
     message_id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     session_id: state.session.session_id,
@@ -436,7 +478,11 @@ async function saveInboundMessage(state, req, payload) {
     text: payload.text,
     source: 'remote_http',
     remote_address: req.socket.remoteAddress || '',
-    user_agent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : ''
+    user_agent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : '',
+    bridge_status: bridgeRelay.status,
+    bridge_session_id: bridgeRelay.sessionId || '',
+    bridge_message_id: bridgeRelay.bridgeMessageId || '',
+    bridge_error: bridgeRelay.error || ''
   };
 
   await appendFile(state.messagesPath, `${JSON.stringify(message)}\n`, 'utf8');
@@ -450,7 +496,7 @@ async function saveInboundMessage(state, req, payload) {
     lastMessage: state.lastMessage
   });
   await saveSession(state.cwd, state.session);
-  return message;
+  return { message, bridgeRelay };
 }
 
 function buildRemoteRunningSummary({ host, port, messageCount, lastMessage }) {
@@ -462,6 +508,9 @@ function buildRemoteRunningSummary({ host, port, messageCount, lastMessage }) {
 
   if (lastMessage?.sender) {
     highlights.push(`Latest sender: ${lastMessage.sender}`);
+  }
+  if (lastMessage?.bridge_status) {
+    highlights.push(`Latest bridge relay: ${lastMessage.bridge_status}`);
   }
 
   return {
@@ -484,6 +533,9 @@ function buildRemoteCompletedSummary({ host, port, messageCount, lastMessage, re
 
   if (lastMessage?.sender) {
     highlights.push(`Latest sender: ${lastMessage.sender}`);
+  }
+  if (lastMessage?.bridge_status) {
+    highlights.push(`Latest bridge relay: ${lastMessage.bridge_status}`);
   }
 
   return {
@@ -820,6 +872,21 @@ function buildRemoteSelectionWarnings(selection, sessionStatus) {
   return warnings;
 }
 
+function buildRemoteBridgeWarnings(bridgeAttach, sessionStatus) {
+  const warnings = [];
+  if (sessionStatus !== 'running') {
+    return warnings;
+  }
+  if (bridgeAttach.status === 'missing') {
+    warnings.push('No active bridge-owned Codex session is currently attachable for remote/mobile control.');
+    return warnings;
+  }
+  if (!bridgeAttach.attachable) {
+    warnings.push(`A bridge session was detected but it is not attachable right now (status: ${bridgeAttach.session_status || 'unknown'}).`);
+  }
+  return warnings;
+}
+
 function buildRemoteSuccessChecks({ host, port, urls }) {
   const checks = [];
   const primaryUrl = urls[0] || (host && Number.isInteger(port) ? `http://${host}:${port}` : null);
@@ -838,6 +905,7 @@ function buildRemoteCommonFailures() {
     '401 Unauthorized: token mismatch between phone request and bridge process.',
     'Connection refused or timeout: bridge process stopped, wrong host/port, or local firewall blocks access.',
     'Phone cannot reach host: phone not on same private network or tunnel/VPN route is missing.',
+    'Messages rejected for bridge attach: start a bridge-owned `codex ...` mainline first, then retry from mobile.',
     'Messages accepted but not visible in CLI: inspect remote session artifacts and run `opencodex session latest`.'
   ];
 }
@@ -983,6 +1051,118 @@ function getLanAddresses() {
     }
   }
   return addresses;
+}
+
+async function relayRemoteMessageToActiveBridge({ text, sender, remoteSessionId }) {
+  const activeBridgeSession = await inspectActiveBridgeSession();
+  const attachable = Boolean(
+    activeBridgeSession?.session_id
+    && activeBridgeSession?.record_found
+    && activeBridgeSession?.status === 'running'
+    && activeBridgeSession?.working_directory
+  );
+
+  if (!attachable) {
+    return {
+      status: 'missing',
+      sessionId: activeBridgeSession?.session_id || '',
+      error: 'No active bridge-owned Codex session is currently attachable.'
+    };
+  }
+
+  try {
+    const queued = await queueBridgeSessionMessage({
+      cwd: activeBridgeSession.working_directory,
+      sessionId: activeBridgeSession.session_id,
+      text,
+      source: 'remote_mobile',
+      metadata: {
+        provider: 'remote',
+        sender: sender || 'phone',
+        remote_session_id: remoteSessionId || ''
+      }
+    });
+    return {
+      status: 'attached',
+      sessionId: activeBridgeSession.session_id,
+      bridgeMessageId: queued.message.message_id
+    };
+  } catch (error) {
+    return {
+      status: 'attach_failed',
+      sessionId: activeBridgeSession.session_id,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+async function inspectRemoteBridgeAttach() {
+  const activeBridgeSession = await inspectActiveBridgeSession();
+  if (!activeBridgeSession?.session_id) {
+    return {
+      status: 'missing',
+      attachable: false,
+      session_id: '',
+      session_status: '',
+      working_directory: '',
+      inbox_count: 0,
+      delivered_count: 0
+    };
+  }
+
+  return {
+    status: activeBridgeSession.record_found && activeBridgeSession.status === 'running'
+      ? 'attached'
+      : 'blocked',
+    attachable: Boolean(activeBridgeSession.record_found && activeBridgeSession.status === 'running'),
+    session_id: activeBridgeSession.session_id,
+    session_status: activeBridgeSession.status || '',
+    working_directory: activeBridgeSession.working_directory || '',
+    inbox_count: Number.isInteger(activeBridgeSession.inbox_count) ? activeBridgeSession.inbox_count : 0,
+    delivered_count: Number.isInteger(activeBridgeSession.delivered_count) ? activeBridgeSession.delivered_count : 0
+  };
+}
+
+function buildRemoteBridgeResponsePayload(bridgeRelay) {
+  return {
+    status: bridgeRelay.status,
+    session_id: bridgeRelay.sessionId || '',
+    message_id: bridgeRelay.bridgeMessageId || '',
+    error: bridgeRelay.error || ''
+  };
+}
+
+function buildRemotePageStatusMessage(bridgeStatus) {
+  if (bridgeStatus === 'attached') {
+    return 'Message relayed into the active Codex mainline.';
+  }
+  if (bridgeStatus === 'missing') {
+    return 'No attachable Codex mainline is running right now. Start a bridge-owned `codex ...` session first.';
+  }
+  if (bridgeStatus === 'attach_failed') {
+    return 'A Codex mainline was detected, but the message could not be relayed into it.';
+  }
+  return '';
+}
+
+function resolveRemotePageStatusTone(bridgeStatus) {
+  if (bridgeStatus === 'attached') {
+    return 'success';
+  }
+  if (bridgeStatus === 'missing' || bridgeStatus === 'attach_failed') {
+    return 'error';
+  }
+  return 'idle';
+}
+
+function renderRemoteBridgeAttachText(bridgeAttach) {
+  if (!bridgeAttach || bridgeAttach.status === 'missing') {
+    return 'no attachable bridge-owned session';
+  }
+  if (!bridgeAttach.attachable) {
+    return `detected ${bridgeAttach.session_id || 'bridge-session'} but not attachable (${bridgeAttach.session_status || 'unknown'})`;
+  }
+  return `attached to ${bridgeAttach.session_id}`;
 }
 
 function renderRemotePage({ token, statusMessage, statusTone, messages }) {
