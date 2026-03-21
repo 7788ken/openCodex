@@ -369,6 +369,25 @@ async function handleRemoteRequest(req, res, state) {
     return;
   }
 
+  if (method === 'GET' && url.pathname === '/api/status') {
+    if (!isAuthorized(req, url, null, state.token)) {
+      writeJson(res, 401, { ok: false, error: 'Unauthorized' });
+      return;
+    }
+    const messages = await readMessageLog(state.messagesPath);
+    const latestMessage = messages.length ? messages[messages.length - 1] : null;
+    const bridgeAttach = await inspectRemoteBridgeAttach();
+    writeJson(res, 200, {
+      ok: true,
+      remote_session_id: state.session.session_id,
+      remote_status: state.session.status,
+      message_count: messages.length,
+      latest_message: latestMessage || null,
+      bridge_attach: bridgeAttach
+    });
+    return;
+  }
+
   if (method === 'POST' && (url.pathname === '/api/messages' || url.pathname === '/send')) {
     const bodyText = await readRequestBody(req);
     const payload = parseRequestPayload(req, bodyText);
@@ -1106,7 +1125,8 @@ async function inspectRemoteBridgeAttach() {
       session_status: '',
       working_directory: '',
       inbox_count: 0,
-      delivered_count: 0
+      delivered_count: 0,
+      recent_output_lines: []
     };
   }
 
@@ -1119,7 +1139,10 @@ async function inspectRemoteBridgeAttach() {
     session_status: activeBridgeSession.status || '',
     working_directory: activeBridgeSession.working_directory || '',
     inbox_count: Number.isInteger(activeBridgeSession.inbox_count) ? activeBridgeSession.inbox_count : 0,
-    delivered_count: Number.isInteger(activeBridgeSession.delivered_count) ? activeBridgeSession.delivered_count : 0
+    delivered_count: Number.isInteger(activeBridgeSession.delivered_count) ? activeBridgeSession.delivered_count : 0,
+    recent_output_lines: Array.isArray(activeBridgeSession.recent_output_lines)
+      ? activeBridgeSession.recent_output_lines
+      : []
   };
 }
 

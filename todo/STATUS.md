@@ -12,6 +12,7 @@
   - `opencodex remote serve` now relays inbound mobile messages into the active bridge-owned Codex session through the same live-session inbox contract
   - remote HTTP submissions now fail closed with explicit bridge-attach errors when no active bridge-owned session is attachable
   - `opencodex remote status` now reports current bridge attachability and surfaces the latest message relay status
+  - token-protected `GET /api/status` on the remote bridge now exposes the active bridge attach state plus recent bridge output lines for phone-side polling
   - validated with `node --test tests/remote.test.js` and `node --test tests/bridge.test.js`
 - Extended `T021` Phase 3 snapshot visibility for bridge-owned sessions:
   - added `opencodex bridge tail` to inspect recent output from a bridge-owned session

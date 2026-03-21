@@ -97,6 +97,7 @@ test('remote serve relays token-authenticated mobile messages into the active br
   assert.equal(status.code, 0);
   const statusPayload = JSON.parse(status.stdout);
   assert.ok(statusPayload.bridge_attach);
+  assert.ok(Array.isArray(statusPayload.bridge_attach.recent_output_lines));
   assert.equal(statusPayload.latest_message.bridge_status, 'attached');
   assert.equal(statusPayload.latest_message.bridge_session_id, activeBridgeSessionId);
 
@@ -174,6 +175,7 @@ test('remote serve fails closed when no active bridge session is attachable', as
   assert.equal(status.code, 0);
   const statusPayload = JSON.parse(status.stdout);
   assert.equal(statusPayload.bridge_attach.status, 'missing');
+  assert.deepEqual(statusPayload.bridge_attach.recent_output_lines, []);
   assert.ok(statusPayload.warnings.some((line) => line.includes('No active bridge-owned Codex session')));
 
   child.kill('SIGTERM');
@@ -221,6 +223,186 @@ test('remote inbox returns the latest received messages in json mode', async () 
   assert.equal(payload.session_selection.active_candidate_count, 0);
   assert.equal(payload.count, 1);
   assert.equal(payload.messages[0].text, 'second');
+});
+
+test('remote serve exposes active bridge state through /api/status and enforces token auth', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-api-status-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-api-status-home-'));
+  const token = 'test-remote-api-status-token';
+
+  await chmod(liveFixture, 0o755);
+
+  const register = await runCli(['bridge', 'register-codex', '--path', liveFixture, '--json', '--cwd', cwd], {
+    HOME: homeDir
+  });
+  assert.equal(register.code, 0);
+
+  const bridgeChild = spawn('node', [cli, 'bridge', 'exec-codex', '--bridge-stdin'], {
+    cwd,
+    env: { ...process.env, HOME: homeDir },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  const bridgeExitPromise = waitForExit(bridgeChild);
+
+  let bridgeStdout = '';
+  let bridgeStderr = '';
+  bridgeChild.stdout.on('data', (chunk) => {
+    bridgeStdout += chunk.toString();
+  });
+  bridgeChild.stderr.on('data', (chunk) => {
+    bridgeStderr += chunk.toString();
+  });
+
+  let activeBridgeSessionId = '';
+  await waitForValue(async () => {
+    const status = await runCli(['bridge', 'status', '--json', '--cwd', cwd], {
+      HOME: homeDir
+    });
+    const payload = JSON.parse(status.stdout || '{}');
+    activeBridgeSessionId = payload?.active_session?.session_id || '';
+    return activeBridgeSessionId;
+  }, 'active bridge session');
+
+  const child = spawn('node', [cli, 'remote', 'serve', '--cwd', cwd, '--host', '127.0.0.1', '--port', '0', '--token', token], {
+    env: { ...process.env, HOME: homeDir },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  const port = await waitForPort(() => extractPort(stdout));
+  const sessionId = await waitForSessionId(() => extractSessionId(stdout));
+
+  const unauthorized = await fetch(`http://127.0.0.1:${port}/api/status`);
+  assert.equal(unauthorized.status, 401);
+
+  const initialStatusPayload = await waitForValue(async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/status?token=${token}`);
+    if (response.status !== 200) {
+      return '';
+    }
+    const payload = await response.json();
+    if (!payload?.bridge_attach?.recent_output_lines?.some((line) => line.includes('mock bridge stdin ready'))) {
+      return '';
+    }
+    return payload;
+  }, 'remote api status attached');
+
+  assert.equal(initialStatusPayload.ok, true);
+  assert.equal(initialStatusPayload.remote_session_id, sessionId);
+  assert.equal(initialStatusPayload.remote_status, 'running');
+  assert.equal(initialStatusPayload.message_count, 0);
+  assert.equal(initialStatusPayload.latest_message, null);
+  assert.equal(initialStatusPayload.bridge_attach.status, 'attached');
+  assert.equal(initialStatusPayload.bridge_attach.attachable, true);
+  assert.equal(initialStatusPayload.bridge_attach.session_id, activeBridgeSessionId);
+  assert.ok(initialStatusPayload.bridge_attach.recent_output_lines.some((line) => line.includes('mock bridge stdin ready')));
+
+  const accepted = await fetch(`http://127.0.0.1:${port}/api/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token, sender: 'phone', text: 'Expose the current bridge output.' })
+  });
+  assert.equal(accepted.status, 200);
+
+  const relayedStatusPayload = await waitForValue(async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/status?token=${token}`);
+    if (response.status !== 200) {
+      return '';
+    }
+    const payload = await response.json();
+    if (payload?.latest_message?.text !== 'Expose the current bridge output.') {
+      return '';
+    }
+    return payload;
+  }, 'remote api status relayed message');
+
+  assert.equal(relayedStatusPayload.message_count, 1);
+  assert.equal(relayedStatusPayload.latest_message.bridge_status, 'attached');
+  assert.equal(relayedStatusPayload.latest_message.bridge_session_id, activeBridgeSessionId);
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+  assert.match(stdout, /Remote bridge started/);
+  assert.match(stdout, /Remote bridge stopped/);
+
+  const bridgeExitCode = await bridgeExitPromise;
+  assert.equal(bridgeExitCode, 0);
+  assert.equal(bridgeStderr, '');
+  assert.match(bridgeStdout, /received: Expose the current bridge output\./);
+});
+
+test('remote serve /api/status reports missing bridge state when no active bridge session exists', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-api-status-missing-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencodex-remote-api-status-missing-home-'));
+  const token = 'test-remote-api-status-missing-token';
+  const child = spawn('node', [cli, 'remote', 'serve', '--cwd', cwd, '--host', '127.0.0.1', '--port', '0', '--token', token], {
+    env: { ...process.env, HOME: homeDir },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  const port = await waitForPort(() => extractPort(stdout));
+
+  const unauthorized = await fetch(`http://127.0.0.1:${port}/api/status`);
+  assert.equal(unauthorized.status, 401);
+
+  const initialStatus = await fetch(`http://127.0.0.1:${port}/api/status?token=${token}`);
+  assert.equal(initialStatus.status, 200);
+  const initialPayload = await initialStatus.json();
+  assert.equal(initialPayload.ok, true);
+  assert.equal(initialPayload.remote_status, 'running');
+  assert.equal(initialPayload.message_count, 0);
+  assert.equal(initialPayload.latest_message, null);
+  assert.equal(initialPayload.bridge_attach.status, 'missing');
+  assert.equal(initialPayload.bridge_attach.attachable, false);
+  assert.deepEqual(initialPayload.bridge_attach.recent_output_lines, []);
+
+  const rejected = await fetch(`http://127.0.0.1:${port}/api/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token, sender: 'phone', text: 'Continue the active Codex mainline.' })
+  });
+  assert.equal(rejected.status, 409);
+
+  const finalStatusPayload = await waitForValue(async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/status?token=${token}`);
+    if (response.status !== 200) {
+      return '';
+    }
+    const payload = await response.json();
+    if (payload?.latest_message?.text !== 'Continue the active Codex mainline.') {
+      return '';
+    }
+    return payload;
+  }, 'remote api status missing bridge relay');
+
+  assert.equal(finalStatusPayload.message_count, 1);
+  assert.equal(finalStatusPayload.latest_message.bridge_status, 'missing');
+  assert.equal(finalStatusPayload.bridge_attach.status, 'missing');
+  assert.deepEqual(finalStatusPayload.bridge_attach.recent_output_lines, []);
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
 });
 
 test('remote inbox/status prefer an active remote session over a newer completed one', async () => {

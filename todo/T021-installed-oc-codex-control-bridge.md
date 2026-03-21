@@ -151,6 +151,7 @@ Deliverables:
   - no attachable session
   - multiple candidates blocked by policy
 - remote/mobile control routing through the same live-session inbox
+- a remote/mobile polling surface that exposes the active bridge session state and recent output snippets without opening a parallel workflow lane
 - session history views that show external commands as part of the same mainline session
 
 Rules:
