@@ -209,13 +209,25 @@ test('bridge send injects external input into the active live session and bridge
   assert.equal(inboxPayload.messages[0].text, 'continue from tg');
   assert.ok(inboxPayload.messages[0].delivered_at);
 
+  const tail = await runCli(['bridge', 'tail', '--cwd', cwd, '--session-id', activeSessionId, '--json'], {
+    HOME: homeDir
+  });
+  assert.equal(tail.code, 0);
+  const tailPayload = JSON.parse(tail.stdout);
+  assert.equal(tailPayload.session_id, activeSessionId);
+  assert.ok(tailPayload.lines.some((line) => line.includes('mock bridge stdin ready')));
+  assert.ok(tailPayload.lines.some((line) => line.includes('received: continue from tg')));
+
   const runtimePath = path.join(cwd, '.opencodex', 'sessions', activeSessionId, 'artifacts', 'bridge-runtime.json');
   const controlEventsPath = path.join(cwd, '.opencodex', 'sessions', activeSessionId, 'artifacts', 'bridge-control-events.jsonl');
+  const outputLogPath = path.join(cwd, '.opencodex', 'sessions', activeSessionId, 'artifacts', 'bridge-output.log');
   const runtimePayload = JSON.parse(await readFile(runtimePath, 'utf8'));
   const controlEventsText = await readFile(controlEventsPath, 'utf8');
+  const outputLogText = await readFile(outputLogPath, 'utf8');
 
   assert.match(runtimePayload.transport, /_inbox$/);
   assert.match(controlEventsText, /bridge\.inbox\.delivered/);
+  assert.match(outputLogText, /received: continue from tg/);
 });
 
 function runCli(args, extraEnv = {}) {

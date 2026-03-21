@@ -29,6 +29,13 @@ const STATUS_OPTION_SPEC = {
   'bin-dir': { type: 'string' }
 };
 
+const TAIL_OPTION_SPEC = {
+  json: { type: 'boolean' },
+  cwd: { type: 'string' },
+  limit: { type: 'string' },
+  'session-id': { type: 'string' }
+};
+
 const INBOX_OPTION_SPEC = {
   json: { type: 'boolean' },
   cwd: { type: 'string' },
@@ -68,6 +75,7 @@ export async function runBridgeCommand(args) {
     process.stdout.write(
       'Usage:\n' +
       '  opencodex bridge status [--json] [--cwd <dir>] [--bin-dir <dir>]\n' +
+      '  opencodex bridge tail [--json] [--cwd <dir>] [--limit <n>] [--session-id <id|active|latest>]\n' +
       '  opencodex bridge inbox [--json] [--cwd <dir>] [--limit <n>] [--session-id <id|active|latest>]\n' +
       '  opencodex bridge send [--json] [--cwd <dir>] [--session-id <id|active>] <text>\n' +
       '  opencodex bridge register-codex [--path <path>] [--json] [--cwd <dir>]\n' +
@@ -79,6 +87,11 @@ export async function runBridgeCommand(args) {
 
   if (subcommand === 'status') {
     await runBridgeStatus(rest);
+    return;
+  }
+
+  if (subcommand === 'tail') {
+    await runBridgeTail(rest);
     return;
   }
 
@@ -147,6 +160,50 @@ async function runBridgeStatus(args) {
   });
 
   renderBridgePayload(payload, options.json);
+}
+
+async function runBridgeTail(args) {
+  const { options, positionals } = parseOptions(args, TAIL_OPTION_SPEC);
+  if (positionals.length) {
+    throw new Error('`opencodex bridge tail` does not accept positional arguments');
+  }
+
+  const cwd = path.resolve(options.cwd || process.cwd());
+  const homeDir = os.homedir();
+  const limit = parsePositiveInteger(options.limit || '20', '--limit');
+  const selection = await resolvePreferredBridgeSession({
+    cwd,
+    homeDir,
+    commandLabel: 'opencodex bridge tail',
+    sessionIdSelector: typeof options['session-id'] === 'string' ? options['session-id'].trim() : '',
+    requireActive: false
+  });
+  const runtimePaths = getBridgeRuntimePaths(selection.session.working_directory, selection.session.session_id);
+  const lines = await readBridgeOutputTail(runtimePaths.outputLogPath, limit);
+  const payload = {
+    ok: true,
+    action: 'tail',
+    session_id: selection.session.session_id,
+    session_selection: selection.selection,
+    count: lines.length,
+    lines
+  };
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+
+  process.stdout.write(`Bridge tail for ${payload.session_id}\n`);
+  process.stdout.write(`Session selection: ${renderBridgeSessionSelectionText(payload.session_selection)}\n`);
+  if (!lines.length) {
+    process.stdout.write('\nNo bridge output captured yet.\n');
+    return;
+  }
+  process.stdout.write('\n');
+  for (const line of lines) {
+    process.stdout.write(`${line}\n`);
+  }
 }
 
 async function runBridgeInbox(args) {
@@ -373,6 +430,7 @@ async function runBridgeExecCodex(args) {
   const eventsPath = path.join(sessionDir, 'events.jsonl');
   const inboxPath = path.join(sessionDir, 'artifacts', 'bridge-inbox.jsonl');
   const controlEventsPath = path.join(sessionDir, 'artifacts', 'bridge-control-events.jsonl');
+  const outputLogPath = path.join(sessionDir, 'artifacts', 'bridge-output.log');
   session.summary = buildBridgeSessionSummary({
     status: 'running',
     realCodexPath,
@@ -398,6 +456,11 @@ async function runBridgeExecCodex(args) {
       type: 'bridge_control_events',
       path: controlEventsPath,
       description: 'Bridge control delivery events for the running session.'
+    },
+    {
+      type: 'bridge_output_log',
+      path: outputLogPath,
+      description: 'Captured bridge session output stream.'
     }
   ];
   await saveSession(cwd, session);
@@ -433,9 +496,10 @@ async function runBridgeExecCodex(args) {
     updated_at: startedAt,
     bridge_state_path: bridgeRecord.statePath,
     status: 'running',
-    pid: 0,
-    transport: 'pty_inbox'
-  });
+      pid: 0,
+      transport: 'pty_inbox',
+      output_log_path: outputLogPath
+    });
 
   let runtime = null;
   try {
@@ -449,7 +513,8 @@ async function runBridgeExecCodex(args) {
         OPENCODEX_PARENT_SESSION_ID: session.session_id
       },
       inboxPath,
-      controlEventsPath
+      controlEventsPath,
+      outputLogPath
     });
 
     await writeJson(runtimeArtifactPath, {
@@ -466,7 +531,8 @@ async function runBridgeExecCodex(args) {
       pid: runtime.child.pid || 0,
       transport: runtime.transport,
       inbox_path: inboxPath,
-      control_events_path: controlEventsPath
+      control_events_path: controlEventsPath,
+      output_log_path: outputLogPath
     });
     await writeJson(activeSessionPath, {
       session_id: session.session_id,
@@ -477,7 +543,8 @@ async function runBridgeExecCodex(args) {
       bridge_state_path: bridgeRecord.statePath,
       status: 'running',
       pid: runtime.child.pid || 0,
-      transport: runtime.transport
+      transport: runtime.transport,
+      output_log_path: outputLogPath
     });
 
     const result = await runtime.completion;
@@ -514,6 +581,7 @@ async function runBridgeExecCodex(args) {
       transport: runtime.transport,
       inbox_path: inboxPath,
       control_events_path: controlEventsPath,
+      output_log_path: outputLogPath,
       exit_code: result.code,
       signal: result.signal || ''
     });
@@ -556,6 +624,7 @@ async function runBridgeExecCodex(args) {
       transport: runtime?.transport || '',
       inbox_path: inboxPath,
       control_events_path: controlEventsPath,
+      output_log_path: outputLogPath,
       error: error instanceof Error ? error.message : String(error)
     });
     await saveSession(cwd, session);
@@ -769,6 +838,12 @@ function renderBridgePayload(payload, asJson) {
     if (Number.isInteger(payload.active_session.delivered_count)) {
       lines.push(`Active Session Delivered: ${payload.active_session.delivered_count}`);
     }
+    if (Array.isArray(payload.active_session.recent_output_lines) && payload.active_session.recent_output_lines.length) {
+      lines.push('Recent Output:');
+      for (const line of payload.active_session.recent_output_lines) {
+        lines.push(`- ${line}`);
+      }
+    }
   }
 
   if (payload.detected_codex?.resolved_path) {
@@ -844,10 +919,10 @@ function spawnBridgeRuntime(command, args, options = {}) {
   });
 
   child.stdout.on('data', (chunk) => {
-    process.stdout.write(chunk);
+    void teeBridgeOutput(chunk, process.stdout, options.outputLogPath);
   });
   child.stderr.on('data', (chunk) => {
-    process.stderr.write(chunk);
+    void teeBridgeOutput(chunk, process.stderr, options.outputLogPath);
   });
 
   const completion = new Promise((resolve, reject) => {
@@ -889,10 +964,10 @@ function spawnPipeBridgeRuntime(command, args, options = {}) {
   });
 
   child.stdout.on('data', (chunk) => {
-    process.stdout.write(chunk);
+    void teeBridgeOutput(chunk, process.stdout, options.outputLogPath);
   });
   child.stderr.on('data', (chunk) => {
-    process.stderr.write(chunk);
+    void teeBridgeOutput(chunk, process.stderr, options.outputLogPath);
   });
 
   const completion = new Promise((resolve, reject) => {
@@ -955,6 +1030,7 @@ async function inspectActiveBridgeSession({ bridgeState, statePath = '', homeDir
     const runtimePaths = session ? getBridgeRuntimePaths(sessionCwd, sessionId) : null;
     const inboxMessages = runtimePaths ? await readBridgeInboxMessages(runtimePaths.inboxPath) : [];
     const deliveredByMessageId = runtimePaths ? await readBridgeDeliveryMap(runtimePaths.controlEventsPath) : new Map();
+    const recentOutputLines = runtimePaths ? await readBridgeOutputTail(runtimePaths.outputLogPath, 5) : [];
     return {
       session_id: sessionId,
       working_directory: session?.working_directory || sessionCwd,
@@ -970,7 +1046,8 @@ async function inspectActiveBridgeSession({ bridgeState, statePath = '', homeDir
       record_found: Boolean(session),
       state_path: activeSessionPath,
       inbox_count: inboxMessages.length,
-      delivered_count: deliveredByMessageId.size
+      delivered_count: deliveredByMessageId.size,
+      recent_output_lines: recentOutputLines
     };
   } catch {
     return {
@@ -1162,7 +1239,8 @@ function getBridgeRuntimePaths(cwd, sessionId) {
     sessionDir,
     inboxPath: path.join(sessionDir, 'artifacts', 'bridge-inbox.jsonl'),
     controlEventsPath: path.join(sessionDir, 'artifacts', 'bridge-control-events.jsonl'),
-    runtimePath: path.join(sessionDir, 'artifacts', 'bridge-runtime.json')
+    runtimePath: path.join(sessionDir, 'artifacts', 'bridge-runtime.json'),
+    outputLogPath: path.join(sessionDir, 'artifacts', 'bridge-output.log')
   };
 }
 
@@ -1205,6 +1283,19 @@ async function readBridgeRuntimeJsonl(filePath) {
 async function appendBridgeRuntimeJsonl(filePath, value) {
   await ensureDir(path.dirname(filePath));
   await appendFile(filePath, `${JSON.stringify(value)}\n`, 'utf8');
+}
+
+async function readBridgeOutputTail(filePath, limit) {
+  const raw = await readTextIfExists(filePath);
+  if (!raw) {
+    return [];
+  }
+
+  return sanitizeBridgeOutputText(raw)
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .slice(-Math.max(1, limit));
 }
 
 async function resolvePreferredBridgeSession({
@@ -1314,4 +1405,23 @@ async function listBridgeSessionsForLookup(cwd) {
   }
 
   return sessions.sort((left, right) => String(right.updated_at || '').localeCompare(String(left.updated_at || '')));
+}
+
+async function teeBridgeOutput(chunk, stream, outputLogPath = '') {
+  const text = chunk.toString();
+  stream.write(text);
+  if (!outputLogPath) {
+    return;
+  }
+
+  const normalized = sanitizeBridgeOutputText(text);
+  if (normalized) {
+    await appendFile(outputLogPath, normalized, 'utf8');
+  }
+}
+
+function sanitizeBridgeOutputText(text) {
+  return String(text || '')
+    .replace(/\u0008/g, '')
+    .replace(/\r/g, '');
 }

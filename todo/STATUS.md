@@ -2,6 +2,11 @@
 
 ## 2026-03-21
 
+- Extended `T021` Phase 3 snapshot visibility for bridge-owned sessions:
+  - added `opencodex bridge tail` to inspect recent output from a bridge-owned session
+  - bridge runtime now captures child stdout/stderr into `bridge-output.log`
+  - `opencodex bridge status` now surfaces recent output lines for the active bridge-owned session
+  - validated with `node --test tests/bridge.test.js` and `node --test tests/doctor.test.js`
 - Extended `T021` Phase 3 with the first external control path for bridge-owned live sessions:
   - added `opencodex bridge send` to queue external messages into the active bridge-owned session
   - added `opencodex bridge inbox` to inspect queued and delivered bridge messages

@@ -111,4 +111,4 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 - `T019` — implemented
 - `T017` — detached install boundary plus bundle/install/status/prune flow implemented (status now includes prune-preview lifecycle signals and `--keep` preview override); broader packaging polish still pending
 - `T020` — partially implemented: boundary docs are in place and `remote status` now provides deployment checks plus troubleshooting hints; broader control-plane follow-through remains
-- `T021` — partially implemented: installed bridge state, transparent `codex` shim install/repair/status flow, bridge-owned live-session records, and the first external send/inbox path are in place; the remaining gap is a richer attach/snapshot runtime and remote attach path
+- `T021` — partially implemented: installed bridge state, transparent `codex` shim install/repair/status flow, bridge-owned live-session records, external send/inbox control, and recent-output snapshots are in place; the remaining gap is durable bidirectional attach semantics plus remote/Telegram routing
