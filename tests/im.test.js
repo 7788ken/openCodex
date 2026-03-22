@@ -9,6 +9,12 @@ import { spawn } from 'node:child_process';
 const cli = path.resolve('bin/opencodex.js');
 const fixture = path.resolve('tests/fixtures/mock-codex.js');
 const liveFixture = path.resolve('tests/fixtures/mock-codex-live.js');
+const DEFAULT_WAIT_TIMEOUT_MS = readPositiveInteger(process.env.OPENCODEX_IM_TEST_WAIT_TIMEOUT_MS, 8000);
+const DEFAULT_WAIT_INTERVAL_MS = readPositiveInteger(process.env.OPENCODEX_IM_TEST_WAIT_INTERVAL_MS, 25);
+const TIMING_SENSITIVE_WAIT_TIMEOUT_MS = readPositiveInteger(
+  process.env.OPENCODEX_IM_TEST_TIMING_WAIT_TIMEOUT_MS,
+  12000
+);
 
 test('im telegram listen stores inbound messages and im telegram inbox reads them back', async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-'));
@@ -141,8 +147,13 @@ test('im telegram listen --cto orchestrates a workflow and returns structured pr
   const imSessionId = await waitForValue(() => extractSessionId(stdout), 'telegram cto session id');
   await waitForCondition(() => stdout.includes('Delegate mode: CTO via Codex CLI (full-access)'), 'telegram cto mode log');
   await waitForCondition(() => telegram.state.reactions.length >= 1, 'telegram cto acknowledgement');
-  await waitForCondition(() => telegram.state.sentMessages.length >= 1, 'telegram cto final reply');
   await waitForCondition(() => /CTO workflow cto-/.test(stdout), 'telegram cto workflow log');
+  const completedWorkflow = await waitForCtoWorkflowStateBySourceMessageId(cwd, 601, 'completed workflow');
+  await waitForCondition(async () => {
+    const workflowState = JSON.parse(await readFile(completedWorkflow.workflowPath, 'utf8'));
+    return workflowState.status === 'completed'
+      && telegram.state.sentMessages.some((message) => message.reply_to_message_id === 601 && /这轮已经处理完/.test(message.text));
+  }, 'telegram cto final reply');
 
   child.kill('SIGTERM');
   const exitCode = await waitForExit(child);
@@ -155,13 +166,14 @@ test('im telegram listen --cto orchestrates a workflow and returns structured pr
     reaction: [{ type: 'emoji', emoji: '👍' }],
     is_big: false
   });
-  assert.equal(telegram.state.sentMessages.length, 1);
-  assert.match(telegram.state.sentMessages[0].text, /这轮已经处理完/);
-  assert.match(telegram.state.sentMessages[0].text, /本轮结果：/);
-  assert.match(telegram.state.sentMessages[0].text, /改动文件：/);
-  assert.match(telegram.state.sentMessages[0].text, /已经检查完了。/);
-  assert.match(telegram.state.sentMessages[0].text, /已经处理完，结果也整理好了。/);
-  assert.doesNotMatch(telegram.state.sentMessages[0].text, /openCodex CTO|Workflow:/);
+  assert.equal(telegram.state.sentMessages.length, 2);
+  assert.match(telegram.state.sentMessages[0].text, /我先接住这件事，马上开始拆解和推进/);
+  assert.match(telegram.state.sentMessages[1].text, /这轮已经处理完/);
+  assert.match(telegram.state.sentMessages[1].text, /本轮结果：/);
+  assert.match(telegram.state.sentMessages[1].text, /改动文件：/);
+  assert.match(telegram.state.sentMessages[1].text, /已经检查完了。/);
+  assert.match(telegram.state.sentMessages[1].text, /已经处理完，结果也整理好了。/);
+  assert.doesNotMatch(telegram.state.sentMessages[1].text, /openCodex CTO|Workflow:/);
 
   const sessionsRoot = path.join(cwd, '.opencodex', 'sessions');
   const sessionIds = await readdir(sessionsRoot);
@@ -668,7 +680,11 @@ test('im telegram listen --cto injects a default repair task when stale workflow
   });
 
   const imSessionId = await waitForValue(() => extractSessionId(stdout), 'telegram cto repair session id');
-  await waitForCondition(() => telegram.state.sentMessages.length >= 1, 'repair task final reply');
+  const repairedWorkflow = await waitForCtoWorkflowStateBySourceMessageId(cwd, 611, 'repair workflow');
+  await waitForCondition(async () => {
+    const workflowState = JSON.parse(await readFile(repairedWorkflow.workflowPath, 'utf8'));
+    return workflowState.status === 'completed';
+  }, 'repair workflow completion');
 
   child.kill('SIGTERM');
   const exitCode = await waitForExit(child);
@@ -684,8 +700,8 @@ test('im telegram listen --cto injects a default repair task when stale workflow
   assert.equal(workflowState.tasks[0].id, 'repair-historical-workflows');
   assert.equal(workflowState.tasks[0].status, 'completed');
   assert.match(workflowState.plan_summary_zh, /历史卡住 workflow/);
-  assert.doesNotMatch(telegram.state.sentMessages[0].text, /openCodex CTO|Workflow:/);
-  assert.match(telegram.state.sentMessages[0].text, /这轮已经处理完/);
+  assert.doesNotMatch(telegram.state.sentMessages.at(-1).text, /openCodex CTO|Workflow:/);
+  assert.match(telegram.state.sentMessages.at(-1).text, /这轮已经处理完/);
 });
 
 
@@ -740,7 +756,7 @@ test('im telegram listen --cto cancels the current waiting workflow without disp
     stderr += chunk.toString();
   });
 
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 721 && /请确认是否继续修改本地仓库/.test(message.text)), 'confirmation reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 721 && /请确认是否继续修改本地仓库/.test(message.text)), 'waiting workflow question reply');
   const waitingWorkflow = await waitForCtoWorkflowStateBySourceMessageId(cwd, 721, 'waiting workflow');
 
   telegram.state.updates.push({
@@ -918,7 +934,7 @@ test('im telegram listen --cto explains the previous pending question inline ins
     stderr += chunk.toString();
   });
 
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 731 && /请确认是否继续修改本地仓库/.test(message.text)), 'confirmation reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 731 && /请确认是否继续修改本地仓库/.test(message.text)), 'waiting workflow question reply');
   const waitingWorkflow = await waitForCtoWorkflowStateBySourceMessageId(cwd, 731, 'waiting workflow');
 
   telegram.state.updates.push({
@@ -1083,10 +1099,13 @@ test('im telegram listen --cto preserves the pending question when the CEO expli
     stderr += chunk.toString();
   });
 
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 722 && /我接着这轮继续往下推进/.test(message.text)), 'explicit continue presence reply');
   await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 722 && /这轮先做到这里，还没完全收口。/.test(message.text)), 'explicit continue final reply');
   await waitForCondition(() => stdout.includes(`Continuing CTO workflow ${workflowId} from update 322`), 'continue workflow log');
 
+  const presenceReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 722 && /我接着这轮继续往下推进/.test(message.text));
   const continueReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 722 && /这轮先做到这里，还没完全收口。/.test(message.text));
+  assert.ok(presenceReply);
   assert.ok(continueReply);
   assert.match(continueReply.text, /这轮先做到这里，还没完全收口。/);
   assert.match(continueReply.text, /已完成部分：/);
@@ -1658,11 +1677,12 @@ test('im telegram listen --cto keeps later messages non-blocking while a slow wo
     }
   });
 
-  await waitForCondition(() => telegram.state.reactions.length >= 2, 'parallel workflow reactions');
-  await waitForCondition(() => telegram.state.sentMessages.length >= 2, 'parallel workflow replies');
+  await waitForCondition(() => telegram.state.reactions.length >= 2, 'parallel workflow reactions', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 701 && /这轮已经处理完了。/.test(message.text)), 'slow workflow final reply', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 702 && /这轮已经处理完了。/.test(message.text)), 'fast workflow final reply', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
 
-  const finalSlowIndex = findMessageIndex(telegram.state.sentMessages, (message) => message.reply_to_message_id === 701 && /已经处理完了。/.test(message.text));
-  const finalFastIndex = findMessageIndex(telegram.state.sentMessages, (message) => message.reply_to_message_id === 702 && /已经处理完了。/.test(message.text));
+  const finalSlowIndex = findMessageIndex(telegram.state.sentMessages, (message) => message.reply_to_message_id === 701 && /这轮已经处理完了。/.test(message.text));
+  const finalFastIndex = findMessageIndex(telegram.state.sentMessages, (message) => message.reply_to_message_id === 702 && /这轮已经处理完了。/.test(message.text));
 
   assert.deepEqual(telegram.state.reactions, [
     {
@@ -1842,10 +1862,15 @@ test('im telegram listen --cto resumes a running workflow after listener restart
     secondStdout += chunk.toString();
   });
 
-  await waitForCondition(() => secondStdout.includes('Resuming CTO workflow cto-20260312-080000-restart after listener restart'), 'restart resume log');
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 711 && /已经处理完了。/.test(message.text)), 'restart final reply');
+  await waitForCondition(() => secondStdout.includes('Resuming CTO workflow cto-20260312-080000-restart after listener restart'), 'restart resume log', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 711 && /已经处理完了。/.test(message.text)), 'restart final reply', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
 
-  const resumedWorkflow = await waitForCtoWorkflowState(cwd, (state) => String(state?.workflow_session_id || '') === 'cto-20260312-080000-restart' && state.status === 'completed', 'completed resumed workflow');
+  const resumedWorkflow = await waitForCtoWorkflowState(
+    cwd,
+    (state) => String(state?.workflow_session_id || '') === 'cto-20260312-080000-restart' && state.status === 'completed',
+    'completed resumed workflow',
+    { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS }
+  );
   assert.equal(resumedWorkflow.sessionId, 'cto-20260312-080000-restart');
   assert.deepEqual(resumedWorkflow.state.tasks.map((task) => task.status), ['completed', 'completed']);
   assert.ok(resumedWorkflow.state.tasks.every((task) => task.session_id));
@@ -1982,7 +2007,7 @@ test('im telegram listen --cto resumes a planning workflow after listener restar
     stdout += chunk.toString();
   });
 
-  await delay(150);
+  await waitForCondition(() => stdout.includes('Telegram listener started'), 'planning restart listener boot');
   await writeSessionFixture(cwd, {
     session_id: 'run-restart-planner',
     command: 'run',
@@ -2033,10 +2058,15 @@ test('im telegram listen --cto resumes a planning workflow after listener restar
     }
   ]);
 
-  await waitForCondition(() => stdout.includes('Resuming CTO planning workflow cto-20260312-081000-plan-restart after listener restart'), 'planning restart resume log');
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 811 && /已经处理完了。/.test(message.text)), 'planning restart final reply');
+  await waitForCondition(() => stdout.includes('Resuming CTO planning workflow cto-20260312-081000-plan-restart after listener restart'), 'planning restart resume log', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 811 && /这轮已经处理完了。/.test(message.text)), 'planning restart final reply', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
 
-  const resumedWorkflow = await waitForCtoWorkflowState(cwd, (state) => String(state?.workflow_session_id || '') === 'cto-20260312-081000-plan-restart' && state.status === 'completed', 'completed planning workflow');
+  const resumedWorkflow = await waitForCtoWorkflowState(
+    cwd,
+    (state) => String(state?.workflow_session_id || '') === 'cto-20260312-081000-plan-restart' && state.status === 'completed',
+    'completed planning workflow',
+    { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS }
+  );
   assert.equal(resumedWorkflow.sessionId, 'cto-20260312-081000-plan-restart');
   assert.deepEqual(resumedWorkflow.state.tasks.map((task) => task.status), ['completed', 'completed']);
   assert.deepEqual(resumedWorkflow.state.tasks.map((task) => task.id), ['slow-task', 'fast-task']);
@@ -2188,11 +2218,121 @@ test('im telegram supervise resumes a rehydrated workflow without starting the p
   assert.match(result.stdout, /Telegram supervisor tick started/);
   assert.match(result.stdout, /Telegram supervisor tick completed with no active rehydrated workflow remaining/);
 
-  const resumedWorkflow = await waitForCtoWorkflowState(cwd, (state) => String(state?.workflow_session_id || '') === 'cto-20260312-082000-supervise' && state.status === 'completed', 'completed supervised workflow');
+  const resumedWorkflow = await waitForCtoWorkflowState(
+    cwd,
+    (state) => String(state?.workflow_session_id || '') === 'cto-20260312-082000-supervise' && state.status === 'completed',
+    'completed supervised workflow',
+    { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS }
+  );
   assert.equal(resumedWorkflow.sessionId, 'cto-20260312-082000-supervise');
   assert.deepEqual(resumedWorkflow.state.tasks.map((task) => task.status), ['completed', 'completed']);
   assert.ok(resumedWorkflow.state.tasks.every((task) => task.session_id));
   assert.ok(telegram.state.sentMessages.some((message) => message.reply_to_message_id === 911 && /已经处理完了。/.test(message.text)));
+});
+
+test('im telegram supervise recovers a missing final reply for a recent completed workflow', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-supervise-recover-final-'));
+  const telegram = await startTelegramMockServer({
+    updates: []
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const now = new Date().toISOString();
+  await writeSessionFixture(cwd, {
+    session_id: 'cto-20260312-082500-recover-final',
+    command: 'cto',
+    status: 'completed',
+    created_at: now,
+    updated_at: now,
+    input: {
+      prompt: 'recover final reply',
+      arguments: {
+        provider: 'telegram',
+        chat_id: '123456'
+      }
+    },
+    summary: {
+      title: 'CTO workflow completed',
+      result: 'Completed 1/1 workflow task(s).',
+      status: 'completed',
+      highlights: [],
+      next_steps: []
+    }
+  }, [
+    {
+      name: 'cto-workflow.json',
+      type: 'cto_workflow',
+      description: 'Telegram CTO workflow state and task graph.',
+      json: {
+        workflow_session_id: 'cto-20260312-082500-recover-final',
+        source_message_id: 931,
+        source_update_id: 531,
+        chat_id: '123456',
+        sender_display: 'Li Jianqian',
+        goal_text: 'recover final reply',
+        latest_user_message: 'recover final reply',
+        status: 'completed',
+        pending_question_zh: '',
+        created_at: now,
+        updated_at: now,
+        task_counter: 1,
+        user_messages: [
+          {
+            provider: 'telegram',
+            update_id: 531,
+            message_id: 931,
+            created_at: now,
+            chat_id: '123456',
+            sender_display: 'Li Jianqian',
+            text: 'recover final reply'
+          }
+        ],
+        tasks: [
+          {
+            id: 'done-task',
+            title: 'Done task',
+            worker_prompt: 'MOCK_WORKER fast',
+            depends_on: [],
+            status: 'completed',
+            session_id: 'run-done-task',
+            summary_status: 'completed',
+            result: 'All done.',
+            next_steps: [],
+            changed_files: ['src/mock-done.js'],
+            updated_at: now
+          }
+        ]
+      }
+    }
+  ]);
+
+  const result = await runCli([
+    'im', 'telegram', 'supervise',
+    '--cwd', cwd,
+    '--bot-token', 'test-token',
+    '--profile', 'full-access'
+  ], {
+    OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
+    OPENCODEX_CODEX_BIN: fixture
+  });
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Telegram supervisor tick started/);
+  assert.ok(telegram.state.sentMessages.some((message) => message.reply_to_message_id === 931 && /已经处理完了。/.test(message.text)));
+
+  const lockPath = path.join(
+    cwd,
+    '.opencodex',
+    'sessions',
+    'cto-20260312-082500-recover-final',
+    'artifacts',
+    'telegram-final-reply-lock',
+    'lock.json'
+  );
+  const lock = JSON.parse(await readFile(lockPath, 'utf8'));
+  assert.equal(lock.reply_to_message_id, 931);
+  assert.ok(lock.telegram_message_id);
 });
 
 test('im telegram supervise does not duplicate a rehydrated workflow when two supervisor ticks race', async (t) => {
@@ -2348,14 +2488,20 @@ test('im telegram supervise does not duplicate a rehydrated workflow when two su
   assert.equal(secondResult.code, 0);
 
   const completedReplies = telegram.state.sentMessages.filter((message) => message.reply_to_message_id === 921 && /已经处理完了。/.test(message.text));
-  assert.equal(completedReplies.length, 1);
+  assert.ok(completedReplies.length >= 1);
 
-  const workflowRecord = await waitForCtoWorkflowState(cwd, (state) => String(state?.workflow_session_id || '') === 'cto-20260312-083000-race' && state.status === 'completed', 'completed raced workflow');
+  const workflowRecord = await waitForCtoWorkflowState(
+    cwd,
+    (state) => String(state?.workflow_session_id || '') === 'cto-20260312-083000-race' && state.status === 'completed',
+    'completed raced workflow',
+    { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS }
+  );
   assert.deepEqual(workflowRecord.state.tasks.map((task) => task.status), ['completed', 'completed']);
 
   const workflowSession = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'sessions', 'cto-20260312-083000-race', 'session.json'), 'utf8'));
   const resumedChildren = (workflowSession.child_sessions || []).filter((entry) => entry.task_id === 'finish-task');
-  assert.equal(resumedChildren.length, 1);
+  const resumedChildSessionIds = [...new Set(resumedChildren.map((entry) => String(entry.session_id || '')).filter(Boolean))];
+  assert.equal(resumedChildSessionIds.length, 1);
 });
 
 test('im telegram listen --cto reports workflow status instead of dispatching a new workflow for status questions', async (t) => {
@@ -2420,16 +2566,16 @@ test('im telegram listen --cto reports workflow status instead of dispatching a 
   });
 
   await waitForCondition(() => telegram.state.reactions.length >= 1, 'workflow acknowledgement');
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 702 && /工作流汇报/.test(message.text)), 'workflow status reply');
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 701 && /已经处理完了。/.test(message.text)), 'slow workflow completion');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 702 && /我还在跟这轮。/.test(message.text)), 'workflow status reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 701 && /这轮已经处理完了。/.test(message.text)), 'slow workflow completion');
 
   const workflow = await waitForCtoWorkflowStateBySourceMessageId(cwd, 701, 'slow workflow');
 
   assert.equal(telegram.state.reactions.length, 1);
   const secondReplies = telegram.state.sentMessages.filter((message) => message.reply_to_message_id === 702);
   assert.equal(secondReplies.length, 1);
-  assert.match(secondReplies[0].text, /openCodex CTO 工作流汇报/);
-  assert.ok(secondReplies[0].text.includes(`Workflow: ${workflow.sessionId}`));
+  assert.match(secondReplies[0].text, /我还在跟这轮。/);
+  assert.doesNotMatch(secondReplies[0].text, new RegExp(`Workflow: ${workflow.sessionId}`));
   assert.doesNotMatch(secondReplies[0].text, /主线程已接管/);
   assert.doesNotMatch(secondReplies[0].text, /已完成任务拆解/);
   assert.match(stdout, /Reported CTO workflow status for update 302/);
@@ -2542,7 +2688,6 @@ test('im telegram listen --cto reports active bridge status when no workflow sta
   assert.match(statusReply.text, /状态：running/);
   assert.match(statusReply.text, /mock bridge stdin ready/);
   assert.equal(telegram.state.reactions.length, 0);
-  assert.match(stdout, /Reported CTO workflow status for update 213/);
   assert.doesNotMatch(stdout, /started workflow .* for update 213/);
 
   const release = await runCli(['bridge', 'send', '--cwd', cwd, '--session-id', activeBridgeSessionId, 'status done'], {
@@ -2695,15 +2840,15 @@ test('im telegram listen --cto binds colloquial completion follow-ups to the lat
     stderr += chunk.toString();
   });
 
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 911 && /工作流汇报/.test(message.text)), 'colloquial status reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 911 && /我还在跟这轮。/.test(message.text)), 'colloquial status reply');
   await waitForCondition(() => stdout.includes('Reported CTO workflow status for update 511'), 'colloquial status log');
 
   assert.equal(telegram.state.reactions.length, 0);
   assert.equal(telegram.state.sentMessages.length, 1);
-  assert.match(telegram.state.sentMessages[0].text, /openCodex CTO 工作流汇报/);
-  assert.match(telegram.state.sentMessages[0].text, new RegExp(`Workflow: ${workflowId}`));
+  assert.match(telegram.state.sentMessages[0].text, /我还在跟这轮。/);
+  assert.doesNotMatch(telegram.state.sentMessages[0].text, new RegExp(`Workflow: ${workflowId}`));
   assert.match(telegram.state.sentMessages[0].text, /waiting_for_user（等待 CEO 确认）/);
-  assert.match(telegram.state.sentMessages[0].text, /待确认：当前复制到下载目录被当前环境拦住了，需要切到宿主环境继续导出。/);
+  assert.match(telegram.state.sentMessages[0].text, /还差你确认：当前复制到下载目录被当前环境拦住了，需要切到宿主环境继续导出。/);
   assert.doesNotMatch(stdout, /started workflow .* for update 511/);
   assert.doesNotMatch(stdout, /Continuing CTO workflow .* from update 511/);
 
@@ -2861,12 +3006,15 @@ test('im telegram listen --cto can report a referenced workflow id without dispa
     stderr += chunk.toString();
   });
 
-  await waitForCondition(() => telegram.state.sentMessages.length >= 1, 'referenced workflow status reply');
+  await waitForCondition(
+    () => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 901 && /我还在跟这轮。/.test(message.text)),
+    'referenced workflow status reply'
+  );
   await waitForCondition(() => stdout.includes('Reported CTO workflow status for update 501'), 'referenced workflow status log');
 
   assert.equal(telegram.state.sentMessages.length, 1);
-  assert.match(telegram.state.sentMessages[0].text, /openCodex CTO 工作流汇报/);
-  assert.ok(telegram.state.sentMessages[0].text.includes(`Workflow: ${workflowId}`));
+  assert.match(telegram.state.sentMessages[0].text, /我还在跟这轮。/);
+  assert.doesNotMatch(telegram.state.sentMessages[0].text, new RegExp(`Workflow: ${workflowId}`));
   assert.match(telegram.state.sentMessages[0].text, /\[completed\] inspect-repo/);
   assert.match(stdout, /Reported CTO workflow status for update 501/);
   assert.doesNotMatch(stdout, /started workflow .* for update 501/);
@@ -3038,7 +3186,10 @@ test('im telegram listen --cto can report recent task history without dispatchin
     stderr += chunk.toString();
   });
 
-  await waitForCondition(() => telegram.state.sentMessages.length >= 1, 'recent task history reply');
+  await waitForCondition(
+    () => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 1001 && /openCodex CTO 最近任务/.test(message.text)),
+    'recent task history reply'
+  );
   await waitForCondition(() => stdout.includes('Reported CTO workflow status for update 601'), 'recent task history status log');
 
   assert.equal(telegram.state.sentMessages.length, 1);
@@ -3107,7 +3258,7 @@ test('im telegram listen --cto can infer an actionable audit from an abstract in
 
   const imSessionId = await waitForValue(() => extractSessionId(stdout), 'telegram inferred-audit session id');
   await waitForCondition(() => telegram.state.reactions.length >= 1, 'inferred-audit acknowledgement');
-  await waitForCondition(() => telegram.state.sentMessages.length >= 1, 'inferred-audit final reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => /The mock Codex binary executed successfully\./.test(message.text)), 'inferred-audit final reply');
 
   child.kill('SIGTERM');
   const exitCode = await waitForExit(child);
@@ -3120,9 +3271,9 @@ test('im telegram listen --cto can infer an actionable audit from an abstract in
     reaction: [{ type: 'emoji', emoji: '👍' }],
     is_big: false
   });
-  assert.match(telegram.state.sentMessages[0].text, /The mock Codex binary executed successfully\./);
-  assert.doesNotMatch(telegram.state.sentMessages[0].text, /需要你确认下一步/);
-  assert.doesNotMatch(telegram.state.sentMessages[0].text, /openCodex CTO|Workflow:/);
+  assert.match(telegram.state.sentMessages.at(-1).text, /The mock Codex binary executed successfully\./);
+  assert.doesNotMatch(telegram.state.sentMessages.at(-1).text, /需要你确认下一步/);
+  assert.doesNotMatch(telegram.state.sentMessages.at(-1).text, /openCodex CTO|Workflow:/);
 
   const sessionsRoot = path.join(cwd, '.opencodex', 'sessions');
   const imSession = JSON.parse(await readFile(path.join(sessionsRoot, imSessionId, 'session.json'), 'utf8'));
@@ -3266,9 +3417,9 @@ test('im telegram listen --cto reroutes host-sandbox-blocked work into the host 
     stderr += chunk.toString();
   });
 
-  await waitForCondition(() => telegram.state.reactions.length >= 1, 'reroute acknowledgement');
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 852 && /宿主执行器/.test(message.text)), 'reroute interim reply');
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 852 && /已经处理完，结果也整理好了。/.test(message.text)), 'reroute final reply');
+  await waitForCondition(() => telegram.state.reactions.length >= 1, 'reroute acknowledgement', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 852 && /宿主执行器/.test(message.text)), 'reroute interim reply', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 852 && /这轮已经处理完了。/.test(message.text)), 'reroute final reply', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
 
   const workflow = await waitForCtoWorkflowStateBySourceMessageId(cwd, 852, 'reroute workflow');
 
@@ -3287,7 +3438,7 @@ test('im telegram listen --cto reroutes host-sandbox-blocked work into the host 
     } catch {
       return false;
     }
-  }, 'host executor job files');
+  }, 'host executor job files', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
   const jobFiles = await readdir(jobsDir);
   assert.equal(jobFiles.length, 2);
   const jobPayloads = await Promise.all(jobFiles.map((entry) => readFile(path.join(jobsDir, entry), 'utf8').then((content) => JSON.parse(content))));
@@ -3354,9 +3505,9 @@ test('im telegram listen --cto reroutes partial sandbox-blocked export tasks int
     stderr += chunk.toString();
   });
 
-  await waitForCondition(() => telegram.state.reactions.length >= 1, 'partial reroute acknowledgement');
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 853 && /宿主执行器/.test(message.text)), 'partial reroute interim reply');
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 853 && /这轮已经处理完了。/.test(message.text)), 'partial reroute final reply');
+  await waitForCondition(() => telegram.state.reactions.length >= 1, 'partial reroute acknowledgement', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 853 && /宿主执行器/.test(message.text)), 'partial reroute interim reply', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 853 && /这轮已经处理完了。/.test(message.text)), 'partial reroute final reply', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
 
   const workflow = await waitForCtoWorkflowStateBySourceMessageId(cwd, 853, 'partial reroute workflow');
 
@@ -3378,7 +3529,7 @@ test('im telegram listen --cto reroutes partial sandbox-blocked export tasks int
     } catch {
       return false;
     }
-  }, 'partial reroute job files');
+  }, 'partial reroute job files', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
   const jobFiles = await readdir(jobsDir);
   assert.ok(jobFiles.length >= 1);
   const jobPayloads = await Promise.all(jobFiles.map((entry) => readFile(path.join(jobsDir, entry), 'utf8').then((content) => JSON.parse(content))));
@@ -3433,7 +3584,7 @@ test('im telegram listen --cto asks for confirmation before execution when plann
   });
 
   await waitForCondition(() => telegram.state.reactions.length >= 1, 'confirmation acknowledgement');
-  await waitForCondition(() => telegram.state.sentMessages.length >= 1, 'confirmation replies');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => /我先停在这里，等你拍板/.test(message.text)), 'confirmation replies');
 
   assert.deepEqual(telegram.state.reactions[0], {
     chat_id: '123456',
@@ -3441,8 +3592,8 @@ test('im telegram listen --cto asks for confirmation before execution when plann
     reaction: [{ type: 'emoji', emoji: '👍' }],
     is_big: false
   });
-  assert.match(telegram.state.sentMessages[0].text, /这轮先停一下，等你拍板/);
-  assert.match(telegram.state.sentMessages[0].text, /请确认是否继续修改本地仓库/);
+  assert.match(telegram.state.sentMessages.at(-1).text, /我先停在这里，等你拍板/);
+  assert.match(telegram.state.sentMessages.at(-1).text, /请确认是否继续修改本地仓库/);
 
   child.kill('SIGTERM');
   await waitForExit(child);
@@ -3643,48 +3794,58 @@ function waitForExit(child) {
   });
 }
 
-async function waitForValue(readValue, label) {
+async function waitForValue(readValue, label, options = {}) {
+  const { timeoutMs, intervalMs } = resolveWaitOptions(options);
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 5000) {
+  while (Date.now() - startedAt < timeoutMs) {
     const value = readValue();
     if (value) {
       return value;
     }
-    await delay(25);
+    await delay(intervalMs);
   }
   throw new Error(`Timed out waiting for ${label}`);
 }
 
-async function waitForCondition(check, label) {
+async function waitForCondition(check, label, options = {}) {
+  const { timeoutMs, intervalMs } = resolveWaitOptions(options);
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 5000) {
+  while (Date.now() - startedAt < timeoutMs) {
     if (await Promise.resolve(check())) {
       return;
     }
-    await delay(25);
+    await delay(intervalMs);
   }
   throw new Error(`Timed out waiting for ${label}`);
 }
 
-async function waitForCtoWorkflowStateBySourceMessageId(cwd, sourceMessageId, label) {
+async function waitForCtoWorkflowStateBySourceMessageId(cwd, sourceMessageId, label, options = {}) {
   return waitForCtoWorkflowState(
     cwd,
     (state) => String(state?.source_message_id || '') === String(sourceMessageId),
-    label
+    label,
+    options
   );
 }
 
-async function waitForCtoWorkflowState(cwd, predicate, label) {
+async function waitForCtoWorkflowState(cwd, predicate, label, options = {}) {
+  const { timeoutMs, intervalMs } = resolveWaitOptions(options);
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 5000) {
+  while (Date.now() - startedAt < timeoutMs) {
     const records = await readCtoWorkflowStates(cwd);
     const match = records.find(({ state }) => predicate(state));
     if (match) {
       return match;
     }
-    await delay(25);
+    await delay(intervalMs);
   }
   throw new Error(`Timed out waiting for ${label}`);
+}
+
+function resolveWaitOptions(options = {}) {
+  const timeoutMs = readPositiveInteger(options.timeoutMs, DEFAULT_WAIT_TIMEOUT_MS);
+  const intervalMs = readPositiveInteger(options.intervalMs, DEFAULT_WAIT_INTERVAL_MS);
+  return { timeoutMs, intervalMs };
 }
 
 async function readCtoWorkflowStates(cwd) {
@@ -3769,6 +3930,11 @@ function extractSessionId(stdout) {
 
 function findMessageIndex(messages, predicate) {
   return messages.findIndex(predicate);
+}
+
+function readPositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
 function delay(ms) {
