@@ -659,6 +659,139 @@ test('service telegram dispatch-detail returns task execution details for UI vie
   assert.match(humanDetail.stdout, /Session Thread: child session • role worker • source fallback/);
 });
 
+test('service telegram infers legacy reviewer child sessions from workflow context', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-legacy-reviewer-'));
+  const cwd = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const launchAgentDir = path.join(root, 'LaunchAgents');
+  const applicationsDir = path.join(root, 'Applications');
+  const launchctlState = path.join(root, 'launchctl-state.json');
+  const launchctl = await writeMockLaunchctl(path.join(root, 'mock-launchctl.js'), launchctlState);
+  const workflowSessionId = 'cto-20260309-111500-review';
+  const reviewSessionId = 'review-task-legacy';
+
+  await mkdir(cwd, { recursive: true });
+
+  await writeSessionFixture(cwd, {
+    session_id: workflowSessionId,
+    command: 'cto',
+    status: 'running',
+    updated_at: '2026-03-09T11:15:30.000Z',
+    created_at: '2026-03-09T11:15:00.000Z',
+    input: {
+      prompt: 'Review the release notes',
+      arguments: {
+        provider: 'telegram'
+      }
+    },
+    child_sessions: [
+      { session_id: reviewSessionId }
+    ],
+    summary: {
+      title: 'CTO workflow running',
+      result: 'Waiting for review.',
+      status: 'running',
+      highlights: [],
+      next_steps: []
+    },
+    workflow_state: {
+      status: 'running',
+      goal_text: 'Review the release notes',
+      pending_question_zh: '',
+      updated_at: '2026-03-09T11:15:30.000Z',
+      tasks: [
+        {
+          id: 'review-release',
+          title: 'Review release notes',
+          status: 'completed',
+          session_id: reviewSessionId,
+          updated_at: '2026-03-09T11:15:20.000Z'
+        }
+      ]
+    }
+  });
+
+  await writeSessionFixture(cwd, {
+    session_id: reviewSessionId,
+    command: 'review',
+    status: 'completed',
+    updated_at: '2026-03-09T11:15:20.000Z',
+    created_at: '2026-03-09T11:15:05.000Z',
+    input: {
+      prompt: 'Review release notes',
+      arguments: {
+        profile: 'full-access'
+      }
+    },
+    summary: {
+      title: 'Review completed',
+      result: 'Reviewed the release notes and found no blockers.',
+      status: 'completed',
+      highlights: [],
+      next_steps: [],
+      validation: ['Review completed.'],
+      changed_files: [],
+      findings: []
+    },
+    events: [
+      JSON.stringify({ type: 'turn.started', message: 'Started release-note review.' }),
+      JSON.stringify({ type: 'turn.completed', message: 'Release-note review completed.' })
+    ],
+    last_message: 'Reviewed the release notes and found no blockers.'
+  });
+
+  await runCli([
+    'service', 'telegram', 'install',
+    '--allow-project-cli',
+    '--cwd', cwd,
+    '--chat-id', '1379564094',
+    '--bot-token', 'test-token',
+    '--state-dir', stateDir,
+    '--launch-agent-dir', launchAgentDir,
+    '--applications-dir', applicationsDir,
+    '--no-load'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  const workflowDetail = await runCli([
+    'service', 'telegram', 'workflow-detail',
+    '--state-dir', stateDir,
+    '--index', '1',
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(workflowDetail.code, 0);
+  const workflowPayload = JSON.parse(workflowDetail.stdout);
+  assert.equal(workflowPayload.tasks[0].thread_kind, 'child_session');
+  assert.equal(workflowPayload.tasks[0].session_role, 'reviewer');
+  assert.equal(workflowPayload.tasks[0].session_contract_source, 'fallback');
+  assert.equal(workflowPayload.tasks[0].session_contract?.role, 'reviewer');
+  assert.equal(workflowPayload.tasks[0].session_contract?.supervisor_session_id, workflowSessionId);
+
+  const dispatchDetail = await runCli([
+    'service', 'telegram', 'dispatch-detail',
+    '--state-dir', stateDir,
+    '--index', '1',
+    '--json'
+  ], {
+    OPENCODEX_LAUNCHCTL_BIN: launchctl,
+    OPENCODEX_MOCK_LAUNCHCTL_STATE: launchctlState
+  });
+
+  assert.equal(dispatchDetail.code, 0);
+  const dispatchPayload = JSON.parse(dispatchDetail.stdout);
+  assert.equal(dispatchPayload.thread_kind, 'child_session');
+  assert.equal(dispatchPayload.session_role, 'reviewer');
+  assert.equal(dispatchPayload.session_contract_source, 'fallback');
+  assert.equal(dispatchPayload.session_contract?.role, 'reviewer');
+  assert.equal(dispatchPayload.session_contract?.supervisor_session_id, workflowSessionId);
+});
+
 
 test('service telegram surfaces rerouted host-executor tasks in status, history, and detail views', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencodex-service-rerouted-'));
@@ -707,7 +840,9 @@ test('service telegram surfaces rerouted host-executor tasks in status, history,
   assert.match(statusPayload.recent_dispatches[reroutedIndex].label, /^\[rerouted\]/);
   assert.equal(statusPayload.recent_dispatches[reroutedIndex].thread_kind, 'host_executor');
   assert.equal(statusPayload.recent_dispatches[reroutedIndex].execution_surface, 'host_executor');
-  assert.equal(statusPayload.recent_dispatches[reroutedIndex].session_contract_source, 'fallback');
+  assert.equal(statusPayload.recent_dispatches[reroutedIndex].session_contract_source, 'explicit');
+  assert.equal(statusPayload.recent_dispatches[reroutedIndex].session_contract?.thread_kind, 'host_executor');
+  assert.equal(statusPayload.recent_dispatches[reroutedIndex].session_contract?.role, 'worker');
 
   const workflowDetail = await runCli([
     'service', 'telegram', 'workflow-detail',
@@ -726,7 +861,8 @@ test('service telegram surfaces rerouted host-executor tasks in status, history,
   assert.match(workflowPayload.tasks[0].label, /^\[rerouted\]/);
   assert.equal(workflowPayload.tasks[0].thread_kind, 'host_executor');
   assert.equal(workflowPayload.tasks[0].execution_surface, 'host_executor');
-  assert.equal(workflowPayload.tasks[0].session_contract_source, 'fallback');
+  assert.equal(workflowPayload.tasks[0].session_contract_source, 'explicit');
+  assert.equal(workflowPayload.tasks[0].session_contract?.thread_kind, 'host_executor');
 
   const detail = await runCli([
     'service', 'telegram', 'dispatch-detail',
@@ -745,7 +881,8 @@ test('service telegram surfaces rerouted host-executor tasks in status, history,
   assert.equal(detailPayload.execution_surface, 'host_executor');
   assert.equal(detailPayload.thread_kind, 'host_executor');
   assert.equal(detailPayload.thread_kind_label, 'host executor');
-  assert.equal(detailPayload.session_contract_source, 'fallback');
+  assert.equal(detailPayload.session_contract_source, 'explicit');
+  assert.equal(detailPayload.session_contract?.thread_kind, 'host_executor');
   assert.equal(detailPayload.record_path, jobPath);
   assert.equal(detailPayload.session_id, 'run-task-7-source');
   assert.match(detailPayload.result, /host executor queue/);
@@ -1992,6 +2129,14 @@ async function seedReroutedWorkflowFixture(cwd, stateDir) {
           result: '已检测到当前 worker 所在环境的宿主沙箱更严格，任务已自动转入 host executor queue，CTO 主线程会继续跟踪并在完成后主动汇报。',
           next_steps: [],
           changed_files: [],
+          session_contract: {
+            schema: 'opencodex/session-contract/v1',
+            layer: 'host',
+            scope: 'telegram_cto',
+            thread_kind: 'host_executor',
+            role: 'worker',
+            supervisor_session_id: 'cto-20260309-101000-rerouted'
+          },
           reroute_job_id: 'host-20260309-reroute',
           reroute_record_path: jobPath,
           updated_at: '2026-03-09T10:10:00.000Z'
@@ -2014,6 +2159,14 @@ async function seedReroutedWorkflowFixture(cwd, stateDir) {
     profile: 'full-access',
     prompt: 'MOCK_WORKER inspect-repo',
     output_path: path.join(cwd, '.opencodex', 'sessions', 'run-task-7-source', 'artifacts', 'telegram-task-reroute-docs.json'),
+    session_contract: {
+      schema: 'opencodex/session-contract/v1',
+      layer: 'host',
+      scope: 'telegram_cto',
+      thread_kind: 'host_executor',
+      role: 'worker',
+      supervisor_session_id: 'cto-20260309-101000-rerouted'
+    },
     source_session_id: 'run-task-7-source',
     source_summary: {
       title: 'Run blocked by host sandbox',

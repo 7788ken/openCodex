@@ -74,7 +74,7 @@ test('memory sync keeps the newest entry for the same topic key', async () => {
 
 test('memory sync derives summary and state paths from an insights file name', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-memory-derived-'));
-  const sourcePath = path.join(cwd, 'ewallet_session_insights.md');
+  const sourcePath = path.join(cwd, 'global_session_insights.md');
   await writeFile(sourcePath, [
     '# Memory Notes',
     '',
@@ -94,8 +94,8 @@ test('memory sync derives summary and state paths from an insights file name', a
   assert.equal(result.code, 0);
   assert.match(result.stdout, /Memory sync completed/);
 
-  const summaryPath = path.join(cwd, 'ewallet_session_summary.md');
-  const statePath = path.join(cwd, 'ewallet_session_summary_state.json');
+  const summaryPath = path.join(cwd, 'global_session_summary.md');
+  const statePath = path.join(cwd, 'global_session_summary_state.json');
   const summaryText = await readFile(summaryPath, 'utf8');
   const state = JSON.parse(await readFile(statePath, 'utf8'));
 

@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 export async function ensureDir(directoryPath) {
@@ -20,8 +20,14 @@ export async function listDirectories(directoryPath) {
 }
 
 export async function writeJson(filePath, value) {
-  await ensureDir(path.dirname(filePath));
-  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  const directoryPath = path.dirname(filePath);
+  await ensureDir(directoryPath);
+  const tempPath = path.join(
+    directoryPath,
+    `.${path.basename(filePath)}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  );
+  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  await rename(tempPath, filePath);
 }
 
 export async function readJson(filePath) {

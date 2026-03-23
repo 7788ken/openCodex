@@ -7,7 +7,7 @@ This folder contains the English documentation for openCodex.
 ### Prerequisites
 
 - Node.js 20 or newer
-- Codex CLI installed and already logged in
+- Codex CLI `>= 0.116.0` installed and already logged in
 - macOS if you want the current detached app + `launchd` service flow
 
 ### One-Command Bootstrap
@@ -101,6 +101,8 @@ The bootstrap script is meant for detached installs, not `--link-source` develop
 - `profile-policy.md` — current wrapper profiles and Codex CLI policy mapping.
 - `cto-soul.md` — editable initialization prompt for the CTO main thread.
 - `install-layout.md` — detached install layout for the app surface, CLI shim, and long-lived services.
+- `support-domain-contract.md` — implementation-ready dual-channel support module contract (Telegram group + Xianyu personal) with strict config schema.
+- `support-module-rollout.md` — concise rollout guide for module purpose, config, TG/Xianyu boundaries, and local verification steps.
 
 ## Notes
 

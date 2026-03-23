@@ -18,6 +18,7 @@ import {
   resolveBridgeStateRoot,
   resolveCodexShimPath
 } from '../lib/bridge-state.js';
+import { queueBridgeSessionMessage, waitForBridgeMessageDelivery } from '../lib/bridge-live-session.js';
 import { ensureDir, readTextIfExists, toIsoString, writeJson } from '../lib/fs.js';
 import { canonicalizeCliLauncherPath, describeOpenCodexLauncher } from '../lib/launcher.js';
 import { applySessionContract, buildSessionContract } from '../lib/session-contract.js';
@@ -67,6 +68,8 @@ const REPAIR_SHIM_OPTION_SPEC = {
   cwd: { type: 'string' },
   'bin-dir': { type: 'string' }
 };
+
+const RECENT_BRIDGE_MESSAGE_LIMIT = 3;
 
 export async function runBridgeCommand(args) {
   const [subcommand, ...rest] = args;
@@ -281,25 +284,27 @@ async function runBridgeSend(args) {
     throw new Error(`Bridge session is not running: ${session.session_id}`);
   }
 
-  const runtimePaths = getBridgeRuntimePaths(session.working_directory, session.session_id);
-  await ensureDir(path.dirname(runtimePaths.inboxPath));
-
-  const now = toIsoString();
-  const message = {
-    message_id: createBridgeMessageId(),
-    session_id: session.session_id,
-    created_at: now,
-    source: 'bridge_send',
-    text
-  };
-  await appendBridgeRuntimeJsonl(runtimePaths.inboxPath, message);
+  const queued = await queueBridgeSessionMessage({
+    cwd: session.working_directory,
+    sessionId: session.session_id,
+    text,
+    source: 'bridge_send'
+  });
+  const delivery = await waitForBridgeMessageDelivery({
+    controlEventsPath: queued.runtimePaths.controlEventsPath,
+    messageId: queued.message.message_id
+  });
 
   const payload = {
     ok: true,
     action: 'send',
     session_id: session.session_id,
     session_selection: selection.selection,
-    message,
+    message: {
+      ...queued.message,
+      delivery_status: delivery.delivery_status,
+      delivered_at: delivery.delivered_at
+    },
     next_steps: [
       `Use \`opencodex bridge inbox --session-id ${session.session_id}\` to inspect the queued and delivered external messages.`
     ]
@@ -310,7 +315,10 @@ async function runBridgeSend(args) {
     return;
   }
 
-  process.stdout.write(`Bridge message queued for ${session.session_id}\n`);
+  const deliveryLabel = delivery.delivery_status === 'delivered'
+    ? `Bridge message delivered to ${session.session_id}`
+    : `Bridge message queued for ${session.session_id}`;
+  process.stdout.write(`${deliveryLabel}\n`);
   process.stdout.write(`Selection: ${renderBridgeSessionSelectionText(selection.selection)}\n`);
   process.stdout.write(`Text: ${text}\n`);
 }
@@ -838,6 +846,19 @@ function renderBridgePayload(payload, asJson) {
     if (Number.isInteger(payload.active_session.delivered_count)) {
       lines.push(`Active Session Delivered: ${payload.active_session.delivered_count}`);
     }
+    if (Number.isInteger(payload.active_session.pending_count)) {
+      lines.push(`Active Session Pending: ${payload.active_session.pending_count}`);
+    }
+    if (Array.isArray(payload.active_session.recent_inbox_messages) && payload.active_session.recent_inbox_messages.length) {
+      lines.push('Recent External Messages:');
+      for (const message of payload.active_session.recent_inbox_messages) {
+        const suffix = message.delivery_status === 'delivered'
+          ? ` delivered ${message.delivered_at || ''}`.trimEnd()
+          : ' pending';
+        lines.push(`- ${message.created_at || '(unknown)'}  ${message.source || 'external'}  ${suffix}`);
+        lines.push(`  ${message.text || ''}`);
+      }
+    }
     if (Array.isArray(payload.active_session.recent_output_lines) && payload.active_session.recent_output_lines.length) {
       lines.push('Recent Output:');
       for (const line of payload.active_session.recent_output_lines) {
@@ -1031,6 +1052,7 @@ async function inspectActiveBridgeSession({ bridgeState, statePath = '', homeDir
     const inboxMessages = runtimePaths ? await readBridgeInboxMessages(runtimePaths.inboxPath) : [];
     const deliveredByMessageId = runtimePaths ? await readBridgeDeliveryMap(runtimePaths.controlEventsPath) : new Map();
     const recentOutputLines = runtimePaths ? await readBridgeOutputTail(runtimePaths.outputLogPath, 5) : [];
+    const inboxSnapshot = buildBridgeInboxSnapshot(inboxMessages, deliveredByMessageId);
     return {
       session_id: sessionId,
       working_directory: session?.working_directory || sessionCwd,
@@ -1045,8 +1067,10 @@ async function inspectActiveBridgeSession({ bridgeState, statePath = '', homeDir
       session_path: sessionPath,
       record_found: Boolean(session),
       state_path: activeSessionPath,
-      inbox_count: inboxMessages.length,
-      delivered_count: deliveredByMessageId.size,
+      inbox_count: inboxSnapshot.inbox_count,
+      delivered_count: inboxSnapshot.delivered_count,
+      pending_count: inboxSnapshot.pending_count,
+      recent_inbox_messages: inboxSnapshot.recent_messages,
       recent_output_lines: recentOutputLines
     };
   } catch {
@@ -1258,6 +1282,34 @@ async function readBridgeDeliveryMap(filePath) {
     deliveredByMessageId.set(event.message_id, event.created_at || '');
   }
   return deliveredByMessageId;
+}
+
+function buildBridgeInboxSnapshot(inboxMessages, deliveredByMessageId) {
+  const messages = Array.isArray(inboxMessages) ? inboxMessages : [];
+  const deliveredMap = deliveredByMessageId instanceof Map ? deliveredByMessageId : new Map();
+  const recentMessages = messages
+    .map((message) => {
+      const deliveredAt = message?.message_id ? (deliveredMap.get(message.message_id) || '') : '';
+      return {
+        message_id: message?.message_id || '',
+        created_at: message?.created_at || '',
+        source: message?.source || '',
+        text: message?.text || '',
+        delivered_at: deliveredAt,
+        delivery_status: deliveredAt ? 'delivered' : 'pending'
+      };
+    })
+    .slice(-RECENT_BRIDGE_MESSAGE_LIMIT)
+    .reverse();
+
+  return {
+    inbox_count: messages.length,
+    delivered_count: deliveredMap.size,
+    pending_count: messages.reduce((count, message) => (
+      deliveredMap.has(message?.message_id) ? count : count + 1
+    ), 0),
+    recent_messages: recentMessages
+  };
 }
 
 async function readBridgeRuntimeJsonl(filePath) {

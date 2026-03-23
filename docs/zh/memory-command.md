@@ -12,7 +12,7 @@
 ## 用法
 
 ```bash
-node ./bin/opencodex.js memory sync --source "$HOME/.codex/memories/ewallet_session_insights.md"
+node ./bin/opencodex.js memory sync --source "$HOME/.codex/memories/global_session_insights.md"
 ```
 
 可选参数：

@@ -10,6 +10,8 @@ export const DEFAULT_CTO_REPLY_AGENT_SOUL_RELATIVE_PATH = path.join('prompts', '
 export const DEFAULT_CTO_PLANNER_AGENT_SOUL_RELATIVE_PATH = path.join('prompts', 'cto-planner-agent-soul.md');
 export const DEFAULT_CTO_WORKER_AGENT_SOUL_RELATIVE_PATH = path.join('prompts', 'cto-worker-agent-soul.md');
 export const DEFAULT_CTO_HISTORY_REPAIR_STALE_MINUTES = 30;
+const ctoSoulDocumentCache = new Map();
+const ctoSubagentSoulDocumentCache = new Map();
 
 const MAX_TASKS = 4;
 const CTO_HISTORY_REPAIR_TASK_ID = 'repair-historical-workflows';
@@ -69,6 +71,8 @@ const TELEGRAM_CTO_WORKER_PERSONA_POOL = Object.freeze([
   { name_zh: '阿朴', name_en: 'Pu', vibe_zh: '改动克制，先做最小可回滚的一步。', vibe_en: 'Keeps changes restrained and starts with the smallest reversible step.' },
   { name_zh: '阿原', name_en: 'Yuan', vibe_zh: '先摸清现场，再下手，不乱猜。', vibe_en: 'Maps the terrain before acting and avoids guessing.' }
 ]);
+const TELEGRAM_CTO_TONE_GUARD_MARKER_PATTERN = /^(?:title|status|result|highlights?|next steps?|risks?|validation|changed files?|findings|交付摘要|关键改动|验证记录|风险提醒|下一步建议)\s*[：:]/i;
+const TELEGRAM_CTO_TONE_GUARD_EN_BOILERPLATE_PATTERN = /\b(?:completed successfully|as requested|please let me know|report summary|validation record)\b/i;
 
 export function isLikelyTelegramNonDirectiveMessage(text) {
   const rawText = String(text || '').trim();
@@ -145,6 +149,7 @@ export function shouldResumeTelegramPendingWorkflow({ workflowState, messageText
 }
 
 export function createTelegramWorkflowState({ workflowSessionId, relatedWorkflowId = '', message }) {
+  const nowIso = new Date().toISOString();
   return {
     workflow_session_id: workflowSessionId,
     related_workflow_id: relatedWorkflowId,
@@ -155,8 +160,8 @@ export function createTelegramWorkflowState({ workflowSessionId, relatedWorkflow
     sender_display: message.sender_display,
     goal_text: message.text,
     latest_user_message: message.text,
-    created_at: message.created_at,
-    updated_at: message.created_at,
+    created_at: nowIso,
+    updated_at: nowIso,
     status: 'planning',
     plan_mode: 'execute',
     plan_summary_zh: '',
@@ -195,9 +200,9 @@ export function appendWorkflowUserMessage(workflowState, message) {
 export function buildTelegramCtoAutoReplyText(message, continuation = false) {
   const preview = truncateInline(message.text, 120);
   if (continuation) {
-    return `收到，openCodex CTO 主线程已收到你的补充，继续调度：${preview}`;
+    return `继续处理这轮补充：${preview}`;
   }
-  return `收到，openCodex CTO 主线程已接管，正在拆任务并调度：${preview}`;
+  return `开始处理这件事：${preview}`;
 }
 
 export function classifyTelegramCtoMessageIntent(text) {
@@ -411,8 +416,12 @@ export function shouldKeepTelegramCtoInConversationMode({ text, chatState = null
     return false;
   }
 
-  return Number(chatState?.direct_reply_count || 0) < 1
-    && isVagueTelegramCtoDirectiveMessage(text);
+  const lastMode = String(chatState?.last_mode || '').trim();
+  const hasConversationContinuity = Number(chatState?.direct_reply_count || 0) < 1
+    || lastMode === 'conversation'
+    || lastMode === 'exploration';
+
+  return hasConversationContinuity && isVagueTelegramCtoDirectiveMessage(text);
 }
 
 function isGreetingLikeTelegramCtoMessage(text) {
@@ -473,6 +482,9 @@ export function buildTelegramCtoDirectReplyPrompt({
     'Reply in Simplified Chinese.',
     'Be warm, grounded, and concise.',
     replyMode === 'exploration' ? 'Keep the reply within 5 short lines.' : 'Keep the reply within 3 short lines.',
+    'Put the outcome or direct answer in the first sentence.',
+    'Avoid filler phrases that do not change the decision, such as ceremonial openings or repeated assurances.',
+    'If the CEO needs to do something next, end with one explicit next action.',
     'The `result` field must be a natural chat reply, not a report.',
     'Do not use headings, labels, numbered sections, bullets, markdown, workflow summaries, or template wrappers inside `result`.',
     'Prefer one short paragraph. Only split into two very short paragraphs if that reads more naturally.',
@@ -544,6 +556,10 @@ export async function loadCtoSoulDocument(cwd = process.cwd(), options = {}) {
   const resolvedCwd = path.resolve(cwd || process.cwd());
   const variant = normalizeCtoSoulVariant(options.variant);
   const overridePath = String(options.path || process.env.OPENCODEX_CTO_SOUL_PATH || '').trim();
+  const cacheKey = `${resolvedCwd}::${overridePath || '(default)'}::${variant}`;
+  if (ctoSoulDocumentCache.has(cacheKey)) {
+    return ctoSoulDocumentCache.get(cacheKey);
+  }
   const candidatePaths = [];
 
   if (overridePath) {
@@ -555,23 +571,27 @@ export async function loadCtoSoulDocument(cwd = process.cwd(), options = {}) {
   for (const candidatePath of candidatePaths) {
     const text = (await readTextIfExists(candidatePath))?.trim() || '';
     if (text) {
-      return {
+      const resolvedDocument = {
         path: candidatePath,
         display_path: path.relative(resolvedCwd, candidatePath) || path.basename(candidatePath),
         text,
         builtin: false,
         variant
       };
+      ctoSoulDocumentCache.set(cacheKey, resolvedDocument);
+      return resolvedDocument;
     }
   }
 
-  return {
+  const builtinDocument = {
     path: path.resolve(resolvedCwd, getDefaultCtoSoulRelativePath(variant)),
     display_path: getDefaultCtoSoulRelativePath(variant),
     text: buildDefaultCtoSoulDocument(variant),
     builtin: true,
     variant
   };
+  ctoSoulDocumentCache.set(cacheKey, builtinDocument);
+  return builtinDocument;
 }
 
 export async function loadCtoSoulBundle(cwd = process.cwd(), options = {}) {
@@ -585,6 +605,10 @@ export async function loadCtoSubagentSoulDocument(cwd = process.cwd(), options =
   const resolvedCwd = path.resolve(cwd || process.cwd());
   const kind = normalizeCtoSubagentKind(options.kind);
   const overridePath = String(options.path || process.env.OPENCODEX_CTO_SOUL_PATH || '').trim();
+  const cacheKey = `${resolvedCwd}::${overridePath || '(default)'}::${kind}`;
+  if (ctoSubagentSoulDocumentCache.has(cacheKey)) {
+    return ctoSubagentSoulDocumentCache.get(cacheKey);
+  }
   const candidatePaths = [];
 
   if (overridePath) {
@@ -596,23 +620,27 @@ export async function loadCtoSubagentSoulDocument(cwd = process.cwd(), options =
   for (const candidatePath of candidatePaths) {
     const text = (await readTextIfExists(candidatePath))?.trim() || '';
     if (text) {
-      return {
+      const resolvedDocument = {
         path: candidatePath,
         display_path: path.relative(resolvedCwd, candidatePath) || path.basename(candidatePath),
         text,
         builtin: false,
         kind
       };
+      ctoSubagentSoulDocumentCache.set(cacheKey, resolvedDocument);
+      return resolvedDocument;
     }
   }
 
-  return {
+  const builtinDocument = {
     path: path.resolve(resolvedCwd, getDefaultCtoSubagentSoulRelativePath(kind)),
     display_path: getDefaultCtoSubagentSoulRelativePath(kind),
     text: buildDefaultCtoSubagentSoulDocument(kind),
     builtin: true,
     kind
   };
+  ctoSubagentSoulDocumentCache.set(cacheKey, builtinDocument);
+  return builtinDocument;
 }
 
 export function buildDefaultCtoSoulDocument(variant = 'base') {
@@ -651,6 +679,8 @@ export function buildDefaultCtoSoulDocument(variant = 'base') {
     '',
     '## Language Policy',
     '- Reply to the CEO in Simplified Chinese on the control channel.',
+    '- Keep CEO-facing Chinese plain, natural, and concise across chat replies, workflow summaries, and confirmation questions.',
+    '- Avoid jargon-heavy, bureaucratic, or report-style wording unless the CEO explicitly asks for that format.',
     '- Keep task titles, implementation prompts, and project artifacts in English.',
     '- Keep documentation bilingual under docs/en and docs/zh when docs change.',
     '',
@@ -707,6 +737,7 @@ export function buildDefaultCtoWorkflowSoulDocument() {
     '- Treat workflow orchestration as a branch triggered by the main chat thread, not as the default response mode.',
     '- When execution is justified, move decisively: infer the safest high-leverage path and start with the smallest meaningful task set.',
     '- Keep workflow state coherent so the CEO can always tell what is running, waiting, blocked, or complete.',
+    '- Keep workflow-facing Chinese updates plain and concise so progress and decisions are understandable at a glance.',
     '',
     '## Planning Discipline',
     '- Prefer 1-4 concrete tasks at a time.',
@@ -716,7 +747,8 @@ export function buildDefaultCtoWorkflowSoulDocument() {
     '## Delegation Discipline',
     '- Child sessions are helpers, not coordinators.',
     '- Worker prompts should be explicit enough that the child does not need to invent policy.',
-    '- Preserve chat-thread continuity by linking workflow output back to the main thread whenever possible.'
+    '- Preserve chat-thread continuity by linking workflow output back to the main thread whenever possible.',
+    '- If a waiting question is needed, phrase it in one short natural Chinese sentence without report formatting.'
   ].join('\n');
 }
 
@@ -730,11 +762,16 @@ export function buildDefaultCtoReplyAgentSoulDocument() {
     '- Stay natural, grounded, and conversational.',
     '- Do not sound like a task dispatcher during casual chat.',
     '- If the message is vague, help clarify it in one short, human question.',
+    '- Put the direct outcome first so the CEO can scan the decision immediately.',
+    '- Keep the structure compact: one short paragraph, at most 2 short sentences.',
+    '- Remove filler and opening politeness padding that does not change the decision.',
+    '- If the CEO must act, end with one explicit next action in plain Chinese.',
     '',
     '## Boundaries',
     '- Do not silently escalate light chat into orchestration.',
     '- Respect an existing waiting workflow and point back to it when needed.',
-    '- Keep replies short, warm, and practical.'
+    '- Keep replies short, warm, and practical.',
+    '- Do not use headings, bullets, markdown wrappers, or report-style templates in direct control replies.'
   ].join('\n');
 }
 
@@ -748,11 +785,13 @@ export function buildDefaultCtoPlannerAgentSoulDocument() {
     '- Think like a grounded project lead, not a grand strategist.',
     '- Prefer the next 1-4 concrete tasks over oversized master plans.',
     '- Keep plans easy to resume and easy to explain back to the CEO.',
+    '- When you draft Chinese summary or question text for the CTO to forward, keep it plain, natural, and concise.',
     '',
     '## Boundaries',
     '- You are not the CEO-facing CTO identity.',
     '- Do not invent broad strategy when a smaller safe execution path is obvious.',
-    '- Ask for confirmation only when the next branch materially changes execution or external effects.'
+    '- Ask for confirmation only when the next branch materially changes execution or external effects.',
+    '- Avoid report-style boilerplate and heavy jargon in CEO-facing Chinese phrasing.'
   ].join('\n');
 }
 
@@ -797,6 +836,7 @@ export function buildTelegramCtoMainThreadSystemPrompt({
       : 'The user is the CEO and this Telegram message is the active remote control path.',
     'Return JSON that matches the provided schema.',
     'Use Simplified Chinese for `summary_zh` and `question_zh`.',
+    'Keep `summary_zh` and `question_zh` plain, natural, and concise for direct CEO reading on Telegram.',
     'Use English for task titles and worker prompts.',
     'Create 1-4 concrete tasks at a time. Prefer parallel tasks when dependencies allow.',
     'Default to autonomous progress: when a safe local path is obvious, choose `execute` and keep the work moving without waiting for the CEO.',
@@ -1310,6 +1350,7 @@ export function injectHistoricalCtoRepairTask(plan, options = {}) {
         result: '',
         next_steps: [],
         changed_files: [],
+        session_contract: null,
         reroute_job_id: '',
         reroute_record_path: '',
         reroute_source_session_id: '',
@@ -1396,6 +1437,7 @@ export function normalizeTelegramCtoPlan(rawPlan, fallbackMessageText, workflowS
       result: '',
       next_steps: [],
       changed_files: [],
+      session_contract: null,
       updated_at: ''
     });
   }
@@ -1495,11 +1537,11 @@ export function buildTelegramCtoQuestionText(workflowState) {
   const counts = summarizeWorkflowCounts(workflowState);
   const question = truncateInline(workflowState.pending_question_zh || '请补充执行所需信息。', 500);
   const lines = [
-    '这轮先停一下，等你拍板。',
-    `- 待确认：${question}`
+    '我先停在这里，等你拍板。',
+    `需要你确认：${question}`
   ];
   if (counts.completed > 0 || counts.failed > 0 || counts.partial > 0) {
-    lines.push(`- 当前进度：已完成 ${counts.completed} 项，失败 ${counts.failed} 项，待跟进 ${counts.partial} 项。`);
+    lines.push(`我这边已经完成 ${counts.completed} 项，失败 ${counts.failed} 项，待跟进 ${counts.partial} 项。`);
   }
   return truncateTelegramCtoReplyText(lines.join('\n'));
 }
@@ -1511,27 +1553,26 @@ export function buildTelegramCtoStatusText(workflowState) {
     : [];
   const summary = workflowState.plan_summary_zh || buildWorkflowResultLine(workflowState, counts);
   const lines = [
-    'openCodex CTO 工作流汇报',
-    `目标：${truncateInline(workflowState.goal_text, 160)}`,
-    `状态：${formatTelegramWorkflowStatus(workflowState.status)}`,
-    `摘要：${truncateInline(summary, 220)}`,
-    `进度：queued ${counts.queued}, running ${counts.running}, rerouted ${counts.rerouted}, completed ${counts.completed}, partial ${counts.partial}, failed ${counts.failed}, cancelled ${counts.cancelled}`
+    '我还在跟这轮。',
+    `当前目标：${truncateInline(workflowState.goal_text, 160)}`,
+    `现在进展：${truncateInline(summary, 220)}`,
+    `手头状态：${formatTelegramWorkflowStatus(workflowState.status)}`,
+    `任务进度：排队 ${counts.queued}，进行中 ${counts.running}，转宿主执行 ${counts.rerouted}，已完成 ${counts.completed}，待跟进 ${counts.partial}，失败 ${counts.failed}，已取消 ${counts.cancelled}`
   ];
 
   if (latestTasks.length) {
-    lines.push('任务：');
+    lines.push('最近任务：');
     for (const task of latestTasks) {
       lines.push(`- [${getTaskDisplayStatus(task)}] ${task.id} ${truncateInline(task.title, 80)}`);
     }
   } else {
-    lines.push('任务：暂无');
+    lines.push('最近任务：暂无');
   }
 
   if (workflowState.pending_question_zh) {
-    lines.push(`待确认：${truncateInline(workflowState.pending_question_zh, 220)}`);
+    lines.push(`还差你确认：${truncateInline(workflowState.pending_question_zh, 220)}`);
   }
 
-  lines.push(`Workflow: ${workflowState.workflow_session_id}`);
   return lines.join('\n');
 }
 
@@ -1898,7 +1939,7 @@ export function buildTelegramCtoSessionSummary(workflowState) {
     highlights,
     next_steps: nextSteps,
     risks: collectWorkflowRisks(workflowState).slice(0, 4),
-    validation: [],
+    validation: collectWorkflowValidation(workflowState).slice(0, 4),
     changed_files: collectWorkflowChangedFiles(workflowState).slice(0, 8),
     findings: []
   };
@@ -1976,6 +2017,10 @@ export function applyWorkflowTaskResult(workflowState, taskId, runResult) {
     task.result = asTrimmedString(runResult?.summary?.result) || '';
     task.next_steps = asStringList(runResult?.summary?.next_steps);
     task.changed_files = asStringList(runResult?.summary?.changed_files);
+    task.session_contract = runResult?.summary?.session_contract && typeof runResult.summary.session_contract === 'object'
+      ? runResult.summary.session_contract
+      : (task.session_contract || null);
+    task.validation = mergeTaskValidationWithToneGuard(runResult?.summary?.validation, task.result);
     task.reroute_job_id = asTrimmedString(runResult?.rerouteJobId || runResult?.summary?.reroute_job_id) || task.reroute_job_id || '';
     task.reroute_record_path = asTrimmedString(runResult?.rerouteRecordPath || runResult?.summary?.reroute_record_path) || task.reroute_record_path || '';
     task.reroute_source_session_id = asTrimmedString(runResult?.sessionId) || task.reroute_source_session_id || '';
@@ -1994,6 +2039,7 @@ export function applyWorkflowTaskResult(workflowState, taskId, runResult) {
   task.result = asTrimmedString(runResult?.summary?.result) || '';
   task.next_steps = asStringList(runResult?.summary?.next_steps);
   task.changed_files = asStringList(runResult?.summary?.changed_files);
+  task.validation = mergeTaskValidationWithToneGuard(runResult?.summary?.validation, task.result);
   task.updated_at = new Date().toISOString();
   workflowState.updated_at = task.updated_at;
 
@@ -2105,6 +2151,60 @@ function collectWorkflowNextSteps(workflowState) {
     }
   }
   return dedupeList(values);
+}
+
+function collectWorkflowValidation(workflowState) {
+  const values = [];
+  for (const task of workflowState.tasks || []) {
+    const taskId = asTrimmedString(task?.id) || 'task';
+    for (const item of asStringList(task?.validation)) {
+      if (item.startsWith('tone_guard:warn:')) {
+        values.push(`${taskId} ${item}`);
+      }
+    }
+  }
+  return dedupeList(values);
+}
+
+function mergeTaskValidationWithToneGuard(validationList, resultText) {
+  const values = asStringList(validationList);
+  const toneGuard = buildTelegramCtoToneGuardValidationItem(resultText);
+  if (toneGuard) {
+    values.push(toneGuard);
+  }
+  return dedupeList(values);
+}
+
+function buildTelegramCtoToneGuardValidationItem(resultText) {
+  const text = asTrimmedString(resultText);
+  if (!text) {
+    return 'tone_guard:skip:empty_result';
+  }
+
+  const normalizedLines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (normalizedLines.some((line) => TELEGRAM_CTO_TONE_GUARD_MARKER_PATTERN.test(line))) {
+    return 'tone_guard:warn:report_markers';
+  }
+
+  if (TELEGRAM_CTO_TONE_GUARD_EN_BOILERPLATE_PATTERN.test(text)) {
+    return 'tone_guard:warn:english_boilerplate';
+  }
+
+  const sentenceCount = text
+    .split(/[。！？!?]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .length;
+
+  if (sentenceCount > 2 || normalizedLines.length > 3) {
+    return 'tone_guard:warn:too_long_for_plain_update';
+  }
+
+  return 'tone_guard:pass';
 }
 
 
@@ -2231,6 +2331,9 @@ export function buildTelegramCtoWorkerSystemPrompt({ workflowState, task, agentS
     'Your structured `summary.result` must be a short, natural Simplified Chinese update that the CTO main thread can forward almost directly to the CEO.',
     'Avoid English boilerplate such as "completed successfully", report headers, and rigid template wording inside `summary.result`.',
     'Keep `summary.result` within 2 short sentences. Put file paths in `changed_files` instead of stuffing them into prose unless they are essential.',
+    'Write `summary.result` in plain everyday language: keep sentences short, cut jargon, and describe impact with a concrete usage scene when possible.',
+    'Keep only essential reporting info in `summary.result`: current status, key risk/impact, and the immediate next action only when needed.',
+    'This reporting upgrade is wording-only. Do not alter execution logic just to make wording read better.',
     'Keep project content in English. Keep docs bilingual under docs/en and docs/zh when docs change.',
     'Prefer the smallest practical, reversible change and validate what you changed when reasonable.',
     'Default to finishing the task end-to-end inside this run when the path is safe and local.',

@@ -38,6 +38,7 @@ This host-resident supervisor is responsible for:
 
 - CEO-facing identity and long-lived thread ownership
 - workflow state, routing, and queue supervision
+- dispatching CTO task execution onto the host Codex CLI path instead of letting the current control surface become the executor
 - deciding when to continue, reroute, stop, or ask for confirmation
 - merging advice from child sessions into one coherent CTO response
 - owning tray, Telegram, and other persistent control surfaces

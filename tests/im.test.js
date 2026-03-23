@@ -93,6 +93,94 @@ test('im telegram listen stores inbound messages and im telegram inbox reads the
   assert.ok(session.artifacts.some((artifact) => artifact.type === 'telegram_updates'));
 });
 
+test('im telegram listen routes support-intent messages through the support module before ack handling', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-support-'));
+  await writeFile(path.join(cwd, 'opencodex.config.json'), JSON.stringify({
+    support: {
+      enabled: true,
+      channels: {
+        telegram_group: {
+          enabled: true,
+          chat_ids: ['123456']
+        },
+        xianyu_personal: {
+          enabled: false
+        }
+      },
+      routing: {
+        default_queue: 'after_sales',
+        rules: [
+          {
+            channel: 'telegram_group',
+            chat_id: '123456',
+            queue: 'tg_group_queue'
+          }
+        ]
+      }
+    }
+  }, null, 2));
+
+  const telegram = await startTelegramMockServer({
+    updates: [
+      {
+        update_id: 111,
+        message: {
+          message_id: 511,
+          date: 1741435205,
+          text: '售后 订单A100 需要退款',
+          chat: { id: 123456, type: 'private' },
+          from: { id: 9001, first_name: 'Li', last_name: 'Jianqian', username: 'lijq' }
+        }
+      }
+    ]
+  });
+  t.after(async () => {
+    await telegram.close();
+  });
+
+  const child = spawn('node', [cli, 'im', 'telegram', 'listen', '--cwd', cwd, '--bot-token', 'test-token', '--poll-timeout', '0'], {
+    env: {
+      ...process.env,
+      OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  await waitForCondition(
+    () => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 511 && /已创建工单 SUP-0001/.test(message.text)),
+    'support module telegram reply'
+  );
+
+  child.kill('SIGTERM');
+  const exitCode = await waitForExit(child);
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+  assert.match(stdout, /Handled support request for update 111/);
+  assert.doesNotMatch(stdout, /Reacted to chat 123456 message 511/);
+  assert.equal(telegram.state.reactions.length, 0);
+  assert.equal(telegram.state.sentMessages.length, 1);
+  assert.match(telegram.state.sentMessages[0].text, /队列 tg_group_queue/);
+
+  const supportState = JSON.parse(await readFile(path.join(cwd, '.opencodex', 'support', 'state.json'), 'utf8'));
+  assert.equal(supportState.tickets.length, 1);
+  assert.equal(supportState.tickets[0].id, 'SUP-0001');
+  assert.equal(supportState.tickets[0].queue, 'tg_group_queue');
+});
+
 test('im telegram listen --cto orchestrates a workflow and returns structured progress', async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-'));
   const telegram = await startTelegramMockServer({
@@ -167,7 +255,7 @@ test('im telegram listen --cto orchestrates a workflow and returns structured pr
     is_big: false
   });
   assert.equal(telegram.state.sentMessages.length, 2);
-  assert.match(telegram.state.sentMessages[0].text, /我先接住这件事，马上开始拆解和推进/);
+  assert.match(telegram.state.sentMessages[0].text, /开始处理这件事/);
   assert.match(telegram.state.sentMessages[1].text, /这轮已经处理完/);
   assert.match(telegram.state.sentMessages[1].text, /本轮结果：/);
   assert.match(telegram.state.sentMessages[1].text, /改动文件：/);
@@ -320,6 +408,7 @@ test('im telegram listen --cto relays actionable messages into the active bridge
   const relayReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 611);
   assert.ok(relayReply);
   assert.match(relayReply.text, new RegExp(`已接入当前 Codex 主线会话 ${activeBridgeSessionId}`));
+  assert.match(relayReply.text, /已经写入主线输入/);
   assert.match(relayReply.text, /bridge tail --session-id/);
   assert.equal(telegram.state.reactions.length, 0);
 
@@ -1099,11 +1188,11 @@ test('im telegram listen --cto preserves the pending question when the CEO expli
     stderr += chunk.toString();
   });
 
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 722 && /我接着这轮继续往下推进/.test(message.text)), 'explicit continue presence reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 722 && /继续处理这轮补充/.test(message.text)), 'explicit continue presence reply');
   await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 722 && /这轮先做到这里，还没完全收口。/.test(message.text)), 'explicit continue final reply');
   await waitForCondition(() => stdout.includes(`Continuing CTO workflow ${workflowId} from update 322`), 'continue workflow log');
 
-  const presenceReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 722 && /我接着这轮继续往下推进/.test(message.text));
+  const presenceReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 722 && /继续处理这轮补充/.test(message.text));
   const continueReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 722 && /这轮先做到这里，还没完全收口。/.test(message.text));
   assert.ok(presenceReply);
   assert.ok(continueReply);
@@ -2685,6 +2774,7 @@ test('im telegram listen --cto reports active bridge status when no workflow sta
   const statusReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 613);
   assert.ok(statusReply);
   assert.match(statusReply.text, new RegExp(`当前 Codex 主线会话：${activeBridgeSessionId}`));
+  assert.match(statusReply.text, /外部消息：0 条，已投递 0 条，待投递 0 条/);
   assert.match(statusReply.text, /状态：running/);
   assert.match(statusReply.text, /mock bridge stdin ready/);
   assert.equal(telegram.state.reactions.length, 0);
@@ -3287,8 +3377,9 @@ test('im telegram listen --cto can infer an actionable audit from an abstract in
   assert.equal(workflowState.tasks[0].status, 'completed');
 });
 
-test('im telegram listen --cto fails closed on stricter host sandbox without leaving the workflow waiting', async (t) => {
+test('im telegram listen --cto completes through the host executor even when the listener env is read-only', async (t) => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-host-sandbox-'));
+  const serviceStateDir = path.join(cwd, '.service-state');
   const telegram = await startTelegramMockServer({
     updates: [
       {
@@ -3320,7 +3411,8 @@ test('im telegram listen --cto fails closed on stricter host sandbox without lea
       ...process.env,
       OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
       OPENCODEX_CODEX_BIN: fixture,
-      OPENCODEX_HOST_SANDBOX_MODE: 'read-only'
+      OPENCODEX_HOST_SANDBOX_MODE: 'read-only',
+      OPENCODEX_SERVICE_STATE_DIR: serviceStateDir
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -3340,19 +3432,35 @@ test('im telegram listen --cto fails closed on stricter host sandbox without lea
   });
 
   await waitForCondition(() => telegram.state.reactions.length >= 1, 'sandbox acknowledgement');
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 851 && /read-only/.test(message.text)), 'sandbox final reply');
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 851 && /这轮已经处理完了。/.test(message.text)), 'host executor final reply');
 
   const workflow = await waitForCtoWorkflowStateBySourceMessageId(cwd, 851, 'sandbox workflow');
-
-  const finalReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 851 && /read-only/.test(message.text));
+  const finalReply = telegram.state.sentMessages.find((message) => message.reply_to_message_id === 851 && /这轮已经处理完了。/.test(message.text));
   assert.ok(finalReply);
-  assert.match(finalReply.text, /read-only/);
+  assert.match(finalReply.text, /已经检查完了。/);
+  assert.doesNotMatch(finalReply.text, /宿主执行器/);
   assert.doesNotMatch(finalReply.text, /待确认/);
-  assert.match(stdout, /task inspect-repo finished with failed|finished with status failed/);
+  assert.match(stdout, /Host executor claimed/);
+  assert.doesNotMatch(stdout, /rerouted work to the host executor/);
 
   const workflowState = JSON.parse(await readFile(workflow.workflowPath, 'utf8'));
-  assert.equal(workflowState.status, 'failed');
+  assert.equal(workflowState.status, 'completed');
   assert.equal(workflowState.pending_question_zh, '');
+  assert.ok(workflowState.tasks.every((task) => task.status === 'completed'));
+
+  const jobsDir = path.join(serviceStateDir, 'host-executor', 'jobs');
+  await waitForCondition(async () => {
+    try {
+      const entries = await readdir(jobsDir);
+      return entries.length >= 2;
+    } catch {
+      return false;
+    }
+  }, 'host executor job files', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
+  const jobFiles = await readdir(jobsDir);
+  assert.equal(jobFiles.length, 2);
+  const jobPayloads = await Promise.all(jobFiles.map((entry) => readFile(path.join(jobsDir, entry), 'utf8').then((content) => JSON.parse(content))));
+  assert.ok(jobPayloads.every((job) => job.status === 'completed'));
 
   child.kill('SIGTERM');
   const exitCode = await waitForExit(child);
@@ -3361,8 +3469,8 @@ test('im telegram listen --cto fails closed on stricter host sandbox without lea
 });
 
 
-test('im telegram listen --cto reroutes host-sandbox-blocked work into the host executor queue and finishes automatically', async (t) => {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-reroute-'));
+test('im telegram listen --cto dispatches its default workflow through the host executor queue', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-host-dispatch-'));
   const serviceStateDir = path.join(cwd, '.service-state');
   const telegram = await startTelegramMockServer({
     updates: [
@@ -3395,10 +3503,7 @@ test('im telegram listen --cto reroutes host-sandbox-blocked work into the host 
       ...process.env,
       OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
       OPENCODEX_CODEX_BIN: fixture,
-      OPENCODEX_HOST_SANDBOX_MODE: 'read-only',
-      OPENCODEX_HOST_EXECUTOR_ENABLED: '1',
-      OPENCODEX_SERVICE_STATE_DIR: serviceStateDir,
-      OPENCODEX_HOST_EXECUTOR_SANDBOX_MODE: 'danger-full-access'
+      OPENCODEX_SERVICE_STATE_DIR: serviceStateDir
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -3417,14 +3522,14 @@ test('im telegram listen --cto reroutes host-sandbox-blocked work into the host 
     stderr += chunk.toString();
   });
 
-  await waitForCondition(() => telegram.state.reactions.length >= 1, 'reroute acknowledgement', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 852 && /宿主执行器/.test(message.text)), 'reroute interim reply', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 852 && /这轮已经处理完了。/.test(message.text)), 'reroute final reply', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
+  await waitForCondition(() => telegram.state.reactions.length >= 1, 'host dispatch acknowledgement', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 852 && /这轮已经处理完了。/.test(message.text)), 'host dispatch final reply', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
 
-  const workflow = await waitForCtoWorkflowStateBySourceMessageId(cwd, 852, 'reroute workflow');
+  const workflow = await waitForCtoWorkflowStateBySourceMessageId(cwd, 852, 'host dispatch workflow');
 
-  assert.match(stdout, /rerouted work to the host executor/);
   assert.match(stdout, /Host executor claimed/);
+  assert.doesNotMatch(stdout, /rerouted work to the host executor/);
+  assert.ok(!telegram.state.sentMessages.some((message) => message.reply_to_message_id === 852 && /宿主执行器/.test(message.text)));
 
   const workflowState = JSON.parse(await readFile(workflow.workflowPath, 'utf8'));
   assert.equal(workflowState.status, 'completed');
@@ -3443,6 +3548,8 @@ test('im telegram listen --cto reroutes host-sandbox-blocked work into the host 
   assert.equal(jobFiles.length, 2);
   const jobPayloads = await Promise.all(jobFiles.map((entry) => readFile(path.join(jobsDir, entry), 'utf8').then((content) => JSON.parse(content))));
   assert.ok(jobPayloads.every((job) => job.status === 'completed'));
+  assert.ok(jobPayloads.every((job) => job.session_contract?.thread_kind === 'host_executor'));
+  assert.ok(jobPayloads.every((job) => job.session_contract?.role === 'worker'));
 
   child.kill('SIGTERM');
   const exitCode = await waitForExit(child);
@@ -3450,8 +3557,8 @@ test('im telegram listen --cto reroutes host-sandbox-blocked work into the host 
   assert.equal(stderr, '');
 });
 
-test('im telegram listen --cto reroutes partial sandbox-blocked export tasks into the host executor queue', async (t) => {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-partial-reroute-'));
+test('im telegram listen --cto runs export-to-Downloads tasks on the host executor by default', async (t) => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-im-telegram-cto-host-export-'));
   const serviceStateDir = path.join(cwd, '.service-state');
   const telegram = await startTelegramMockServer({
     updates: [
@@ -3484,9 +3591,7 @@ test('im telegram listen --cto reroutes partial sandbox-blocked export tasks int
       ...process.env,
       OPENCODEX_TELEGRAM_API_BASE_URL: telegram.baseUrl,
       OPENCODEX_CODEX_BIN: fixture,
-      OPENCODEX_HOST_EXECUTOR_ENABLED: '1',
-      OPENCODEX_SERVICE_STATE_DIR: serviceStateDir,
-      OPENCODEX_HOST_EXECUTOR_SANDBOX_MODE: 'danger-full-access'
+      OPENCODEX_SERVICE_STATE_DIR: serviceStateDir
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -3505,14 +3610,14 @@ test('im telegram listen --cto reroutes partial sandbox-blocked export tasks int
     stderr += chunk.toString();
   });
 
-  await waitForCondition(() => telegram.state.reactions.length >= 1, 'partial reroute acknowledgement', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 853 && /宿主执行器/.test(message.text)), 'partial reroute interim reply', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
-  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 853 && /这轮已经处理完了。/.test(message.text)), 'partial reroute final reply', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
+  await waitForCondition(() => telegram.state.reactions.length >= 1, 'host export acknowledgement', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
+  await waitForCondition(() => telegram.state.sentMessages.some((message) => message.reply_to_message_id === 853 && /这轮已经处理完了。/.test(message.text)), 'host export final reply', { timeoutMs: TIMING_SENSITIVE_WAIT_TIMEOUT_MS });
 
-  const workflow = await waitForCtoWorkflowStateBySourceMessageId(cwd, 853, 'partial reroute workflow');
+  const workflow = await waitForCtoWorkflowStateBySourceMessageId(cwd, 853, 'host export workflow');
 
-  assert.match(stdout, /rerouted work to the host executor/);
   assert.match(stdout, /Host executor claimed/);
+  assert.doesNotMatch(stdout, /rerouted work to the host executor/);
+  assert.ok(!telegram.state.sentMessages.some((message) => message.reply_to_message_id === 853 && /宿主执行器/.test(message.text)));
 
   const workflowState = JSON.parse(await readFile(workflow.workflowPath, 'utf8'));
   assert.equal(workflowState.status, 'completed');
@@ -3534,6 +3639,8 @@ test('im telegram listen --cto reroutes partial sandbox-blocked export tasks int
   assert.ok(jobFiles.length >= 1);
   const jobPayloads = await Promise.all(jobFiles.map((entry) => readFile(path.join(jobsDir, entry), 'utf8').then((content) => JSON.parse(content))));
   assert.ok(jobPayloads.every((job) => job.status === 'completed'));
+  assert.ok(jobPayloads.every((job) => job.session_contract?.thread_kind === 'host_executor'));
+  assert.ok(jobPayloads.every((job) => job.session_contract?.role === 'worker'));
 
   child.kill('SIGTERM');
   const exitCode = await waitForExit(child);

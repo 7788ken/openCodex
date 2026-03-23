@@ -1652,15 +1652,18 @@ function buildWorkflowChildSessionMap(session) {
 
 function buildDispatchPresentation({ task, childEntry = null }) {
   if (typeof task?.summary_status === 'string' && task.summary_status.trim() === 'rerouted') {
+    const rerouteContract = task?.session_contract && typeof task.session_contract === 'object'
+      ? task.session_contract
+      : null;
     return {
       execution_surface: 'host_executor',
-      session_contract: null,
-      session_contract_source: 'fallback',
-      thread_kind: 'host_executor',
-      thread_kind_label: formatSessionThreadKindLabel('host_executor'),
-      session_role: 'worker',
-      session_scope: 'telegram_cto',
-      session_layer: 'host'
+      session_contract: rerouteContract,
+      session_contract_source: rerouteContract ? 'explicit' : 'fallback',
+      thread_kind: rerouteContract?.thread_kind || 'host_executor',
+      thread_kind_label: formatSessionThreadKindLabel(rerouteContract?.thread_kind || 'host_executor'),
+      session_role: rerouteContract?.role || 'worker',
+      session_scope: rerouteContract?.scope || 'telegram_cto',
+      session_layer: rerouteContract?.layer || 'host'
     };
   }
 
@@ -1671,7 +1674,7 @@ function buildDispatchPresentation({ task, childEntry = null }) {
     return {
       execution_surface: 'child_session',
       session_contract: childContract,
-      session_contract_source: childContract ? 'explicit' : 'fallback',
+      session_contract_source: childContract ? (childEntry?.session_contract_source || 'explicit') : 'fallback',
       thread_kind: childContract?.thread_kind || 'child_session',
       thread_kind_label: formatSessionThreadKindLabel(childContract?.thread_kind || 'child_session'),
       session_role: childContract?.role || 'worker',
@@ -1862,6 +1865,8 @@ function buildDispatchRecordsFromWorkflowInfo(cwd, workflowInfo) {
       const rerouteRecordPath = typeof task?.reroute_record_path === 'string' ? task.reroute_record_path : '';
       const childSession = sessionId ? childSessionsById.get(sessionId) : null;
       const childEntry = buildDispatchChildEntry({
+        parentSessionId: session.session_id,
+        task,
         childEntry: childSessionByTaskId.get(taskId),
         childSession
       });
@@ -2227,6 +2232,8 @@ async function buildWorkflowDetailPayload(cwd, workflow, index) {
         const rerouteRecordPath = typeof task?.reroute_record_path === 'string' ? task.reroute_record_path : '';
         const childSession = sessionId ? childSessionsById.get(sessionId) : null;
         const childEntry = buildDispatchChildEntry({
+          parentSessionId: workflowSessionId,
+          task,
           childEntry: childSessionByTaskId.get(taskId),
           childSession
         });
@@ -2494,9 +2501,22 @@ async function buildDispatchDetailPayload(cwd, dispatch, index) {
     typeof dispatch?.path === 'string' ? dispatch.path : ''
   ]);
   const displayStatus = getWorkflowTaskDisplayStatus(workflowTask || dispatch);
+  const legacyChildEntry = buildDispatchChildEntry({
+    parentSessionId: workflowSessionId,
+    task: workflowTask || dispatch,
+    childEntry: workflowSession ? buildWorkflowChildSessionMap(workflowSession).get(dispatch?.task_id || '') : null,
+    childSession: session
+  });
   const presentation = rerouteRecord
-    ? buildDispatchPresentation({ task: { ...workflowTask, summary_status: 'rerouted', session_id: sessionId } })
-    : buildSessionPresentation(session, {
+    ? buildDispatchPresentation({
+      task: {
+        ...workflowTask,
+        summary_status: 'rerouted',
+        session_id: sessionId,
+        session_contract: rerouteRecord?.session_contract || workflowTask?.session_contract || null
+      }
+    })
+    : buildSessionPresentation(session, legacyChildEntry?.session_contract || {
       layer: 'child',
       thread_kind: 'child_session',
       role: session?.command === 'review' ? 'reviewer' : 'worker',
@@ -2613,9 +2633,21 @@ function renderDispatchDetailOutput(payload, json, title) {
   process.stdout.write(lines.join('\n') + '\n');
 }
 
-function buildDispatchChildEntry({ childEntry = null, childSession = null }) {
-  const sessionContract = childEntry?.session_contract
+function buildDispatchChildEntry({ parentSessionId = '', task = null, childEntry = null, childSession = null }) {
+  const fallbackContract = buildLegacyCtoChildContract({
+    parentSessionId,
+    task,
+    childEntry,
+    childSession
+  });
+  const explicitContract = childEntry?.session_contract
     || buildSessionContractSnapshot(childSession)
+    || buildSessionContractSnapshot(childEntry)
+    || null;
+  const sessionContract = explicitContract
+    || buildSessionContractSnapshot(childSession, fallbackContract)
+    || buildSessionContractSnapshot(childEntry, fallbackContract)
+    || buildSessionContractSnapshot(fallbackContract)
     || null;
   if (!childEntry && !sessionContract) {
     return null;
@@ -2623,7 +2655,42 @@ function buildDispatchChildEntry({ childEntry = null, childSession = null }) {
 
   return {
     ...(childEntry && typeof childEntry === 'object' ? childEntry : {}),
-    session_contract: sessionContract
+    session_contract: sessionContract,
+    session_contract_source: explicitContract ? 'explicit' : (sessionContract ? 'fallback' : 'none')
+  };
+}
+
+function buildLegacyCtoChildContract({ parentSessionId = '', task = null, childEntry = null, childSession = null }) {
+  const supervisorSessionId = String(
+    parentSessionId
+    || childSession?.parent_session_id
+    || childEntry?.parent_session_id
+    || childEntry?.session_contract?.supervisor_session_id
+    || ''
+  ).trim();
+  if (!supervisorSessionId) {
+    return null;
+  }
+
+  const command = String(childSession?.command || childEntry?.command || '').trim().toLowerCase();
+  const label = String(childEntry?.label || '').trim().toLowerCase();
+  const taskTitle = String(task?.title || '').trim().toLowerCase();
+  let role = 'worker';
+
+  if (command === 'review') {
+    role = 'reviewer';
+  } else if (label.startsWith('direct reply') || label.includes('reply') || taskTitle.includes('reply')) {
+    role = 'reply';
+  } else if (label.startsWith('plan workflow') || label.startsWith('continue workflow') || label.includes('planner') || taskTitle.includes('plan')) {
+    role = 'planner';
+  }
+
+  return {
+    layer: 'child',
+    scope: 'telegram_cto',
+    thread_kind: 'child_session',
+    role,
+    supervisor_session_id: supervisorSessionId
   };
 }
 

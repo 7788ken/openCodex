@@ -220,6 +220,14 @@ export function resolveSessionContract(session, fallback = null) {
     };
   }
 
+  const inferredChildContract = inferLegacyChildSessionContract(session);
+  if (inferredChildContract) {
+    return {
+      contract: inferredChildContract,
+      source: 'inferred'
+    };
+  }
+
   return {
     contract: null,
     source: 'none'
@@ -260,6 +268,40 @@ function normalizeSessionContract(value) {
     role: value.role,
     supervisorSessionId: value.supervisor_session_id
   });
+}
+
+function inferLegacyChildSessionContract(session) {
+  if (!session || typeof session !== 'object') {
+    return null;
+  }
+
+  const command = asTrimmedString(session.command).toLowerCase();
+  const parentSessionId = asTrimmedString(session.parent_session_id);
+  if (!parentSessionId) {
+    return null;
+  }
+
+  if (parentSessionId.startsWith('cto-')) {
+    return buildSessionContract({
+      layer: 'child',
+      scope: 'telegram_cto',
+      thread_kind: 'child_session',
+      role: command === 'review' ? 'reviewer' : 'worker',
+      supervisor_session_id: parentSessionId
+    });
+  }
+
+  if (parentSessionId.startsWith('auto-')) {
+    return buildSessionContract({
+      layer: 'child',
+      scope: 'auto',
+      thread_kind: 'child_session',
+      role: command === 'review' ? 'reviewer' : 'executor',
+      supervisor_session_id: parentSessionId
+    });
+  }
+
+  return null;
 }
 
 function asTrimmedString(value) {

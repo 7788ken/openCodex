@@ -14,6 +14,7 @@ const OPTION_SPEC = {
   verbose: { type: 'boolean' },
   cwd: { type: 'string' }
 };
+const MIN_CODEX_CLI_VERSION = '0.116.0';
 
 export async function runDoctorCommand(args) {
   const { options, positionals } = parseOptions(args, OPTION_SPEC);
@@ -37,7 +38,7 @@ export async function runDoctorCommand(args) {
   });
 
   const checks = [];
-  checks.push(toCheck('codex_cli', versionResult.code === 0 ? 'pass' : 'fail', true, versionText));
+  checks.push(buildCodexCliCheck(versionResult, versionText));
 
   const loginResult = versionResult.code === 0
     ? await runCommandCapture(codexBin, ['login', 'status'], { cwd })
@@ -129,7 +130,7 @@ async function buildDoctorNextSteps(checks) {
   const byName = Object.fromEntries(checks.map((check) => [check.name, check]));
 
   if (byName.codex_cli?.status === 'fail') {
-    nextSteps.push('Install Codex CLI and verify `codex --version`.');
+    nextSteps.push(`Install or upgrade Codex CLI to >= ${MIN_CODEX_CLI_VERSION}, then verify \`codex --version\`.`);
   }
   if (byName.codex_login?.status === 'fail') {
     nextSteps.push('Run `codex login` or provide an API key before using openCodex run flows.');
@@ -176,11 +177,62 @@ function toCheck(name, status, required, details) {
   return { name, status, required, details };
 }
 
+function buildCodexCliCheck(versionResult, versionText) {
+  if (versionResult.code !== 0) {
+    return toCheck('codex_cli', 'fail', true, versionText);
+  }
+
+  const detectedVersion = parseSemver(versionText);
+  if (!detectedVersion) {
+    return toCheck(
+      'codex_cli',
+      'fail',
+      true,
+      `Could not parse Codex CLI version from "${versionText}". Require >= ${MIN_CODEX_CLI_VERSION}.`
+    );
+  }
+
+  if (compareSemver(detectedVersion, MIN_CODEX_CLI_VERSION) < 0) {
+    return toCheck(
+      'codex_cli',
+      'fail',
+      true,
+      `Detected codex-cli ${detectedVersion}; require >= ${MIN_CODEX_CLI_VERSION}.`
+    );
+  }
+
+  return toCheck(
+    'codex_cli',
+    'pass',
+    true,
+    `Detected codex-cli ${detectedVersion}; require >= ${MIN_CODEX_CLI_VERSION}.`
+  );
+}
+
 function pickFirstMeaningfulLine(value) {
   return String(value || '')
     .split('\n')
     .map((line) => line.trim())
     .find((line) => line && !line.startsWith('WARNING: proceeding,')) || '';
+}
+
+function parseSemver(value) {
+  const match = String(value || '').match(/(\d+)\.(\d+)\.(\d+)/);
+  return match ? `${match[1]}.${match[2]}.${match[3]}` : '';
+}
+
+function compareSemver(left, right) {
+  const leftParts = left.split('.').map((value) => Number(value));
+  const rightParts = right.split('.').map((value) => Number(value));
+  const maxLength = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    const leftPart = leftParts[index] || 0;
+    const rightPart = rightParts[index] || 0;
+    if (leftPart !== rightPart) {
+      return leftPart > rightPart ? 1 : -1;
+    }
+  }
+  return 0;
 }
 
 function describeMcpResult(stdout, stderr) {

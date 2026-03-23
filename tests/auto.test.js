@@ -145,7 +145,7 @@ test('auto retry repair immediately repairs fresh stale sessions', async () => {
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     working_directory: cwd,
-    codex_cli_version: 'codex-cli 0.111.0',
+    codex_cli_version: 'codex-cli 0.116.0',
     input: { prompt: 'recover the run', arguments: {} },
     summary: { title: 'Run running', result: 'started', status: 'running', highlights: [], next_steps: [], risks: [], validation: [], changed_files: [], findings: [] },
     artifacts: []

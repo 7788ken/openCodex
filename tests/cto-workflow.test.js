@@ -5,11 +5,13 @@ import path from 'node:path';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import {
   appendWorkflowUserMessage,
+  applyWorkflowTaskResult,
   buildDefaultCtoChatSoulDocument,
   buildDefaultCtoPlannerAgentSoulDocument,
   buildDefaultCtoReplyAgentSoulDocument,
   buildTelegramCtoFinalText,
   buildTelegramCtoQuestionText,
+  buildTelegramCtoStatusText,
   buildTelegramCtoMainThreadSystemPrompt,
   buildTelegramCtoPlannerPrompt,
   buildDefaultCtoWorkflowSoulDocument,
@@ -31,6 +33,7 @@ import {
   isLikelyTelegramNonDirectiveMessage,
   classifyTelegramCtoMessageIntent,
   isStrongTelegramCtoDirectiveMessage,
+  createTelegramWorkflowState,
   normalizeTelegramCtoPlan,
   shouldKeepTelegramCtoInConversationMode,
   shouldPromoteWorkflowGoal,
@@ -151,6 +154,8 @@ test('cto prompt builders apply chat and workflow soul overlays separately', () 
   assert.match(directReplyPrompt, /Child agent name: 阿满/);
   assert.match(directReplyPrompt, /Active child-agent soul document \(prompts\/cto-reply-agent-soul\.md\):/);
   assert.match(directReplyPrompt, /natural chat reply, not a report/i);
+  assert.match(directReplyPrompt, /outcome or direct answer in the first sentence/i);
+  assert.match(directReplyPrompt, /end with one explicit next action/i);
   assert.match(directReplyPrompt, /Do not use headings, labels, numbered sections, bullets, markdown/i);
   assert.doesNotMatch(directReplyPrompt, /workflow-mode soul document/);
   assert.match(plannerPrompt, /Active CTO workflow-mode soul document \(prompts\/cto-workflow-soul\.md\):/);
@@ -183,6 +188,9 @@ test('cto worker prompt assigns a grounded named subagent deterministically', ()
   assert.match(workerPrompt, /Active child-agent soul document \(prompts\/cto-worker-agent-soul\.md\):/);
   assert.match(workerPrompt, /summary\.result.*forward almost directly to the CEO/i);
   assert.match(workerPrompt, /Avoid English boilerplate such as "completed successfully"/i);
+  assert.match(workerPrompt, /plain everyday language/i);
+  assert.match(workerPrompt, /describe impact with a concrete usage scene/i);
+  assert.match(workerPrompt, /wording-only\. Do not alter execution logic/i);
   assert.match(workerPrompt, /Worker directive from the CTO main thread:/);
 });
 
@@ -261,6 +269,31 @@ test('cto workflow keeps the original goal when the later Telegram reply is only
   assert.equal(workflowState.user_messages.length, 1);
 });
 
+test('createTelegramWorkflowState uses current clock time for workflow freshness', () => {
+  const message = {
+    text: 'please inspect',
+    chat_id: '123456',
+    update_id: 1,
+    message_id: 2,
+    sender_display: 'CEO',
+    created_at: '2025-03-08T12:00:00.000Z'
+  };
+  const before = Date.now();
+  const state = createTelegramWorkflowState({
+    workflowSessionId: 'cto-20260322-000000-abcd12',
+    message
+  });
+  const after = Date.now();
+
+  const createdAt = Date.parse(state.created_at);
+  const updatedAt = Date.parse(state.updated_at);
+  assert.ok(Number.isFinite(createdAt));
+  assert.ok(Number.isFinite(updatedAt));
+  assert.ok(createdAt >= before && createdAt <= after);
+  assert.ok(updatedAt >= before && updatedAt <= after);
+  assert.equal(state.user_messages[0].created_at, message.created_at);
+});
+
 test('pending workflow resumes only for explicit continue or question answer', () => {
   const workflowState = {
     status: 'waiting_for_user',
@@ -327,6 +360,14 @@ test('cto conversation gate keeps the first vague task-like turn in chat mode', 
   assert.equal(shouldKeepTelegramCtoInConversationMode({
     text: '帮我看看',
     chatState: { direct_reply_count: 0 },
+    hasPendingWorkflow: false
+  }), true);
+});
+
+test('cto conversation gate keeps vague follow-ups on the chat main line when the last mode was conversation', () => {
+  assert.equal(shouldKeepTelegramCtoInConversationMode({
+    text: '帮我看看',
+    chatState: { direct_reply_count: 3, last_mode: 'conversation' },
     hasPendingWorkflow: false
   }), true);
 });
@@ -527,9 +568,29 @@ test('cto waiting reply uses a clear Chinese checklist', () => {
     ]
   });
 
-  assert.match(text, /这轮先停一下，等你拍板/);
-  assert.match(text, /- 待确认：请确认是否继续修改本地仓库/);
-  assert.match(text, /- 当前进度：已完成 1 项，失败 1 项，待跟进 1 项/);
+  assert.match(text, /我先停在这里，等你拍板/);
+  assert.match(text, /需要你确认：请确认是否继续修改本地仓库/);
+  assert.match(text, /我这边已经完成 1 项，失败 1 项，待跟进 1 项/);
+});
+
+test('cto status reply keeps progress natural instead of reporting internal workflow headers', () => {
+  const text = buildTelegramCtoStatusText({
+    workflow_session_id: 'cto-123',
+    goal_text: '修一下 Telegram CTO 的主线陪伴感',
+    status: 'waiting_for_user',
+    plan_summary_zh: '已经补了主线陪伴文案，还差你确认是否继续扩范围。',
+    pending_question_zh: '是否继续把同样的口吻扩到更多状态回执。',
+    tasks: [
+      { id: 'presence-first-patch', title: 'Patch presence reply', status: 'completed' }
+    ]
+  });
+
+  assert.match(text, /^我还在跟这轮。/);
+  assert.match(text, /当前目标：修一下 Telegram CTO 的主线陪伴感/);
+  assert.match(text, /手头状态：waiting_for_user（等待 CEO 确认）/);
+  assert.match(text, /最近任务：/);
+  assert.match(text, /还差你确认：是否继续把同样的口吻扩到更多状态回执。/);
+  assert.doesNotMatch(text, /openCodex CTO 工作流汇报|Workflow:/);
 });
 
 test('cto final reply summarizes multiple completed tasks in simple Chinese bullets', () => {
@@ -708,6 +769,123 @@ test('cto rerouted tasks stay active without inflating local running counts', ()
   const summary = buildTelegramCtoSessionSummary(workflowState);
   assert.equal(summary.status, 'running');
   assert.match(summary.result, /1 rerouted host-executor task/i);
+});
+
+test('cto rerouted task result keeps explicit host-executor contract metadata', () => {
+  const workflowState = {
+    status: 'running',
+    pending_question_zh: '',
+    tasks: [
+      {
+        id: 'reroute-docs',
+        title: 'Reroute docs',
+        status: 'running',
+        session_id: 'run-task-7-source',
+        summary_status: '',
+        result: '',
+        next_steps: [],
+        changed_files: [],
+        validation: [],
+        session_contract: null,
+        reroute_job_id: '',
+        reroute_record_path: ''
+      }
+    ]
+  };
+
+  applyWorkflowTaskResult(workflowState, 'reroute-docs', {
+    code: 0,
+    sessionId: 'run-task-7-source',
+    rerouteJobId: 'host-20260309-reroute',
+    rerouteRecordPath: '/tmp/host-20260309-reroute.json',
+    summary: {
+      status: 'rerouted',
+      result: '任务已转入 host executor queue。',
+      next_steps: [],
+      changed_files: [],
+      validation: ['host_executor:queued'],
+      session_contract: {
+        schema: 'opencodex/session-contract/v1',
+        layer: 'host',
+        scope: 'telegram_cto',
+        thread_kind: 'host_executor',
+        role: 'worker',
+        supervisor_session_id: 'cto-20260309-rerouted'
+      }
+    }
+  });
+
+  assert.equal(workflowState.tasks[0].summary_status, 'rerouted');
+  assert.equal(workflowState.tasks[0].status, 'running');
+  assert.equal(workflowState.tasks[0].session_contract?.thread_kind, 'host_executor');
+  assert.equal(workflowState.tasks[0].session_contract?.role, 'worker');
+  assert.equal(workflowState.tasks[0].reroute_job_id, 'host-20260309-reroute');
+});
+
+test('cto task result adds a tone-guard warning when report-style markers appear', () => {
+  const workflowState = {
+    status: 'running',
+    pending_question_zh: '',
+    tasks: [
+      {
+        id: 'task-1',
+        title: 'Tone check',
+        status: 'running',
+        summary_status: '',
+        result: '',
+        next_steps: [],
+        changed_files: [],
+        validation: []
+      }
+    ]
+  };
+
+  applyWorkflowTaskResult(workflowState, 'task-1', {
+    code: 0,
+    summary: {
+      status: 'completed',
+      result: '交付摘要：已更新校验路径。\n关键改动：新增守卫。',
+      next_steps: [],
+      changed_files: []
+    }
+  });
+
+  assert.deepEqual(workflowState.tasks[0].validation, ['tone_guard:warn:report_markers']);
+  const summary = buildTelegramCtoSessionSummary(workflowState);
+  assert.deepEqual(summary.validation, ['task-1 tone_guard:warn:report_markers']);
+});
+
+test('cto task result adds tone-guard pass for concise plain update', () => {
+  const workflowState = {
+    status: 'running',
+    pending_question_zh: '',
+    tasks: [
+      {
+        id: 'task-1',
+        title: 'Tone pass',
+        status: 'running',
+        summary_status: '',
+        result: '',
+        next_steps: [],
+        changed_files: [],
+        validation: []
+      }
+    ]
+  };
+
+  applyWorkflowTaskResult(workflowState, 'task-1', {
+    code: 0,
+    summary: {
+      status: 'completed',
+      result: '我把回执语气检查接到任务结果写入里了，后续再漂移会被标记出来。',
+      next_steps: [],
+      changed_files: []
+    }
+  });
+
+  assert.deepEqual(workflowState.tasks[0].validation, ['tone_guard:pass']);
+  const summary = buildTelegramCtoSessionSummary(workflowState);
+  assert.deepEqual(summary.validation, []);
 });
 
 test('cto planner auto-infers a safe execute plan from an abstract inspection request', () => {

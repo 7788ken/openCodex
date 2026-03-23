@@ -10,7 +10,7 @@ It is a supporting command, not the primary work surface.
 The first version checks:
 
 - Codex CLI availability
-- Codex CLI version detection
+- Codex CLI minimum version check (`>= 0.116.0`)
 - Codex login status
 - MCP visibility through `codex mcp list --json`
 - Git workspace presence

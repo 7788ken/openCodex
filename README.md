@@ -12,6 +12,7 @@ The goal of this repository is to explore a practical, repo-aware coding workflo
 - verify results with focused validation,
 - support same-machine task coordination.
 - keep the CTO role on the host machine while sandbox child sessions stay subordinate helpers.
+- keep openCodex as the router/control plane while CTO task execution lands on the host Codex CLI path by default.
 - let the CTO support chat, discussion, and research before switching into orchestration.
 
 ## Language Policy
@@ -37,7 +38,7 @@ The goal of this repository is to explore a practical, repo-aware coding workflo
 - `opencodex auto` — run an unattended local workflow with a parent session, chained child sessions, optional retries, and optional review.
 - `opencodex memory` — sync append-only memory notes into a current summary and state file so recurring automations can reuse one openCodex-owned capability.
 - `opencodex remote` — open a token-protected HTTP bridge so your phone can send messages into the current workspace.
-- `opencodex im` — connect openCodex to IM platforms like Telegram without depending on local IP reachability, and route messages into a host-resident CTO supervisor workflow with task splitting, progress replies, and confirmation gates.
+- `opencodex im` — connect openCodex to IM platforms like Telegram without depending on local IP reachability, and route messages into a host-resident CTO supervisor workflow whose task execution is dispatched through the host Codex CLI path.
 - `opencodex service` — install a macOS launchd service and optional menu bar app for the Telegram CTO bridge, with a configurable permission mode and host-supervisor control loop.
 - `opencodex install` — create or inspect a detached local runtime, plus a thin `OpenCodex.app` shell and CLI shim that stay off the development checkout.
 
@@ -52,7 +53,7 @@ See `docs/en/install-layout.md` for the current packaging direction.
 ### Prerequisites
 
 - Node.js 20 or newer
-- Codex CLI installed and already logged in
+- Codex CLI `>= 0.116.0` installed and already logged in
 - macOS if you want to use the current detached app + `launchd` service flow
 
 ### One-Command Bootstrap
@@ -131,7 +132,7 @@ open "$HOME/Applications/OpenCodex.app"
 node ./bin/opencodex.js run "summarize this repository"
 node ./bin/opencodex.js review --uncommitted
 node ./bin/opencodex.js auto --review "stabilize this repository"
-node ./bin/opencodex.js memory sync --source "$HOME/.codex/memories/ewallet_session_insights.md"
+node ./bin/opencodex.js memory sync --source "$HOME/.codex/memories/global_session_insights.md"
 node ./bin/opencodex.js remote serve --host 0.0.0.0
 node ./bin/opencodex.js im telegram listen --bot-token "$OPENCODEX_TELEGRAM_BOT_TOKEN"
 node ./bin/opencodex.js im telegram listen --chat-id "$OPENCODEX_TELEGRAM_CHAT_ID" --cto --bot-token "$OPENCODEX_TELEGRAM_BOT_TOKEN"

@@ -24,6 +24,7 @@ The first version supports Telegram only:
 - stores normalized inbound messages in a session artifact
 - sends an automatic acknowledgement back to the same Telegram chat
 - optionally turns each inbound message into a CTO orchestration workflow with default `full-access` worker permissions
+- in `--cto` mode, keeps openCodex on planning/routing/queueing duties while concrete task execution is dispatched onto the host Codex CLI path
 - plans the request into non-blocking tasks, starts ready tasks in the background, and keeps waiting workflows visible in local sessions
 - injects a default maintenance task to inspect and repair historical stuck CTO workflows when stale workflow state is detected
 - sends an acknowledgement, task-plan update, and final result or confirmation request back to the same Telegram chat
@@ -45,7 +46,7 @@ The first version supports Telegram only:
 - `--poll-timeout <seconds>`
 - `--clear-webhook`
 - `--cto` to delegate each message to local Codex CLI as the openCodex CTO
-- `--profile <name>` to control the delegated `opencodex run` profile in `--cto` mode; default: `full-access`
+- `--profile <name>` to control the profile used for the host Codex CLI execution path in `--cto` mode; default: `full-access`
 
 `--cto` requires `--chat-id <id>` for safety.
 This prevents arbitrary Telegram users from driving the local machine.
@@ -81,7 +82,7 @@ Each Telegram listen session stores:
 - `telegram-log.txt` — listener lifecycle log
 - `telegram-runs.jsonl` — delegated CTO planner and task run records when `--cto` is enabled
 
-In `--cto` mode, actionable inbound Telegram messages create dedicated `cto` workflow sessions under the same local session store. Status/history/control/casual-chat follow-ups can be handled inline without creating or resuming a workflow. A workflow can contain planner and worker `run` child sessions, remain waiting for a CEO confirmation, and resume from the next Telegram reply in the same chat.
+In `--cto` mode, actionable inbound Telegram messages create dedicated `cto` workflow sessions under the same local session store. Status/history/control/casual-chat follow-ups can be handled inline without creating or resuming a workflow. A workflow can contain planner and worker `run` child sessions, remain waiting for a CEO confirmation, and resume from the next Telegram reply in the same chat. The default execution surface is now the host executor path, so the listener/supervisor stays in the role of router and control plane instead of trying a worker run inside the current listener environment first.
 
 Each `telegram supervise` session stores:
 

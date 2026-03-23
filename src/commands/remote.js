@@ -4,7 +4,12 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { appendFile } from 'node:fs/promises';
 import { parseOptions } from '../lib/args.js';
-import { inspectActiveBridgeSession, queueBridgeSessionMessage } from '../lib/bridge-live-session.js';
+import {
+  inspectActiveBridgeSession,
+  inspectBridgeSession,
+  queueBridgeSessionMessage,
+  waitForBridgeMessageDelivery
+} from '../lib/bridge-live-session.js';
 import { ensureDir, readTextIfExists, toIsoString } from '../lib/fs.js';
 import { createSession, getSessionDir, isTerminalSessionStatus, listSessions, saveSession } from '../lib/session-store.js';
 
@@ -261,7 +266,10 @@ async function runRemoteStatus(args) {
   const messages = await readMessageLog(messagesPath);
   const latestMessage = messages.length ? messages[messages.length - 1] : null;
   const healthProbe = await probeRemoteHealth({ host, port, sessionStatus: remoteSession.status });
-  const bridgeAttach = await inspectRemoteBridgeAttach();
+  const bridgeAttach = await inspectRemoteBridgeAttach({
+    cwd,
+    fallbackSessionId: latestMessage?.bridge_session_id || ''
+  });
 
   const payload = {
     session_id: remoteSession.session_id,
@@ -376,7 +384,10 @@ async function handleRemoteRequest(req, res, state) {
     }
     const messages = await readMessageLog(state.messagesPath);
     const latestMessage = messages.length ? messages[messages.length - 1] : null;
-    const bridgeAttach = await inspectRemoteBridgeAttach();
+    const bridgeAttach = await inspectRemoteBridgeAttach({
+      cwd: state.cwd,
+      fallbackSessionId: latestMessage?.bridge_session_id || ''
+    });
     writeJson(res, 200, {
       ok: true,
       remote_session_id: state.session.session_id,
@@ -504,6 +515,8 @@ async function saveInboundMessage(state, req, payload) {
     bridge_status: bridgeRelay.status,
     bridge_session_id: bridgeRelay.sessionId || '',
     bridge_message_id: bridgeRelay.bridgeMessageId || '',
+    bridge_delivery_status: bridgeRelay.deliveryStatus || '',
+    bridge_delivered_at: bridgeRelay.deliveredAt || '',
     bridge_error: bridgeRelay.error || ''
   };
 
@@ -1104,10 +1117,16 @@ async function relayRemoteMessageToActiveBridge({ text, sender, remoteSessionId 
         remote_session_id: remoteSessionId || ''
       }
     });
+    const delivery = await waitForBridgeMessageDelivery({
+      controlEventsPath: queued.runtimePaths.controlEventsPath,
+      messageId: queued.message.message_id
+    });
     return {
       status: 'attached',
       sessionId: activeBridgeSession.session_id,
-      bridgeMessageId: queued.message.message_id
+      bridgeMessageId: queued.message.message_id,
+      deliveryStatus: delivery.delivery_status,
+      deliveredAt: delivery.delivered_at
     };
   } catch (error) {
     return {
@@ -1118,9 +1137,16 @@ async function relayRemoteMessageToActiveBridge({ text, sender, remoteSessionId 
   }
 }
 
-async function inspectRemoteBridgeAttach() {
+async function inspectRemoteBridgeAttach({ cwd = '', fallbackSessionId = '' } = {}) {
   const activeBridgeSession = await inspectActiveBridgeSession();
-  if (!activeBridgeSession?.session_id) {
+  const bridgeSession = activeBridgeSession?.session_id
+    ? activeBridgeSession
+    : await inspectBridgeSession({
+      cwd,
+      sessionId: fallbackSessionId
+    });
+
+  if (!bridgeSession?.session_id) {
     return {
       status: 'missing',
       attachable: false,
@@ -1129,22 +1155,28 @@ async function inspectRemoteBridgeAttach() {
       working_directory: '',
       inbox_count: 0,
       delivered_count: 0,
+      pending_count: 0,
+      recent_inbox_messages: [],
       recent_output_lines: []
     };
   }
 
   return {
-    status: activeBridgeSession.record_found && activeBridgeSession.status === 'running'
+    status: bridgeSession.record_found && bridgeSession.status === 'running'
       ? 'attached'
       : 'blocked',
-    attachable: Boolean(activeBridgeSession.record_found && activeBridgeSession.status === 'running'),
-    session_id: activeBridgeSession.session_id,
-    session_status: activeBridgeSession.status || '',
-    working_directory: activeBridgeSession.working_directory || '',
-    inbox_count: Number.isInteger(activeBridgeSession.inbox_count) ? activeBridgeSession.inbox_count : 0,
-    delivered_count: Number.isInteger(activeBridgeSession.delivered_count) ? activeBridgeSession.delivered_count : 0,
-    recent_output_lines: Array.isArray(activeBridgeSession.recent_output_lines)
-      ? activeBridgeSession.recent_output_lines
+    attachable: Boolean(bridgeSession.record_found && bridgeSession.status === 'running'),
+    session_id: bridgeSession.session_id,
+    session_status: bridgeSession.status || '',
+    working_directory: bridgeSession.working_directory || '',
+    inbox_count: Number.isInteger(bridgeSession.inbox_count) ? bridgeSession.inbox_count : 0,
+    delivered_count: Number.isInteger(bridgeSession.delivered_count) ? bridgeSession.delivered_count : 0,
+    pending_count: Number.isInteger(bridgeSession.pending_count) ? bridgeSession.pending_count : 0,
+    recent_inbox_messages: Array.isArray(bridgeSession.recent_inbox_messages)
+      ? bridgeSession.recent_inbox_messages
+      : [],
+    recent_output_lines: Array.isArray(bridgeSession.recent_output_lines)
+      ? bridgeSession.recent_output_lines
       : []
   };
 }
@@ -1154,6 +1186,8 @@ function buildRemoteBridgeResponsePayload(bridgeRelay) {
     status: bridgeRelay.status,
     session_id: bridgeRelay.sessionId || '',
     message_id: bridgeRelay.bridgeMessageId || '',
+    delivery_status: bridgeRelay.deliveryStatus || '',
+    delivered_at: bridgeRelay.deliveredAt || '',
     error: bridgeRelay.error || ''
   };
 }
@@ -1188,7 +1222,13 @@ function renderRemoteBridgeAttachText(bridgeAttach) {
   if (!bridgeAttach.attachable) {
     return `detected ${bridgeAttach.session_id || 'bridge-session'} but not attachable (${bridgeAttach.session_status || 'unknown'})`;
   }
-  return `attached to ${bridgeAttach.session_id}`;
+  const recentMessage = Array.isArray(bridgeAttach.recent_inbox_messages) && bridgeAttach.recent_inbox_messages.length
+    ? bridgeAttach.recent_inbox_messages[0]
+    : null;
+  if (!recentMessage?.source) {
+    return `attached to ${bridgeAttach.session_id}`;
+  }
+  return `attached to ${bridgeAttach.session_id} (latest external: ${recentMessage.source})`;
 }
 
 function renderRemotePage({ token, statusMessage, statusTone, messages, bridgeAttach }) {

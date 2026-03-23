@@ -34,5 +34,7 @@ The control surfaces need to reflect the supervisor model directly.
 - Session/service workflow and dispatch payloads now also expose `session_contract_source`, so UI consumers can distinguish explicit metadata from fallback/inferred projections in older records.
 - Human-readable `session`/`service` detail outputs now include the same source marker (`source inferred|fallback|explicit`), so manual triage does not require JSON mode.
 - Service workflow/dispatch aggregation now hydrates child-session contract metadata from child `session.json` files, reducing stale-parent-data ambiguity in history/detail views.
+- Legacy workflow/detail and dispatch/detail views now infer missing child-session contracts from workflow context as well, so old review/planner/reply child records do not collapse into generic worker threads when parent metadata is sparse.
+- Legacy `session show/tree` now also infer child-thread contracts from `parent_session_id`, so older child `run`/`review` records remain visibly subordinate even when both parent `child_sessions` metadata and `session_contract` are missing.
 - Telegram workflow and service detail views can now distinguish host workflows, child sessions, and rerouted host-executor work without relying only on command names or labels.
-- The remaining gap is backward compatibility: older session artifacts and any producer that predates `session_contract` still need inference/backfill, so the separation is not yet guaranteed for every historical record.
+- The remaining gap is backward compatibility for legacy planner/reply child runs that lack both `session_contract` and parent task metadata; those records still fall back to generic worker labeling until a richer backfill source exists.

@@ -70,6 +70,39 @@ test('claimNextPendingHostExecutorJob can recover from an expired stale claim le
   assert.equal(storedJob.attempt_count, 1);
 });
 
+test('enqueueHostExecutorJob persists explicit host-executor session contract metadata', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-host-executor-contract-'));
+  const rootDir = resolveHostExecutorRoot({ cwd, env: {} });
+
+  const { jobPath } = await enqueueHostExecutorJob({
+    rootDir,
+    cwd,
+    workflowSessionId: 'cto-contract',
+    parentSessionId: 'cto-contract',
+    task: { id: 'contract-task', title: 'Contract task' },
+    message: { update_id: 4, message_id: 4, chat_id: '123', sender_display: 'Tester' },
+    profile: 'full-access',
+    prompt: 'persist explicit contract metadata',
+    outputPath: path.join(cwd, 'contract-output.json'),
+    sessionContract: {
+      schema: 'opencodex/session-contract/v1',
+      layer: 'host',
+      scope: 'telegram_cto',
+      thread_kind: 'host_executor',
+      role: 'worker',
+      supervisor_session_id: 'cto-contract'
+    }
+  });
+
+  const storedJob = await loadHostExecutorJob(jobPath);
+  assert.equal(storedJob.session_contract?.schema, 'opencodex/session-contract/v1');
+  assert.equal(storedJob.session_contract?.layer, 'host');
+  assert.equal(storedJob.session_contract?.scope, 'telegram_cto');
+  assert.equal(storedJob.session_contract?.thread_kind, 'host_executor');
+  assert.equal(storedJob.session_contract?.role, 'worker');
+  assert.equal(storedJob.session_contract?.supervisor_session_id, 'cto-contract');
+});
+
 test('claimNextPendingHostExecutorJob leaves a fresh claim directory without lease to the active claimer', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-host-executor-fresh-claim-dir-'));
   const rootDir = resolveHostExecutorRoot({ cwd, env: {} });

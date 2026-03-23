@@ -1,9 +1,14 @@
 import os from 'node:os';
 import path from 'node:path';
 import { appendFile } from 'node:fs/promises';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { resolveBridgeActiveSessionPath } from './bridge-state.js';
 import { ensureDir, readTextIfExists, toIsoString } from './fs.js';
 import { getSessionDir, loadSession } from './session-store.js';
+
+const RECENT_BRIDGE_MESSAGE_LIMIT = 3;
+const DEFAULT_BRIDGE_DELIVERY_WAIT_TIMEOUT_MS = 1200;
+const DEFAULT_BRIDGE_DELIVERY_POLL_INTERVAL_MS = 50;
 
 export function getBridgeRuntimePaths(cwd, sessionId) {
   const sessionDir = getSessionDir(cwd, sessionId);
@@ -46,42 +51,64 @@ export async function inspectActiveBridgeSession({ bridgeState, statePath = '', 
     return null;
   }
 
-  const sessionPath = sessionCwd ? path.join(getSessionDir(sessionCwd, sessionId), 'session.json') : '';
-  try {
-    const session = sessionCwd ? await loadSession(sessionCwd, sessionId) : null;
-    const runtimePaths = session ? getBridgeRuntimePaths(sessionCwd, sessionId) : null;
-    const inboxMessages = runtimePaths ? await readBridgeInboxMessages(runtimePaths.inboxPath) : [];
-    const deliveredByMessageId = runtimePaths ? await readBridgeDeliveryMap(runtimePaths.controlEventsPath) : new Map();
-    const recentOutputLines = runtimePaths ? await readBridgeOutputTail(runtimePaths.outputLogPath, 5) : [];
-    return {
-      session_id: sessionId,
-      working_directory: session?.working_directory || sessionCwd,
+  return inspectBridgeSession({
+    cwd: sessionCwd,
+    sessionId,
+    fallback: {
       command: typeof activeSession?.command === 'string' && activeSession.command.trim()
         ? activeSession.command
         : (typeof bridgeState?.active_session_command === 'string' ? bridgeState.active_session_command : ''),
       started_at: typeof activeSession?.started_at === 'string' && activeSession.started_at.trim()
         ? activeSession.started_at
         : (typeof bridgeState?.active_session_started_at === 'string' ? bridgeState.active_session_started_at : ''),
-      updated_at: session?.updated_at || activeSession?.updated_at || bridgeState?.active_session_updated_at || '',
+      updated_at: activeSession?.updated_at || bridgeState?.active_session_updated_at || '',
+      state_path: activeSessionPath
+    }
+  });
+}
+
+export async function inspectBridgeSession({ cwd, sessionId, fallback = null } = {}) {
+  const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+  const normalizedCwd = typeof cwd === 'string' ? cwd.trim() : '';
+  if (!normalizedSessionId) {
+    return null;
+  }
+
+  const sessionPath = normalizedCwd ? path.join(getSessionDir(normalizedCwd, normalizedSessionId), 'session.json') : '';
+  try {
+    const session = normalizedCwd ? await loadSession(normalizedCwd, normalizedSessionId) : null;
+    const runtimePaths = session ? getBridgeRuntimePaths(normalizedCwd, normalizedSessionId) : null;
+    const inboxMessages = runtimePaths ? await readBridgeInboxMessages(runtimePaths.inboxPath) : [];
+    const deliveredByMessageId = runtimePaths ? await readBridgeDeliveryMap(runtimePaths.controlEventsPath) : new Map();
+    const recentOutputLines = runtimePaths ? await readBridgeOutputTail(runtimePaths.outputLogPath, 5) : [];
+    const inboxSnapshot = buildBridgeInboxSnapshot(inboxMessages, deliveredByMessageId);
+    return {
+      session_id: normalizedSessionId,
+      working_directory: session?.working_directory || normalizedCwd,
+      command: fallback?.command || '',
+      started_at: fallback?.started_at || '',
+      updated_at: session?.updated_at || fallback?.updated_at || '',
       status: session?.status || '',
       session_path: sessionPath,
       record_found: Boolean(session),
-      state_path: activeSessionPath,
-      inbox_count: inboxMessages.length,
-      delivered_count: deliveredByMessageId.size,
+      state_path: fallback?.state_path || '',
+      inbox_count: inboxSnapshot.inbox_count,
+      delivered_count: inboxSnapshot.delivered_count,
+      pending_count: inboxSnapshot.pending_count,
+      recent_inbox_messages: inboxSnapshot.recent_messages,
       recent_output_lines: recentOutputLines
     };
   } catch {
     return {
-      session_id: sessionId,
-      working_directory: sessionCwd,
-      command: typeof activeSession?.command === 'string' ? activeSession.command : '',
-      started_at: typeof activeSession?.started_at === 'string' ? activeSession.started_at : '',
-      updated_at: typeof activeSession?.updated_at === 'string' ? activeSession.updated_at : '',
+      session_id: normalizedSessionId,
+      working_directory: normalizedCwd,
+      command: fallback?.command || '',
+      started_at: fallback?.started_at || '',
+      updated_at: fallback?.updated_at || '',
       status: 'missing',
       session_path: sessionPath,
       record_found: false,
-      state_path: activeSessionPath
+      state_path: fallback?.state_path || ''
     };
   }
 }
@@ -130,6 +157,45 @@ export async function queueBridgeSessionMessage({
   };
 }
 
+export async function waitForBridgeMessageDelivery({
+  controlEventsPath,
+  messageId,
+  timeoutMs = DEFAULT_BRIDGE_DELIVERY_WAIT_TIMEOUT_MS,
+  pollIntervalMs = DEFAULT_BRIDGE_DELIVERY_POLL_INTERVAL_MS
+} = {}) {
+  const normalizedMessageId = typeof messageId === 'string' ? messageId.trim() : '';
+  if (!normalizedMessageId) {
+    return {
+      delivery_status: 'pending',
+      delivered_at: ''
+    };
+  }
+
+  const maxWaitMs = Number.isFinite(timeoutMs) ? Math.max(0, timeoutMs) : DEFAULT_BRIDGE_DELIVERY_WAIT_TIMEOUT_MS;
+  const waitStepMs = Number.isFinite(pollIntervalMs)
+    ? Math.max(10, pollIntervalMs)
+    : DEFAULT_BRIDGE_DELIVERY_POLL_INTERVAL_MS;
+  const deadline = Date.now() + maxWaitMs;
+
+  while (true) {
+    const deliveredByMessageId = await readBridgeDeliveryMap(controlEventsPath);
+    const deliveredAt = deliveredByMessageId.get(normalizedMessageId) || '';
+    if (deliveredAt) {
+      return {
+        delivery_status: 'delivered',
+        delivered_at: deliveredAt
+      };
+    }
+    if (Date.now() >= deadline) {
+      return {
+        delivery_status: 'pending',
+        delivered_at: ''
+      };
+    }
+    await sleep(waitStepMs);
+  }
+}
+
 async function readBridgeInboxMessages(filePath) {
   return readBridgeRuntimeJsonl(filePath);
 }
@@ -144,6 +210,34 @@ async function readBridgeDeliveryMap(filePath) {
     deliveredByMessageId.set(event.message_id, event.created_at || '');
   }
   return deliveredByMessageId;
+}
+
+function buildBridgeInboxSnapshot(inboxMessages, deliveredByMessageId) {
+  const messages = Array.isArray(inboxMessages) ? inboxMessages : [];
+  const deliveredMap = deliveredByMessageId instanceof Map ? deliveredByMessageId : new Map();
+  const recentMessages = messages
+    .map((message) => {
+      const deliveredAt = message?.message_id ? (deliveredMap.get(message.message_id) || '') : '';
+      return {
+        message_id: message?.message_id || '',
+        created_at: message?.created_at || '',
+        source: message?.source || '',
+        text: message?.text || '',
+        delivered_at: deliveredAt,
+        delivery_status: deliveredAt ? 'delivered' : 'pending'
+      };
+    })
+    .slice(-RECENT_BRIDGE_MESSAGE_LIMIT)
+    .reverse();
+
+  return {
+    inbox_count: messages.length,
+    delivered_count: deliveredMap.size,
+    pending_count: messages.reduce((count, message) => (
+      deliveredMap.has(message?.message_id) ? count : count + 1
+    ), 0),
+    recent_messages: recentMessages
+  };
 }
 
 async function readBridgeRuntimeJsonl(filePath) {

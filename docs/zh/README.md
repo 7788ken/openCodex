@@ -7,7 +7,7 @@
 ### 前置条件
 
 - `Node.js 20+`
-- 已安装并登录 `Codex CLI`
+- 已安装并登录 `Codex CLI`（`>= 0.116.0`）
 - 如果要使用当前的 detached app + `launchd` 服务流程，建议在 macOS 上操作
 
 ### 一键安装
@@ -106,6 +106,8 @@ node ./bin/opencodex.js install detached --link-source
 - `profile-policy.md` — 当前 wrapper profiles 与 Codex CLI 策略映射。
 - `cto-soul.md` — CTO 主线程可编辑的初始化提示文档。
 - `install-layout.md` — App 形态、CLI shim 与长期服务共享 detached runtime 的安装布局。
+- `support-domain-contract.md` — 双渠道客服模块（Telegram 群 + 咸鱼个人）的可实现契约与严格配置模型。
+- `support-module-rollout.md` — 客服模块的精简上线说明，覆盖目的、配置、TG/咸鱼边界与本地验证步骤。
 
 ## 说明
 

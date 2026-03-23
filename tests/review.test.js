@@ -12,7 +12,7 @@ const cli = path.resolve('bin/opencodex.js');
 
 test('extractReviewBody keeps the final codex section when present', () => {
   const text = [
-    'OpenAI Codex v0.111.0',
+    'OpenAI Codex v0.116.0',
     'thinking',
     'something',
     'codex',
@@ -34,7 +34,7 @@ test('buildReviewSummary falls back to a string finding for non-clean plain-text
   const summary = buildReviewSummary([
     'codex',
     'There is still a blocking workflow regression to fix before this change is safe.'
-  ].join('\n'), '', 0, 'codex-cli 0.111.0', { uncommitted: true });
+  ].join('\n'), '', 0, 'codex-cli 0.116.0', { uncommitted: true });
 
   assert.equal(summary.result, 'There is still a blocking workflow regression to fix before this change is safe.');
   assert.deepEqual(summary.findings, ['There is still a blocking workflow regression to fix before this change is safe.']);
@@ -45,7 +45,7 @@ test('buildReviewSummary keeps explicit clean plain-text review output finding-f
   const summary = buildReviewSummary([
     'codex',
     'No blocking issues remain after the second unattended pass.'
-  ].join('\n'), '', 0, 'codex-cli 0.111.0', { uncommitted: true });
+  ].join('\n'), '', 0, 'codex-cli 0.116.0', { uncommitted: true });
 
   assert.deepEqual(summary.findings, []);
 });
@@ -54,7 +54,7 @@ test('buildReviewSummary preserves mixed positive plain-text review output as a 
   const summary = buildReviewSummary([
     'codex',
     'Looks good overall, but one blocking issue remains'
-  ].join('\n'), '', 0, 'codex-cli 0.111.0', { uncommitted: true });
+  ].join('\n'), '', 0, 'codex-cli 0.116.0', { uncommitted: true });
 
   assert.equal(summary.result, 'Looks good overall, but one blocking issue remains');
   assert.deepEqual(summary.findings, ['Looks good overall, but one blocking issue remains']);
@@ -62,7 +62,7 @@ test('buildReviewSummary preserves mixed positive plain-text review output as a 
 
 test('buildReviewSummary returns structured findings from a saved review report fixture', async () => {
   const report = await readFile(reviewFixture, 'utf8');
-  const summary = buildReviewSummary(report, '', 0, 'codex-cli 0.111.0', { uncommitted: true });
+  const summary = buildReviewSummary(report, '', 0, 'codex-cli 0.116.0', { uncommitted: true });
 
   assert.equal(summary.title, 'Review completed');
   assert.equal(summary.status, 'completed');
@@ -175,7 +175,7 @@ function runCli(args, extraEnv = {}) {
 async function writeFailingReviewFixture(filePath) {
   await writeFile(filePath, `#!/usr/bin/env node
 if (process.argv.includes('--version')) {
-  console.log('codex-cli 0.111.0');
+  console.log('codex-cli 0.116.0');
   process.exit(0);
 }
 

@@ -41,7 +41,7 @@ test('doctor passes the Codex bridge check when a registered bridge state exists
       path: fixture,
       resolved_path: fixture,
       source: 'manual_register',
-      version: 'codex-cli 0.111.0',
+      version: 'codex-cli 0.116.0',
       validated_at: '2026-03-21T00:00:00.000Z',
       exists: true,
       executable: true

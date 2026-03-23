@@ -52,6 +52,32 @@ ensure_codex_login() {
   fi
 }
 
+ensure_codex_version() {
+  local minimum_version='0.116.0'
+  local detected_line=''
+  local detected_version=''
+
+  if ! detected_line="$(codex --version 2>/dev/null | head -n 1)"; then
+    fail 'Codex CLI version check failed. Run `codex --version` and fix the CLI installation.'
+  fi
+
+  detected_version="$(printf '%s' "$detected_line" | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p')"
+  if [[ -z "$detected_version" ]]; then
+    fail "Could not parse Codex CLI version from: $detected_line"
+  fi
+
+  if ! node -e '
+const [detected, required] = process.argv.slice(1);
+const parse = (value) => value.split(".").map((part) => Number(part));
+const [a1, a2, a3] = parse(detected);
+const [b1, b2, b3] = parse(required);
+const ok = (a1 > b1) || (a1 === b1 && a2 > b2) || (a1 === b1 && a2 === b2 && a3 >= b3);
+process.exit(ok ? 0 : 1);
+' "$detected_version" "$minimum_version"; then
+    fail "Codex CLI $detected_version is too old. Require >= $minimum_version."
+  fi
+}
+
 cleanup() {
   if [[ -n "${BOOTSTRAP_TMP_DIR:-}" && -d "${BOOTSTRAP_TMP_DIR:-}" ]]; then
     rm -rf "${BOOTSTRAP_TMP_DIR}"
@@ -84,6 +110,7 @@ main() {
   require_command node
   require_command codex
   ensure_node_version
+  ensure_codex_version
   ensure_codex_login
 
   if [[ -n "$source_dir" ]]; then

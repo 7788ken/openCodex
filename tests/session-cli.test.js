@@ -79,6 +79,30 @@ test('session show keeps explicit session contract metadata and marks source as 
   assert.equal(payload.session_contract_source, 'explicit');
 });
 
+test('session show infers legacy child-session metadata from the recorded parent session id', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-session-show-legacy-child-'));
+  const sessionId = 'run-20260308-000215-legacy-child';
+
+  await writeSession(cwd, sessionId, '2026-03-08T00:02:15.000Z', 'run', 'completed', {
+    parent_session_id: 'cto-20260308-000200-workflow'
+  });
+
+  const result = await runCli(['session', 'show', sessionId, '--json', '--cwd', cwd]);
+  assert.equal(result.code, 0);
+
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.thread_kind, 'child_session');
+  assert.equal(payload.thread_kind_label, 'child session');
+  assert.equal(payload.session_role, 'worker');
+  assert.equal(payload.session_scope, 'telegram_cto');
+  assert.equal(payload.session_layer, 'child');
+  assert.equal(payload.session_contract_source, 'inferred');
+
+  const humanResult = await runCli(['session', 'show', sessionId, '--cwd', cwd]);
+  assert.equal(humanResult.code, 0);
+  assert.match(humanResult.stdout, /Thread: child session • role worker • source inferred/);
+});
+
 test('session tree resolves the full tree from a child session id', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-session-tree-'));
   const rootId = 'auto-20260308-000000-root';
@@ -258,7 +282,7 @@ async function writeSession(cwd, sessionId, updatedAt, command, status = 'comple
     created_at: updatedAt,
     updated_at: updatedAt,
     working_directory: cwd,
-    codex_cli_version: 'codex-cli 0.111.0',
+    codex_cli_version: 'codex-cli 0.116.0',
     input: { prompt: '', arguments: {} },
     summary: {
       title: `${command} ${status}`,

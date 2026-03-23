@@ -82,6 +82,8 @@ test('remote serve relays token-authenticated mobile messages into the active br
   assert.equal(acceptedPayload.bridge.status, 'attached');
   assert.equal(acceptedPayload.bridge.session_id, activeBridgeSessionId);
   assert.ok(acceptedPayload.bridge.message_id);
+  assert.equal(acceptedPayload.bridge.delivery_status, 'delivered');
+  assert.ok(acceptedPayload.bridge.delivered_at);
 
   const inboxResponse = await fetch(`http://127.0.0.1:${port}/api/messages?token=${token}`);
   assert.equal(inboxResponse.status, 200);
@@ -90,6 +92,8 @@ test('remote serve relays token-authenticated mobile messages into the active br
   assert.equal(inboxPayload.messages[0].text, 'Ship the remote bridge first.');
   assert.equal(inboxPayload.messages[0].bridge_status, 'attached');
   assert.equal(inboxPayload.messages[0].bridge_session_id, activeBridgeSessionId);
+  assert.equal(inboxPayload.messages[0].bridge_delivery_status, 'delivered');
+  assert.ok(inboxPayload.messages[0].bridge_delivered_at);
 
   const status = await runCli(['remote', 'status', '--cwd', cwd, '--json'], {
     HOME: homeDir
@@ -98,8 +102,15 @@ test('remote serve relays token-authenticated mobile messages into the active br
   const statusPayload = JSON.parse(status.stdout);
   assert.ok(statusPayload.bridge_attach);
   assert.ok(Array.isArray(statusPayload.bridge_attach.recent_output_lines));
+  assert.ok(Array.isArray(statusPayload.bridge_attach.recent_inbox_messages));
+  assert.equal(statusPayload.bridge_attach.pending_count, 0);
+  assert.equal(statusPayload.bridge_attach.recent_inbox_messages[0].source, 'remote_mobile');
+  assert.equal(statusPayload.bridge_attach.recent_inbox_messages[0].text, 'Ship the remote bridge first.');
+  assert.equal(statusPayload.bridge_attach.recent_inbox_messages[0].delivery_status, 'delivered');
   assert.equal(statusPayload.latest_message.bridge_status, 'attached');
   assert.equal(statusPayload.latest_message.bridge_session_id, activeBridgeSessionId);
+  assert.equal(statusPayload.latest_message.bridge_delivery_status, 'delivered');
+  assert.ok(statusPayload.latest_message.bridge_delivered_at);
 
   await waitForValue(() => bridgeStdout.includes('received: Ship the remote bridge first.') ? 'ok' : '', 'bridge relay stdout');
 
@@ -125,6 +136,7 @@ test('remote serve relays token-authenticated mobile messages into the active br
   const messagesLog = await readFile(messagesLogPath, 'utf8');
   assert.match(messagesLog, /Ship the remote bridge first\./);
   assert.match(messagesLog, /"bridge_status":"attached"/);
+  assert.match(messagesLog, /"bridge_delivery_status":"delivered"/);
   assert.match(messagesLog, new RegExp(`"bridge_session_id":"${activeBridgeSessionId}"`));
 });
 
@@ -303,6 +315,7 @@ test('remote serve exposes active bridge state through /api/status and enforces 
   assert.equal(initialStatusPayload.bridge_attach.status, 'attached');
   assert.equal(initialStatusPayload.bridge_attach.attachable, true);
   assert.equal(initialStatusPayload.bridge_attach.session_id, activeBridgeSessionId);
+  assert.deepEqual(initialStatusPayload.bridge_attach.recent_inbox_messages, []);
   assert.ok(initialStatusPayload.bridge_attach.recent_output_lines.some((line) => line.includes('mock bridge stdin ready')));
 
   const accepted = await fetch(`http://127.0.0.1:${port}/api/messages`, {
@@ -327,6 +340,12 @@ test('remote serve exposes active bridge state through /api/status and enforces 
   assert.equal(relayedStatusPayload.message_count, 1);
   assert.equal(relayedStatusPayload.latest_message.bridge_status, 'attached');
   assert.equal(relayedStatusPayload.latest_message.bridge_session_id, activeBridgeSessionId);
+  assert.equal(relayedStatusPayload.latest_message.bridge_delivery_status, 'delivered');
+  assert.ok(relayedStatusPayload.latest_message.bridge_delivered_at);
+  assert.equal(relayedStatusPayload.bridge_attach.pending_count, 0);
+  assert.equal(relayedStatusPayload.bridge_attach.recent_inbox_messages[0].source, 'remote_mobile');
+  assert.equal(relayedStatusPayload.bridge_attach.recent_inbox_messages[0].text, 'Expose the current bridge output.');
+  assert.equal(relayedStatusPayload.bridge_attach.recent_inbox_messages[0].delivery_status, 'delivered');
 
   child.kill('SIGTERM');
   const exitCode = await waitForExit(child);
@@ -373,6 +392,7 @@ test('remote serve /api/status reports missing bridge state when no active bridg
   assert.equal(initialPayload.latest_message, null);
   assert.equal(initialPayload.bridge_attach.status, 'missing');
   assert.equal(initialPayload.bridge_attach.attachable, false);
+  assert.deepEqual(initialPayload.bridge_attach.recent_inbox_messages, []);
   assert.deepEqual(initialPayload.bridge_attach.recent_output_lines, []);
 
   const rejected = await fetch(`http://127.0.0.1:${port}/api/messages`, {

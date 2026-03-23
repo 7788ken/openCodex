@@ -12,7 +12,7 @@ This lets recurring schedulers call one openCodex-owned capability instead of ca
 ## Usage
 
 ```bash
-node ./bin/opencodex.js memory sync --source "$HOME/.codex/memories/ewallet_session_insights.md"
+node ./bin/opencodex.js memory sync --source "$HOME/.codex/memories/global_session_insights.md"
 ```
 
 Optional flags:

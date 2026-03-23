@@ -24,6 +24,7 @@
 - 把归一化后的入站消息保存到 session artifact
 - 自动给同一个 Telegram chat 回一条确认回执
 - 可选地把每条入站消息升级成一条 CTO 编排工作流，worker 默认使用 `full-access` 权限
+- 在 `--cto` 模式下，openCodex 只负责规划、路由、排队和状态汇总；具体任务统一下沉到宿主机上的 Codex CLI 执行路径
 - 先拆出可并行的后台任务，启动已就绪任务，并把等待确认的工作流保存在本地 session 里
 - 当检测到历史卡住的 CTO workflow 时，会默认插入一条清理/修复维护任务
 - 给同一个 Telegram chat 回确认回执、任务拆解进度，以及最终结果或待确认问题
@@ -45,7 +46,7 @@
 - `--poll-timeout <seconds>`
 - `--clear-webhook`
 - `--cto`，把每条消息交给本地 Codex CLI，以 openCodex CTO 身份处理
-- `--profile <name>`，在 `--cto` 模式下控制委托给 `opencodex run` 的 profile；默认值：`full-access`
+- `--profile <name>`，在 `--cto` 模式下控制委托给宿主机 Codex CLI 执行路径的 profile；默认值：`full-access`
 
 出于安全考虑，`--cto` 必须配合 `--chat-id <id>` 一起使用。
 这样可以避免任意 Telegram 用户驱动本机执行任务。
@@ -81,7 +82,7 @@
 - `telegram-log.txt` — 监听生命周期日志
 - `telegram-runs.jsonl` — 开启 `--cto` 后的 CTO 规划与任务执行记录
 
-在 `--cto` 模式下，具备明确执行意图的入站 Telegram 消息会生成专用的 `cto` 工作流 session。状态/历史/控制/轻聊天这类追问会以内联方式处理，不会新建或续跑工作流。工作流下面可以再挂规划和执行用的 `run` 子 session，也可以在需要时进入“等待 CEO 确认”状态，并在同一个 chat 的下一条 Telegram 回复里继续推进。
+在 `--cto` 模式下，具备明确执行意图的入站 Telegram 消息会生成专用的 `cto` 工作流 session。状态/历史/控制/轻聊天这类追问会以内联方式处理，不会新建或续跑工作流。工作流下面可以再挂规划和执行用的 `run` 子 session，也可以在需要时进入“等待 CEO 确认”状态，并在同一个 chat 的下一条 Telegram 回复里继续推进。默认执行面是宿主执行通道，所以 listener / supervisor 自身保持“编排器 + 路由器”角色，不先在当前监听环境里试跑一轮 worker。
 
 每条 `telegram supervise` session 会保存：
 

@@ -10,7 +10,7 @@
 第一版会检查：
 
 - Codex CLI 是否可用
-- Codex CLI 版本是否可检测
+- Codex CLI 版本是否满足最低要求（`>= 0.116.0`）
 - Codex 登录状态
 - 通过 `codex mcp list --json` 检查 MCP 可见性
 - 当前是否处于 Git 工作区

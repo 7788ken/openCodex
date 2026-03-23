@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { mkdir, readdir, rm, stat } from 'node:fs/promises';
 import { ensureDir, pathExists, readJson, toIsoString, writeJson } from './fs.js';
+import { buildSessionContractSnapshot } from './session-contract.js';
 
 const HOST_EXECUTOR_DIRNAME = 'host-executor';
 const HOST_EXECUTOR_JOBS_DIRNAME = 'jobs';
@@ -54,6 +55,7 @@ export async function enqueueHostExecutorJob({
   profile,
   prompt,
   outputPath,
+  sessionContract = null,
   sourceSessionId = '',
   sourceSummary = null
 }) {
@@ -75,6 +77,7 @@ export async function enqueueHostExecutorJob({
     profile: profile || '',
     prompt: String(prompt || ''),
     output_path: outputPath || '',
+    session_contract: buildSessionContractSnapshot(sessionContract),
     source_session_id: sourceSessionId || '',
     source_summary: sourceSummary && typeof sourceSummary === 'object' ? sourceSummary : null,
     update_id: Number.isInteger(message?.update_id) ? message.update_id : 0,
@@ -142,34 +145,45 @@ export async function claimNextPendingHostExecutorJob(rootDir) {
       continue;
     }
 
-    const claimLease = await tryClaimHostExecutorJob(nextJob.record_path);
-    if (!claimLease) {
-      continue;
-    }
-
-    try {
-      const currentJob = await loadHostExecutorJob(nextJob.record_path);
-      if (!currentJob || currentJob.status !== 'pending') {
-        continue;
-      }
-
-      const claimedJob = {
-        ...currentJob,
-        status: 'running',
-        updated_at: toIsoString(),
-        attempt_count: Number.isInteger(currentJob.attempt_count) ? currentJob.attempt_count + 1 : 1
-      };
-      await writeJson(nextJob.record_path, claimedJob);
-      return {
-        job: claimedJob,
-        jobPath: nextJob.record_path
-      };
-    } finally {
-      await releaseHostExecutorJobClaim(claimLease);
+    const claimed = await claimHostExecutorJob(nextJob.record_path);
+    if (claimed) {
+      return claimed;
     }
   }
 
   return null;
+}
+
+export async function claimHostExecutorJob(jobPath) {
+  if (!jobPath) {
+    return null;
+  }
+
+  const claimLease = await tryClaimHostExecutorJob(jobPath);
+  if (!claimLease) {
+    return null;
+  }
+
+  try {
+    const currentJob = await loadHostExecutorJob(jobPath);
+    if (!currentJob || currentJob.status !== 'pending') {
+      return null;
+    }
+
+    const claimedJob = {
+      ...currentJob,
+      status: 'running',
+      updated_at: toIsoString(),
+      attempt_count: Number.isInteger(currentJob.attempt_count) ? currentJob.attempt_count + 1 : 1
+    };
+    await writeJson(jobPath, claimedJob);
+    return {
+      job: claimedJob,
+      jobPath
+    };
+  } finally {
+    await releaseHostExecutorJobClaim(claimLease);
+  }
 }
 
 export async function updateHostExecutorJob(jobPath, patch = {}) {

@@ -30,8 +30,11 @@ export async function runRunCommand(args) {
   const codexBin = getCodexBin();
   const profile = resolveCodexProfile(options.profile, 'run', cwd);
   const initialHostSandboxMode = detectHostSandboxMode({ env: process.env });
-  const versionResult = await runCommandCapture(codexBin, ['--version'], { cwd });
-  const codexCliVersion = pickFirstLine(versionResult.stdout) || pickFirstLine(versionResult.stderr) || 'unknown';
+  const cachedCodexCliVersion = typeof process.env.OPENCODEX_CODEX_VERSION === 'string'
+    ? process.env.OPENCODEX_CODEX_VERSION.trim()
+    : '';
+  const codexCliVersion = cachedCodexCliVersion
+    || await resolveCodexCliVersion(codexBin, cwd);
 
   const session = createSession({
     command: 'run',
@@ -297,6 +300,11 @@ function buildHostSandboxFailureSummary({ profileName, requestedSandboxMode, hos
 }
 function resolveSchemaPath(schemaPath) {
   return schemaPath ? path.resolve(schemaPath) : DEFAULT_SCHEMA_PATH;
+}
+
+async function resolveCodexCliVersion(codexBin, cwd) {
+  const versionResult = await runCommandCapture(codexBin, ['--version'], { cwd });
+  return pickFirstLine(versionResult.stdout) || pickFirstLine(versionResult.stderr) || 'unknown';
 }
 
 function pickFirstLine(value) {

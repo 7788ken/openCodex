@@ -5,7 +5,7 @@ const rawArgs = process.argv.slice(2);
 const args = stripGlobalArgs(rawArgs);
 
 if (rawArgs[0] === '--version') {
-  console.log('codex-cli 0.111.0');
+  console.log('codex-cli 0.116.0');
   process.exit(0);
 }
 

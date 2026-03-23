@@ -40,7 +40,7 @@ test('bridge register-codex writes a global bridge state under HOME', async () =
   assert.equal(payload.codex.path, fixture);
   assert.equal(payload.codex.resolved_path, fixture);
   assert.equal(payload.codex.source, 'manual_register');
-  assert.equal(payload.codex.version, 'codex-cli 0.111.0');
+  assert.equal(payload.codex.version, 'codex-cli 0.116.0');
   assert.equal(payload.bridge.default_surface, 'cli');
 
   const statePath = path.join(homeDir, '.opencodex', 'bridge', 'bridge.json');
@@ -91,7 +91,7 @@ test('bridge install-shim writes a transparent codex shim and preserves PATH hab
     PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}`
   });
   assert.equal(shimResult.code, 0);
-  assert.match(shimResult.stdout, /codex-cli 0\.111\.0/);
+  assert.match(shimResult.stdout, /codex-cli 0\.116\.0/);
 
   const status = await runCli(['bridge', 'status', '--bin-dir', binDir, '--json', '--cwd', cwd], {
     HOME: homeDir,
@@ -192,7 +192,8 @@ test('bridge send injects external input into the active live session and bridge
     HOME: homeDir
   });
   assert.equal(send.code, 0);
-  assert.match(send.stdout, /Bridge message queued/);
+  assert.match(send.stdout, /Bridge message delivered/);
+  assert.match(send.stdout, /Text: continue from tg/);
 
   const liveResult = await liveRun.result;
   assert.equal(liveResult.code, 0);

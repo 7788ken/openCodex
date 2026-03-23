@@ -2,6 +2,16 @@
 
 ## 2026-03-21
 
+- Tightened `T021` Phase 4 attach delivery semantics on the bridge-owned mainline:
+  - `opencodex bridge send` now waits for the live-session delivery receipt and reports whether the message already reached Codex stdin instead of only saying it was queued
+  - remote/mobile `POST /api/messages` responses and stored audit records now include `delivery_status` plus `delivered_at` for the exact bridge message they attached
+  - Telegram CTO bridge-attach replies now distinguish between "already written into the mainline input" and "still queued for delivery" on the same session lane
+  - validated with focused bridge regression plus manual bridge/remote attach probes; the broader `tests/im.test.js` / `tests/remote.test.js` suites remain noisy in the current dirty tree
+- Extended `T021` Phase 4 bridge attach visibility on the active-session status surfaces:
+  - `opencodex bridge status` now shows pending external-message count plus the latest external attach messages with delivery state
+  - `opencodex remote status` / token-authenticated remote status payloads now expose the same recent bridge inbox snapshot so phone-side attach state is explainable
+  - Telegram CTO mainline status replies now include queued vs delivered external-message counts and recent bridge attach snippets instead of only aggregate counts
+  - validated with targeted bridge/remote/im regression updates; broader `node --test tests/bridge.test.js tests/remote.test.js tests/im.test.js` is still noisy in the current dirty tree and needs a clean follow-up run
 - Started `T021` Phase 4 with the first Telegram attach slice for bridge-owned live sessions:
   - `opencodex im telegram listen --cto` now relays actionable inbound messages into the active bridge-owned Codex session instead of silently opening a parallel CTO workflow
   - generic Telegram status questions now report the active bridge-owned Codex mainline when no CTO workflow status is available
