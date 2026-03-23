@@ -1586,6 +1586,9 @@ async function executeTelegramCtoTasks({ cwd, profile, message, runtime, runsPat
   let schedulingEnabled = true;
 
   const startTask = async (task) => {
+    const workerProfile = resolveTelegramCtoSubagentProfile({ kind: 'worker', task });
+    const taskLabel = buildTelegramCtoWorkerLabel(task.id, workerProfile);
+
     await mutateTelegramWorkflowRuntime(cwd, runtime, () => {
       markWorkflowTaskRunning(runtime.state, task.id);
     });
@@ -1597,7 +1600,9 @@ async function executeTelegramCtoTasks({ cwd, profile, message, runtime, runsPat
       message,
       task,
       hostExecutor,
-      logPath
+      logPath,
+      workerProfile,
+      sessionLabel: taskLabel
     });
 
     await mutateTelegramWorkflowRuntime(cwd, runtime, async () => {
@@ -1610,11 +1615,10 @@ async function executeTelegramCtoTasks({ cwd, profile, message, runtime, runsPat
       }
 
       if (runResult.sessionId) {
-        const workerProfile = resolveTelegramCtoSubagentProfile({ kind: 'worker', task });
         await recordTelegramChildSession(runtime.session, cwd, {
           sessionId: runResult.sessionId,
           updateId: message.update_id,
-          label: `Task ${task.id} · ${workerProfile.name_zh}`,
+          label: taskLabel,
           agentNameZh: workerProfile.name_zh,
           agentRoleZh: workerProfile.role_zh,
           taskId: task.id
@@ -1661,10 +1665,20 @@ async function executeTelegramCtoTasks({ cwd, profile, message, runtime, runsPat
   }
 }
 
-async function runTelegramCtoTask({ cwd, profile, runtime, message, task, hostExecutor, logPath }) {
+async function runTelegramCtoTask({
+  cwd,
+  profile,
+  runtime,
+  message,
+  task,
+  hostExecutor,
+  logPath,
+  workerProfile = null,
+  sessionLabel = ''
+}) {
   const outputPath = path.join(runtime.sessionDir, 'artifacts', `telegram-task-${sanitizeFileComponent(task.id)}.json`);
   const workerSoul = await loadCtoSubagentSoulDocument(cwd, { kind: 'worker' });
-  const workerProfile = resolveTelegramCtoSubagentProfile({ kind: 'worker', task });
+  const resolvedWorkerProfile = workerProfile || resolveTelegramCtoSubagentProfile({ kind: 'worker', task });
   const workerPrompt = buildTelegramCtoWorkerExecutionPrompt({
     workflowState: runtime.state,
     task,
@@ -1707,7 +1721,7 @@ async function runTelegramCtoTask({ cwd, profile, runtime, message, task, hostEx
     claimed,
     message,
     logPath,
-    sessionLabel: `Task ${task.id} · ${workerProfile.name_zh}`
+    sessionLabel: sessionLabel || buildTelegramCtoWorkerLabel(task.id, resolvedWorkerProfile)
   });
 }
 
@@ -1728,6 +1742,7 @@ async function executeClaimedHostExecutorJob({
   const outputPath = job.output_path || path.join(runtime.sessionDir, 'artifacts', `telegram-task-${sanitizeFileComponent(task.id)}.json`);
   const updateId = job.update_id || message?.update_id || runtime.rootMessage.update_id || 0;
   const codexCliVersion = getDelegatedCodexCliVersion();
+  const resolvedSessionLabel = sessionLabel || buildTelegramCtoWorkerLabel(job.task_id, workerProfile, 'Host executor');
 
   if (logPath) {
     await appendFile(logPath, `[${toIsoString()}] host executor claimed ${job.job_id} for workflow ${job.workflow_session_id} task ${job.task_id}\n`, 'utf8');
@@ -1770,7 +1785,7 @@ async function executeClaimedHostExecutorJob({
         runtime,
         sessionId,
         updateId,
-        label: sessionLabel || `Host executor ${job.task_id} · ${workerProfile.name_zh}`,
+        label: resolvedSessionLabel,
         agentNameZh: workerProfile.name_zh,
         agentRoleZh: workerProfile.role_zh,
         taskId: task.id,
@@ -1795,6 +1810,9 @@ async function executeClaimedHostExecutorJob({
       childSession = null;
     }
   }
+  const runSummary = outputPayload?.summary || childSession?.summary || null;
+  const childStatus = childSession?.status || '';
+  const hostJobStatus = runSummary?.status || childStatus || (result.code === 0 ? 'completed' : 'failed');
 
   const runResult = {
     code: result.code,
@@ -1802,26 +1820,30 @@ async function executeClaimedHostExecutorJob({
     stderr: result.stderr,
     sessionId,
     outputPath,
-    childStatus: childSession?.status || '',
-    summary: outputPayload?.summary || childSession?.summary || null,
+    childStatus,
+    summary: runSummary,
     hostJobId: job.job_id,
     hostJobPath: jobPath
   };
 
   await updateHostExecutorJob(jobPath, {
-    status: runResult.summary?.status || runResult.childStatus || (runResult.code === 0 ? 'completed' : 'failed'),
+    status: hostJobStatus,
     host_session_id: sessionId || '',
     host_session_path: sessionId ? path.join(getSessionDir(jobCwd, sessionId), 'session.json') : '',
-    result_summary: runResult.summary || childSession?.summary || null,
-    error_message: typeof runResult.summary?.result === 'string' ? runResult.summary.result : ''
+    result_summary: runSummary,
+    error_message: typeof runSummary?.result === 'string' ? runSummary.result : ''
   });
 
   if (logPath) {
-    await appendFile(logPath, `[${toIsoString()}] host executor finished ${job.job_id} -> ${runResult.sessionId || 'no-session'} (${runResult.summary?.status || runResult.childStatus || runResult.code})\n`, 'utf8');
+    await appendFile(logPath, `[${toIsoString()}] host executor finished ${job.job_id} -> ${runResult.sessionId || 'no-session'} (${hostJobStatus || runResult.code})\n`, 'utf8');
   }
-  process.stdout.write(`Host executor finished ${job.job_id} -> ${runResult.sessionId || 'no-session'} (${runResult.summary?.status || runResult.childStatus || runResult.code})\n`);
+  process.stdout.write(`Host executor finished ${job.job_id} -> ${runResult.sessionId || 'no-session'} (${hostJobStatus || runResult.code})\n`);
 
   return runResult;
+}
+
+function buildTelegramCtoWorkerLabel(taskId, workerProfile, prefix = 'Task') {
+  return `${prefix} ${taskId} · ${workerProfile.name_zh}`;
 }
 
 function hasReroutedWorkflowTasks(workflowState) {
