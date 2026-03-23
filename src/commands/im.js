@@ -1824,71 +1824,9 @@ async function executeClaimedHostExecutorJob({
   return runResult;
 }
 
-function isHostExecutorRerouteCandidate(runResult) {
-  const summary = runResult?.summary && typeof runResult.summary === 'object'
-    ? runResult.summary
-    : null;
-  if (!summary || !['failed', 'partial'].includes(String(summary.status || ''))) {
-    return false;
-  }
-
-  if (summary.title === 'Run blocked by host sandbox') {
-    return true;
-  }
-
-  const validation = Array.isArray(summary.validation) ? summary.validation : [];
-  if (validation.some((item) => String(item || '').startsWith('sandbox_detection:'))) {
-    return true;
-  }
-
-  const summaryTexts = [
-    summary.title,
-    summary.result,
-    ...(Array.isArray(summary.highlights) ? summary.highlights : []),
-    ...(Array.isArray(summary.next_steps) ? summary.next_steps : []),
-    ...(Array.isArray(summary.risks) ? summary.risks : []),
-    ...validation,
-    ...(Array.isArray(summary.findings)
-      ? summary.findings.map((item) => (typeof item === 'string'
-        ? item
-        : [item?.title, item?.detail, item?.message].filter(Boolean).join(' ')))
-      : []),
-    runResult?.stderr,
-    runResult?.stdout
-  ]
-    .filter(Boolean)
-    .join('\n');
-
-  return /更严格的外层沙箱|host sandbox|只读沙箱|read-only sandbox|Operation not permitted|\bEPERM\b|写入被拒绝|无法写入|cannot write|Downloads?\b/i
-    .test(summaryTexts);
-}
-
 function hasReroutedWorkflowTasks(workflowState) {
   return Array.isArray(workflowState?.tasks)
     && workflowState.tasks.some((task) => String(task?.summary_status || '') === 'rerouted');
-}
-
-function buildHostExecutorRerouteSummary({ task, queuedJob, sourceSummary }) {
-  const blockedReason = typeof sourceSummary?.result === 'string' && sourceSummary.result.trim()
-    ? sourceSummary.result.trim()
-    : 'Worker execution was blocked by the stricter host sandbox.';
-  return {
-    title: 'Task rerouted to host executor',
-    result: `已检测到当前 worker 所在环境的宿主沙箱更严格，任务已自动转入 host executor queue，CTO 主线程会继续跟踪并在完成后主动汇报。\n原始原因：${blockedReason}`,
-    status: 'rerouted',
-    highlights: [
-      `Queue Job: ${queuedJob.job_id}.`,
-      `Task: ${typeof task?.id === 'string' ? task.id : 'unknown'}.`
-    ],
-    next_steps: [],
-    risks: [],
-    validation: ['host_executor:queued'],
-    changed_files: [],
-    findings: [],
-    session_contract: queuedJob.session_contract || null,
-    reroute_job_id: queuedJob.job_id,
-    reroute_record_path: queuedJob.record_path || ''
-  };
 }
 
 function buildTelegramCtoRerouteText(workflowState) {

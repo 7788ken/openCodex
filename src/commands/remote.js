@@ -280,15 +280,7 @@ async function runRemoteStatus(args) {
     exposure,
     urls,
     message_count: messages.length,
-    latest_message: latestMessage
-      ? {
-          created_at: latestMessage.created_at || null,
-          sender: latestMessage.sender || null,
-          text: latestMessage.text || null,
-          bridge_status: latestMessage.bridge_status || '',
-          bridge_session_id: latestMessage.bridge_session_id || ''
-        }
-      : null,
+    latest_message: buildRemoteLatestMessagePayload(latestMessage),
     health_probe: healthProbe,
     bridge_attach: bridgeAttach,
     warnings: [
@@ -1189,6 +1181,22 @@ function buildRemoteBridgeResponsePayload(bridgeRelay) {
     delivery_status: bridgeRelay.deliveryStatus || '',
     delivered_at: bridgeRelay.deliveredAt || '',
     error: bridgeRelay.error || ''
+  };
+}
+
+function buildRemoteLatestMessagePayload(message) {
+  if (!message) {
+    return null;
+  }
+
+  return {
+    created_at: message.created_at || null,
+    sender: message.sender || null,
+    text: message.text || null,
+    bridge_status: message.bridge_status || '',
+    bridge_session_id: message.bridge_session_id || '',
+    bridge_delivery_status: message.bridge_delivery_status || '',
+    bridge_delivered_at: message.bridge_delivered_at || ''
   };
 }
 
