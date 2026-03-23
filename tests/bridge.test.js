@@ -5,10 +5,45 @@ import path from 'node:path';
 import { chmod, mkdtemp, readFile, realpath } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { resolveBridgeRuntimeStrategy } from '../src/commands/bridge.js';
 
 const fixture = path.resolve('tests/fixtures/mock-codex.js');
 const liveFixture = path.resolve('tests/fixtures/mock-codex-live.js');
 const cli = path.resolve('bin/opencodex.js');
+
+test('bridge runtime strategy uses expect on macOS TTYs and keeps existing non-macOS fallbacks', () => {
+  assert.deepEqual(resolveBridgeRuntimeStrategy({
+    platform: 'darwin',
+    stdinIsTTY: true
+  }), {
+    launcher: 'expect',
+    transport: 'pty_inbox'
+  });
+
+  assert.deepEqual(resolveBridgeRuntimeStrategy({
+    platform: 'linux',
+    stdinIsTTY: true
+  }), {
+    launcher: 'script',
+    transport: 'pty_inbox'
+  });
+
+  assert.deepEqual(resolveBridgeRuntimeStrategy({
+    platform: 'darwin',
+    stdinIsTTY: false
+  }), {
+    launcher: 'pipe',
+    transport: 'pipe_inbox'
+  });
+
+  assert.deepEqual(resolveBridgeRuntimeStrategy({
+    platform: 'win32',
+    stdinIsTTY: true
+  }), {
+    launcher: 'pipe',
+    transport: 'pipe_inbox'
+  });
+});
 
 test('bridge status reports a missing bridge state and the current Codex candidate', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'opencodex-bridge-status-'));

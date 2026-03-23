@@ -920,17 +920,39 @@ async function fileExists(targetPath) {
   }
 }
 
+export function resolveBridgeRuntimeStrategy({
+  platform = process.platform,
+  stdinIsTTY = Boolean(process.stdin?.isTTY)
+} = {}) {
+  if (platform === 'win32' || !stdinIsTTY) {
+    return {
+      launcher: 'pipe',
+      transport: 'pipe_inbox'
+    };
+  }
+
+  if (platform === 'darwin') {
+    return {
+      launcher: 'expect',
+      transport: 'pty_inbox'
+    };
+  }
+
+  return {
+    launcher: 'script',
+    transport: 'pty_inbox'
+  };
+}
+
 function spawnBridgeRuntime(command, args, options = {}) {
-  const canUsePtyRelay = process.platform !== 'win32' && Boolean(process.stdin?.isTTY);
-  if (!canUsePtyRelay) {
+  const strategy = resolveBridgeRuntimeStrategy();
+  if (strategy.launcher === 'pipe') {
     return spawnPipeBridgeRuntime(command, args, options);
   }
 
-  const child = spawn('script', ['-q', '/dev/null', command, ...args], {
-    cwd: options.cwd,
-    env: options.env || process.env,
-    stdio: ['pipe', 'pipe', 'pipe']
-  });
+  const child = strategy.launcher === 'expect'
+    ? spawnExpectBridgeRuntime(command, args, options)
+    : spawnScriptBridgeRuntime(command, args, options);
 
   const stopLocalInput = forwardLocalBridgeInput(child);
   const stopInboxRelay = startBridgeInboxRelay({
@@ -966,8 +988,55 @@ function spawnBridgeRuntime(command, args, options = {}) {
   return {
     child,
     completion,
-    transport: 'pty_inbox'
+    transport: strategy.transport
   };
+}
+
+function spawnScriptBridgeRuntime(command, args, options = {}) {
+  return spawn('script', ['-q', '/dev/null', command, ...args], {
+    cwd: options.cwd,
+    env: options.env || process.env,
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+}
+
+function spawnExpectBridgeRuntime(command, args, options = {}) {
+  return spawn('/usr/bin/expect', ['-c', buildExpectBridgeRuntimeScript(command, args)], {
+    cwd: options.cwd,
+    env: options.env || process.env,
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+}
+
+function buildExpectBridgeRuntimeScript(command, args) {
+  const argvList = [command, ...args].map((value) => tclDoubleQuote(value)).join(' ');
+  return [
+    'log_user 1',
+    'set timeout -1',
+    'fconfigure stdin -blocking 0 -buffering none -translation binary -encoding binary',
+    'proc relay_stdin {spawn_id} {',
+    '  if {[eof stdin]} { return }',
+    '  set chunk [read stdin]',
+    '  if {$chunk eq ""} { return }',
+    '  send -i $spawn_id -- $chunk',
+    '}',
+    `set command [list ${argvList}]`,
+    'spawn -noecho {*}$command',
+    'set bridge_spawn_id $spawn_id',
+    'fileevent stdin readable [list relay_stdin $bridge_spawn_id]',
+    'expect eof',
+    'catch wait result',
+    'exit [lindex $result 3]'
+  ].join('\n');
+}
+
+function tclDoubleQuote(value) {
+  return `"${String(value || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\$/g, '\\$')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')}"`;
 }
 
 function spawnPipeBridgeRuntime(command, args, options = {}) {
