@@ -11,6 +11,7 @@ import {
   buildDefaultCtoReplyAgentSoulDocument,
   buildTelegramCtoFinalText,
   buildTelegramCtoQuestionText,
+  buildTelegramCtoWorkflowReplyPrompt,
   buildTelegramCtoStatusText,
   buildTelegramCtoMainThreadSystemPrompt,
   buildTelegramCtoPlannerPrompt,
@@ -166,6 +167,53 @@ test('cto prompt builders apply chat and workflow soul overlays separately', () 
   assert.doesNotMatch(plannerPrompt, /chat-mode soul document/);
 });
 
+test('cto direct reply prompt keeps chat continuity when a workflow is already running', () => {
+  const prompt = buildTelegramCtoDirectReplyPrompt({
+    message: { text: '你现在在干嘛' },
+    activeWorkflowState: {
+      workflow_session_id: 'cto-20260324-123456-abcd12',
+      status: 'running',
+      goal_text: '继续推进 Telegram CTO 的主线体验修复'
+    },
+    replyMode: 'casual',
+    chatState: { last_mode: 'workflow', direct_reply_count: 0 }
+  });
+
+  assert.match(prompt, /There is an active CTO workflow still running in the background for this chat\./);
+  assert.match(prompt, /Make it clear that the running workflow remains active in the background/);
+  assert.match(prompt, /Keep the conversation on the same main line/);
+});
+
+test('cto workflow reply prompt gives facts to the model and bans internal jargon', () => {
+  const prompt = buildTelegramCtoWorkflowReplyPrompt({
+    workflowState: {
+      workflow_session_id: 'cto-123',
+      status: 'waiting_for_user',
+      goal_text: '继续推进 TG CTO 主线',
+      plan_summary_zh: '已经推进到需要确认的一步。',
+      pending_question_zh: '是否继续扩这轮状态回执。',
+      tasks: [
+        { id: 't1', title: 'Patch wording', status: 'completed', result: '已经做完了。', changed_files: ['src/mock.js'] }
+      ],
+      long_tasks: [
+        { title_zh: '继续推进 TG CTO 主线', summary_zh: '已经推进到需要确认的一步。', next_step_zh: '等确认后继续。', status: 'waiting_for_user' }
+      ],
+      short_tasks: [
+        { title: 'Patch wording', status: 'completed', summary_zh: '已经做完了。' }
+      ]
+    },
+    replyKind: 'status',
+    messageText: '主线到哪了'
+  });
+
+  assert.match(prompt, /Workflow reply mode: Telegram CTO workflow-facing reply\./);
+  assert.match(prompt, /Reply kind: status/);
+  assert.match(prompt, /Do not use internal project jargon such as “拍板”, “收口”, “编排”, or “续跑”/);
+  assert.match(prompt, /Workflow facts \(JSON\):/);
+  assert.match(prompt, /"goal_text": "继续推进 TG CTO 主线"/);
+  assert.match(prompt, /"pending_question_zh": "是否继续扩这轮状态回执。"/);
+});
+
 test('cto worker prompt assigns a grounded named subagent deterministically', () => {
   const workerProfile = resolveTelegramCtoSubagentProfile({
     kind: 'worker',
@@ -292,6 +340,8 @@ test('createTelegramWorkflowState uses current clock time for workflow freshness
   assert.ok(createdAt >= before && createdAt <= after);
   assert.ok(updatedAt >= before && updatedAt <= after);
   assert.equal(state.user_messages[0].created_at, message.created_at);
+  assert.equal(state.long_tasks.length, 1);
+  assert.equal(state.short_tasks.length, 0);
 });
 
 test('pending workflow resumes only for explicit continue or question answer', () => {
@@ -369,6 +419,15 @@ test('cto conversation gate keeps vague follow-ups on the chat main line when th
     text: '帮我看看',
     chatState: { direct_reply_count: 3, last_mode: 'conversation' },
     hasPendingWorkflow: false
+  }), true);
+});
+
+test('cto conversation gate keeps vague follow-ups on the chat main line when a workflow is already active', () => {
+  assert.equal(shouldKeepTelegramCtoInConversationMode({
+    text: '帮我看看',
+    chatState: { direct_reply_count: 3, last_mode: 'workflow' },
+    hasPendingWorkflow: false,
+    hasActiveWorkflow: true
   }), true);
 });
 
@@ -568,12 +627,12 @@ test('cto waiting reply uses a clear Chinese checklist', () => {
     ]
   });
 
-  assert.match(text, /我先停在这里，等你拍板/);
-  assert.match(text, /需要你确认：请确认是否继续修改本地仓库/);
+  assert.match(text, /这条主线我先推进到这里，现在需要你确认一件事/);
+  assert.match(text, /需要你确认的是：请确认是否继续修改本地仓库/);
   assert.match(text, /我这边已经完成 1 项，失败 1 项，待跟进 1 项/);
 });
 
-test('cto status reply keeps progress natural instead of reporting internal workflow headers', () => {
+test('cto status reply keeps progress natural and foregrounds the mainline with short tasks', () => {
   const text = buildTelegramCtoStatusText({
     workflow_session_id: 'cto-123',
     goal_text: '修一下 Telegram CTO 的主线陪伴感',
@@ -585,11 +644,12 @@ test('cto status reply keeps progress natural instead of reporting internal work
     ]
   });
 
-  assert.match(text, /^我还在跟这轮。/);
-  assert.match(text, /当前目标：修一下 Telegram CTO 的主线陪伴感/);
-  assert.match(text, /手头状态：waiting_for_user（等待 CEO 确认）/);
-  assert.match(text, /最近任务：/);
-  assert.match(text, /还差你确认：是否继续把同样的口吻扩到更多状态回执。/);
+  assert.match(text, /^这条主线我还在跟，现在有个问题需要你确认。/);
+  assert.match(text, /主线：修一下 Telegram CTO 的主线陪伴感/);
+  assert.match(text, /现在到这：已经补了主线陪伴文案，还差你确认是否继续扩范围。/);
+  assert.match(text, /手头短任务：/);
+  assert.match(text, /\[已完成\] Patch presence reply：已经做完了。/);
+  assert.match(text, /现在需要你确认：是否继续把同样的口吻扩到更多状态回执。/);
   assert.doesNotMatch(text, /openCodex CTO 工作流汇报|Workflow:/);
 });
 
@@ -670,7 +730,7 @@ test('cto waiting final reply keeps confirmation and changed files readable', ()
     ]
   });
 
-  assert.match(finalText, /这轮先做到这里，还差你拍板。/);
+  assert.match(finalText, /这轮先做到这里，现在需要你确认一下。/);
   assert.match(finalText, /需要你确认：/);
   assert.match(finalText, /请确认是否继续按最小改动推进。/);
   assert.match(finalText, /已完成部分：/);

@@ -150,7 +150,7 @@ export function shouldResumeTelegramPendingWorkflow({ workflowState, messageText
 
 export function createTelegramWorkflowState({ workflowSessionId, relatedWorkflowId = '', message }) {
   const nowIso = new Date().toISOString();
-  return {
+  const workflowState = {
     workflow_session_id: workflowSessionId,
     related_workflow_id: relatedWorkflowId,
     provider: 'telegram',
@@ -168,6 +168,8 @@ export function createTelegramWorkflowState({ workflowSessionId, relatedWorkflow
     pending_question_zh: '',
     task_counter: 0,
     tasks: [],
+    long_tasks: [],
+    short_tasks: [],
     user_messages: [
       {
         update_id: message.update_id,
@@ -177,6 +179,7 @@ export function createTelegramWorkflowState({ workflowSessionId, relatedWorkflow
       }
     ]
   };
+  return refreshTelegramWorkflowTaskViews(workflowState);
 }
 
 export function appendWorkflowUserMessage(workflowState, message) {
@@ -195,6 +198,7 @@ export function appendWorkflowUserMessage(workflowState, message) {
     text: message.text,
     created_at: message.created_at
   });
+  refreshTelegramWorkflowTaskViews(workflowState);
 }
 
 export function buildTelegramCtoAutoReplyText(message, continuation = false) {
@@ -384,7 +388,7 @@ function referencesTelegramPreviousPendingQuestion(text, chatState = null) {
     && TELEGRAM_CTO_PREVIOUS_PENDING_QUESTION_REFERENCE_PATTERN.test(rawText);
 }
 
-export function shouldKeepTelegramCtoInConversationMode({ text, chatState = null, hasPendingWorkflow = false }) {
+export function shouldKeepTelegramCtoInConversationMode({ text, chatState = null, hasPendingWorkflow = false, hasActiveWorkflow = false }) {
   const intent = classifyTelegramCtoMessageIntent(text);
   if (intent.kind === 'empty') {
     return true;
@@ -410,6 +414,9 @@ export function shouldKeepTelegramCtoInConversationMode({ text, chatState = null
     return true;
   }
   if (hasPendingWorkflow && isVagueTelegramCtoDirectiveMessage(text)) {
+    return true;
+  }
+  if (hasActiveWorkflow && !hasPendingWorkflow && isVagueTelegramCtoDirectiveMessage(text)) {
     return true;
   }
   if (isStrongTelegramCtoDirectiveMessage(text)) {
@@ -443,6 +450,7 @@ export function isLikelyTelegramCtoCasualChatMessage(text) {
 export function buildTelegramCtoDirectReplyPrompt({
   message,
   pendingWorkflowState = null,
+  activeWorkflowState = null,
   soulText = '',
   soulPath = '',
   modeSoulText = '',
@@ -538,6 +546,16 @@ export function buildTelegramCtoDirectReplyPrompt({
       `Pending question: ${asTrimmedString(pendingWorkflowState.pending_question_zh) || '(none)'}`,
       'You must clearly say that this workflow remains unchanged and waiting.',
       'If the CEO wants to continue execution, tell them to answer the pending question directly.'
+    );
+  } else if (activeWorkflowState?.workflow_session_id) {
+    lines.push(
+      '',
+      'There is an active CTO workflow still running in the background for this chat.',
+      `Workflow: ${activeWorkflowState.workflow_session_id}`,
+      `Workflow status: ${asTrimmedString(activeWorkflowState.status) || '(unknown)'}`,
+      `Workflow goal: ${truncateInline(asTrimmedString(activeWorkflowState.goal_text), 220) || '(none)'}`,
+      'Make it clear that the running workflow remains active in the background and this chat does not block it.',
+      'Keep the conversation on the same main line instead of acting like this is a brand-new detached chat.'
     );
   } else {
     lines.push(
@@ -712,6 +730,7 @@ export function buildDefaultCtoChatSoulDocument() {
     '',
     '## Chat Priority',
     '- Treat chat as the default control surface and primary continuity thread.',
+    '- Keep chat as the main line even when background workflows are already running.',
     '- Prefer a natural, direct answer before considering workflow creation.',
     '- Do not create tasks just because the user is warm, vague, or thinking aloud.',
     '',
@@ -735,6 +754,7 @@ export function buildDefaultCtoWorkflowSoulDocument() {
     '',
     '## Workflow Priority',
     '- Treat workflow orchestration as a branch triggered by the main chat thread, not as the default response mode.',
+    '- A running workflow must never block the main chat thread; execution happens in the background while the CTO keeps talking on the same line.',
     '- When execution is justified, move decisively: infer the safest high-leverage path and start with the smallest meaningful task set.',
     '- Keep workflow state coherent so the CEO can always tell what is running, waiting, blocked, or complete.',
     '- Keep workflow-facing Chinese updates plain and concise so progress and decisions are understandable at a glance.',
@@ -942,8 +962,141 @@ export function buildTelegramCtoPlannerPrompt({
   ].join('\n');
 }
 
+export function buildTelegramCtoWorkflowReplyPrompt({
+  workflowState,
+  replyKind = 'status',
+  messageText = '',
+  soulText = '',
+  soulPath = '',
+  modeSoulText = '',
+  modeSoulPath = '',
+  agentSoulText = '',
+  agentSoulPath = ''
+}) {
+  const agentProfile = resolveTelegramCtoSubagentProfile({ kind: 'reply', replyMode: 'conversation' });
+  const facts = buildTelegramCtoWorkflowReplyFacts(workflowState);
+  const lines = [
+    buildTelegramCtoMainThreadSystemPrompt({
+      mode: 'workflow',
+      baseSoulText: soulText,
+      baseSoulPath: soulPath,
+      modeSoulText,
+      modeSoulPath
+    }),
+    '',
+    buildTelegramCtoSubagentIdentityBlock({
+      profile: agentProfile,
+      soulText: agentSoulText,
+      soulPath: agentSoulPath
+    }),
+    '',
+    'Workflow reply mode: Telegram CTO workflow-facing reply.',
+    `Reply kind: ${String(replyKind || 'status').trim() || 'status'}`,
+    'You are drafting the final Telegram text that the CEO will read.',
+    'Use the workflow facts below and write the reply in natural Simplified Chinese.',
+    'Do not use report headers, markdown wrappers, numbered sections, or rigid template language inside `result`.',
+    'Do not use internal project jargon such as “拍板”, “收口”, “编排”, or “续跑” unless the CEO used the same wording first.',
+    'Sound like a capable human assistant, not like a dashboard or a ticketing system.',
+    'Say the most important outcome first.',
+    'Only mention the few facts that matter right now; do not dump the whole task table.',
+    'If user confirmation is needed, say plainly what needs to be confirmed.',
+    'If work is complete, say plainly what is done and what changed only if it helps the CEO.',
+    'Keep the reply compact: usually 2-6 short lines.',
+    'Return JSON that matches the provided schema.',
+    'Set `title` to `Telegram CTO workflow reply`.',
+    'Set `status` to `completed`.',
+    'Put the final Telegram reply text in `result`.',
+    'Leave `highlights`, `next_steps`, `risks`, `validation`, `changed_files`, and `findings` empty arrays.',
+    '',
+    'Trigger message:',
+    truncateInline(asTrimmedString(messageText) || '(none)', 220) || '(none)',
+    '',
+    'Workflow facts (JSON):',
+    JSON.stringify(facts, null, 2)
+  ];
+
+  if (replyKind === 'status') {
+    lines.push(
+      '',
+      'For a status reply:',
+      '- First say where the current main line stands.',
+      '- Mention only the most relevant short tasks if helpful.',
+      '- If the workflow is waiting for input, clearly say what needs confirmation.'
+    );
+  } else if (replyKind === 'question') {
+    lines.push(
+      '',
+      'For a confirmation/question reply:',
+      '- Say progress has reached a point where one confirmation is needed.',
+      '- State the exact question in plain Chinese.',
+      '- Briefly mention what is already done only if it helps the CEO decide.'
+    );
+  } else if (replyKind === 'final') {
+    lines.push(
+      '',
+      'For a final reply:',
+      '- Start with whether this round is done, paused, cancelled, partial, or failed.',
+      '- Summarize the most important completed work or blocker.',
+      '- Mention next action only if it is truly needed.'
+    );
+  }
+
+  return lines.join('\n');
+}
+
 function normalizeCtoSoulVariant(variant) {
   return ['chat', 'workflow'].includes(String(variant || '').trim()) ? String(variant).trim() : 'base';
+}
+
+function buildTelegramCtoWorkflowReplyFacts(workflowState) {
+  refreshTelegramWorkflowTaskViews(workflowState);
+  const counts = summarizeWorkflowCounts(workflowState);
+  const mainlineTask = Array.isArray(workflowState?.long_tasks) ? workflowState.long_tasks[0] : null;
+  const shortTasks = Array.isArray(workflowState?.short_tasks) ? workflowState.short_tasks : [];
+  const tasks = Array.isArray(workflowState?.tasks) ? workflowState.tasks : [];
+  const changedFiles = collectWorkflowChangedFiles(workflowState).slice(0, 6);
+  const nextSteps = collectWorkflowNextSteps(workflowState).slice(0, 4);
+
+  return {
+    workflow_session_id: asTrimmedString(workflowState?.workflow_session_id) || '',
+    workflow_status: asTrimmedString(workflowState?.status) || '',
+    goal_text: asTrimmedString(workflowState?.goal_text) || '',
+    plan_summary_zh: asTrimmedString(workflowState?.plan_summary_zh) || '',
+    pending_question_zh: asTrimmedString(workflowState?.pending_question_zh) || '',
+    updated_at: asTrimmedString(workflowState?.updated_at) || '',
+    counts,
+    mainline: mainlineTask ? {
+      title_zh: asTrimmedString(mainlineTask.title_zh) || '',
+      summary_zh: asTrimmedString(mainlineTask.summary_zh) || '',
+      next_step_zh: asTrimmedString(mainlineTask.next_step_zh) || '',
+      status: asTrimmedString(mainlineTask.status) || ''
+    } : null,
+    short_tasks: shortTasks.slice(0, 4).map((task) => ({
+      title: asTrimmedString(task?.title) || '',
+      status: asTrimmedString(task?.status) || '',
+      summary_zh: asTrimmedString(task?.summary_zh) || ''
+    })),
+    completed_tasks: tasks
+      .filter((task) => task?.status === 'completed')
+      .slice(0, 4)
+      .map((task) => buildTelegramCtoFinalTaskLine(task)),
+    issue_tasks: tasks
+      .filter((task) => task?.status === 'partial' || task?.status === 'failed')
+      .slice(0, 4)
+      .map((task) => buildTelegramCtoFinalTaskLine(task)),
+    changed_files: changedFiles,
+    next_steps: nextSteps,
+    recent_tasks: tasks.slice(-6).map((task) => ({
+      id: asTrimmedString(task?.id) || '',
+      title: asTrimmedString(task?.title) || '',
+      status: asTrimmedString(task?.status) || '',
+      result: truncateInline(normalizeTelegramCtoFinalTaskResultText(task?.result, {
+        status: task?.status,
+        changedFiles: asStringList(task?.changed_files)
+      }), 180),
+      next_step: truncateInline(normalizeTelegramCtoFinalNextStepText(asStringList(task?.next_steps)[0] || ''), 180)
+    }))
+  };
 }
 
 function getDefaultCtoSoulRelativePath(variant) {
@@ -1496,49 +1649,53 @@ export function appendPlanTasksToWorkflow(workflowState, plan) {
   if (plan.mode === 'execute') {
     workflowState.tasks.push(...plan.tasks);
     workflowState.status = 'running';
+    refreshTelegramWorkflowTaskViews(workflowState);
     return;
   }
 
   workflowState.status = 'waiting_for_user';
+  refreshTelegramWorkflowTaskViews(workflowState);
 }
 
 export function buildTelegramCtoPlanText(workflowState) {
+  refreshTelegramWorkflowTaskViews(workflowState);
   const tasks = Array.isArray(workflowState.tasks) ? workflowState.tasks : [];
   const latestTasks = tasks.filter((task) => task.status === 'queued' || task.status === 'running').slice(-4);
   const ready = latestTasks.filter((task) => !task.depends_on.length).map((task) => task.id);
   const blocked = latestTasks.filter((task) => task.depends_on.length).map((task) => `${task.id} <= ${task.depends_on.join(', ')}`);
+  const mainlineTask = Array.isArray(workflowState.long_tasks) ? workflowState.long_tasks[0] : null;
 
   const lines = [
-    'openCodex CTO 已完成任务拆解',
-    `目标：${truncateInline(workflowState.goal_text, 160)}`,
-    `摘要：${truncateInline(workflowState.plan_summary_zh || '已进入调度阶段。', 220)}`,
-    '任务：'
+    '这条主线我已经拆开，先按这个顺序往前推。',
+    `主线：${truncateInline(mainlineTask?.title_zh || workflowState.goal_text || '当前主线', 160)}`,
+    `我先按这个判断推进：${truncateInline(mainlineTask?.summary_zh || workflowState.plan_summary_zh || '已进入调度阶段。', 220)}`,
+    '先做这几件：'
   ];
 
   for (const task of latestTasks) {
-    lines.push(`- ${task.id} ${truncateInline(task.title, 80)}`);
+    lines.push(`- ${truncateInline(task.title, 80)}`);
   }
 
   if (ready.length) {
-    lines.push(`已启动：${ready.join(', ')}`);
+    lines.push(`已经开跑：${ready.join(', ')}`);
   }
   if (blocked.length) {
-    lines.push('等待依赖：');
+    lines.push('后面的要等前置完成：');
     for (const item of blocked) {
       lines.push(`- ${item}`);
     }
   }
 
-  lines.push(`Workflow: ${workflowState.workflow_session_id}`);
   return lines.join('\n');
 }
 
 export function buildTelegramCtoQuestionText(workflowState) {
+  refreshTelegramWorkflowTaskViews(workflowState);
   const counts = summarizeWorkflowCounts(workflowState);
   const question = truncateInline(workflowState.pending_question_zh || '请补充执行所需信息。', 500);
   const lines = [
-    '我先停在这里，等你拍板。',
-    `需要你确认：${question}`
+    '这条主线我先推进到这里，现在需要你确认一件事。',
+    `需要你确认的是：${question}`
   ];
   if (counts.completed > 0 || counts.failed > 0 || counts.partial > 0) {
     lines.push(`我这边已经完成 ${counts.completed} 项，失败 ${counts.failed} 项，待跟进 ${counts.partial} 项。`);
@@ -1547,30 +1704,30 @@ export function buildTelegramCtoQuestionText(workflowState) {
 }
 
 export function buildTelegramCtoStatusText(workflowState) {
-  const counts = summarizeWorkflowCounts(workflowState);
-  const latestTasks = Array.isArray(workflowState.tasks)
-    ? workflowState.tasks.slice(-6)
-    : [];
-  const summary = workflowState.plan_summary_zh || buildWorkflowResultLine(workflowState, counts);
+  refreshTelegramWorkflowTaskViews(workflowState);
+  const mainlineTask = Array.isArray(workflowState.long_tasks) ? workflowState.long_tasks[0] : null;
+  const shortTasks = Array.isArray(workflowState.short_tasks) ? workflowState.short_tasks : [];
+  const opening = buildTelegramCtoStatusOpening(workflowState);
   const lines = [
-    '我还在跟这轮。',
-    `当前目标：${truncateInline(workflowState.goal_text, 160)}`,
-    `现在进展：${truncateInline(summary, 220)}`,
-    `手头状态：${formatTelegramWorkflowStatus(workflowState.status)}`,
-    `任务进度：排队 ${counts.queued}，进行中 ${counts.running}，转宿主执行 ${counts.rerouted}，已完成 ${counts.completed}，待跟进 ${counts.partial}，失败 ${counts.failed}，已取消 ${counts.cancelled}`
+    opening,
+    `主线：${truncateInline(mainlineTask?.title_zh || workflowState.goal_text || '当前主线', 160)}`,
+    `现在到这：${truncateInline(mainlineTask?.summary_zh || '还在继续推进。', 220)}`
   ];
 
-  if (latestTasks.length) {
-    lines.push('最近任务：');
-    for (const task of latestTasks) {
-      lines.push(`- [${getTaskDisplayStatus(task)}] ${task.id} ${truncateInline(task.title, 80)}`);
+  if (shortTasks.length) {
+    lines.push('手头短任务：');
+    for (const task of shortTasks) {
+      const summary = truncateInline(asTrimmedString(task?.summary_zh), 88);
+      lines.push(`- [${formatTelegramShortTaskStatus(task?.status)}] ${truncateInline(task?.title || task?.id || '任务', 80)}${summary ? `：${summary}` : ''}`);
     }
   } else {
-    lines.push('最近任务：暂无');
+    lines.push('手头短任务：暂无。');
   }
 
   if (workflowState.pending_question_zh) {
-    lines.push(`还差你确认：${truncateInline(workflowState.pending_question_zh, 220)}`);
+    lines.push(`现在需要你确认：${truncateInline(workflowState.pending_question_zh, 220)}`);
+  } else if (asTrimmedString(mainlineTask?.next_step_zh) && !['completed', 'cancelled'].includes(asTrimmedString(workflowState.status))) {
+    lines.push(`下一步：${truncateInline(mainlineTask.next_step_zh, 220)}`);
   }
 
   return lines.join('\n');
@@ -1767,6 +1924,7 @@ function translateTelegramCtoCommonEnglishNextStep(text) {
 }
 
 export function buildTelegramCtoFinalText(workflowState) {
+  refreshTelegramWorkflowTaskViews(workflowState);
   const counts = summarizeWorkflowCounts(workflowState);
   const tasks = Array.isArray(workflowState.tasks) ? workflowState.tasks : [];
   const completedTaskLines = tasks
@@ -1826,7 +1984,7 @@ export function buildTelegramCtoFinalText(workflowState) {
   }
 
   if (workflowState.status === 'waiting_for_user') {
-    lines.push('这轮先做到这里，还差你拍板。');
+    lines.push('这轮先做到这里，现在需要你确认一下。');
     if (counts.completed > 0 || counts.partial > 0 || counts.failed > 0) {
       lines.push(`已完成 ${counts.completed} 项，待继续 ${counts.partial} 项，失败 ${counts.failed} 项。`);
     }
@@ -1900,10 +2058,13 @@ export function buildTelegramCtoFinalText(workflowState) {
 }
 
 export function buildTelegramCtoSessionSummary(workflowState) {
+  refreshTelegramWorkflowTaskViews(workflowState);
   const counts = summarizeWorkflowCounts(workflowState);
   const status = mapWorkflowStatus(workflowState.status);
+  const mainlineTask = Array.isArray(workflowState.long_tasks) ? workflowState.long_tasks[0] : null;
   const highlights = [
     `Chat: ${workflowState.chat_id}`,
+    `Mainline: ${mainlineTask?.title_zh || asTrimmedString(workflowState.goal_text) || '(none)'}`,
     `Tasks: ${counts.total}`,
     `Completed: ${counts.completed}`,
     `Rerouted: ${counts.rerouted}`,
@@ -1990,6 +2151,7 @@ export function markWorkflowTaskRunning(workflowState, taskId, sessionId = '') {
   task.updated_at = new Date().toISOString();
   workflowState.status = 'running';
   workflowState.updated_at = task.updated_at;
+  refreshTelegramWorkflowTaskViews(workflowState);
   return task;
 }
 
@@ -2008,6 +2170,7 @@ export function applyWorkflowTaskResult(workflowState, taskId, runResult) {
     task.summary_status = summaryStatus;
     task.updated_at = new Date().toISOString();
     workflowState.updated_at = task.updated_at;
+    refreshTelegramWorkflowTaskViews(workflowState);
     return task;
   }
   if (summaryStatus === 'rerouted') {
@@ -2028,6 +2191,7 @@ export function applyWorkflowTaskResult(workflowState, taskId, runResult) {
     workflowState.updated_at = task.updated_at;
     workflowState.status = 'running';
     workflowState.pending_question_zh = '';
+    refreshTelegramWorkflowTaskViews(workflowState);
     return task;
   }
 
@@ -2048,6 +2212,7 @@ export function applyWorkflowTaskResult(workflowState, taskId, runResult) {
     workflowState.pending_question_zh = task.next_steps[0] || task.result || '请确认下一步处理方式。';
   }
 
+  refreshTelegramWorkflowTaskViews(workflowState);
   return task;
 }
 
@@ -2055,15 +2220,18 @@ export function finalizeWorkflowStatus(workflowState) {
   const counts = summarizeWorkflowCounts(workflowState);
 
   if (workflowState.status === 'cancelled') {
+    refreshTelegramWorkflowTaskViews(workflowState);
     return workflowState.status;
   }
 
   if (workflowState.status === 'waiting_for_user') {
+    refreshTelegramWorkflowTaskViews(workflowState);
     return workflowState.status;
   }
 
   if (counts.running > 0 || counts.rerouted > 0) {
     workflowState.status = 'running';
+    refreshTelegramWorkflowTaskViews(workflowState);
     return workflowState.status;
   }
 
@@ -2071,30 +2239,36 @@ export function finalizeWorkflowStatus(workflowState) {
   if (blockedTasks.length) {
     if (counts.failed > 0 && counts.completed === 0 && counts.partial === 0) {
       workflowState.status = 'failed';
+      refreshTelegramWorkflowTaskViews(workflowState);
       return workflowState.status;
     }
     if (counts.failed > 0 || counts.partial > 0) {
       workflowState.status = 'partial';
+      refreshTelegramWorkflowTaskViews(workflowState);
       return workflowState.status;
     }
     if (!workflowState.pending_question_zh) {
       workflowState.pending_question_zh = '仍有任务等待依赖，请确认是否继续调整当前工作流。';
     }
     workflowState.status = 'waiting_for_user';
+    refreshTelegramWorkflowTaskViews(workflowState);
     return workflowState.status;
   }
 
   if (counts.failed > 0 && counts.completed === 0) {
     workflowState.status = 'failed';
+    refreshTelegramWorkflowTaskViews(workflowState);
     return workflowState.status;
   }
 
   if (counts.failed > 0 || counts.partial > 0) {
     workflowState.status = 'partial';
+    refreshTelegramWorkflowTaskViews(workflowState);
     return workflowState.status;
   }
 
   workflowState.status = 'completed';
+  refreshTelegramWorkflowTaskViews(workflowState);
   return workflowState.status;
 }
 
@@ -2223,6 +2397,7 @@ export function cancelTelegramWorkflowState(workflowState) {
     }
   }
 
+  refreshTelegramWorkflowTaskViews(workflowState);
   return workflowState;
 }
 
@@ -2272,6 +2447,226 @@ function buildWorkflowResultLine(workflowState, counts) {
   }
 
   return `Workflow is running with ${counts.running} active task(s).`;
+}
+
+function refreshTelegramWorkflowTaskViews(workflowState) {
+  if (!workflowState || typeof workflowState !== 'object') {
+    return workflowState;
+  }
+
+  const safeWorkflowState = {
+    ...workflowState,
+    tasks: Array.isArray(workflowState.tasks) ? workflowState.tasks : []
+  };
+  const counts = summarizeWorkflowCounts(safeWorkflowState);
+  workflowState.long_tasks = buildTelegramWorkflowLongTasks(safeWorkflowState, counts);
+  workflowState.short_tasks = buildTelegramWorkflowShortTasks(safeWorkflowState);
+  return workflowState;
+}
+
+function buildTelegramWorkflowLongTasks(workflowState, counts) {
+  const title = truncateInline(
+    asTrimmedString(workflowState.goal_text)
+      || asTrimmedString(workflowState.plan_summary_zh)
+      || '当前主线',
+    88
+  ) || '当前主线';
+
+  return [
+    {
+      id: `${asTrimmedString(workflowState.workflow_session_id) || 'workflow'}:mainline`,
+      title_zh: title,
+      status: asTrimmedString(workflowState.status) || 'planning',
+      summary_zh: buildTelegramWorkflowMainlineSummary(workflowState, counts),
+      next_step_zh: resolveTelegramWorkflowMainlineNextStep(workflowState),
+      updated_at: asTrimmedString(workflowState.updated_at) || asTrimmedString(workflowState.created_at) || new Date().toISOString()
+    }
+  ];
+}
+
+function buildTelegramWorkflowShortTasks(workflowState) {
+  const tasks = Array.isArray(workflowState.tasks) ? workflowState.tasks : [];
+  return tasks
+    .map((task, index) => ({
+      id: asTrimmedString(task?.id) || `task-${index + 1}`,
+      title: asTrimmedString(task?.title) || asTrimmedString(task?.id) || '任务',
+      status: getTaskDisplayStatus(task),
+      summary_zh: buildTelegramWorkflowShortTaskSummary(task),
+      updated_at: asTrimmedString(task?.updated_at) || asTrimmedString(workflowState.updated_at) || ''
+    }))
+    .sort((left, right) => {
+      const priorityDelta = getTelegramShortTaskPriority(left.status) - getTelegramShortTaskPriority(right.status);
+      if (priorityDelta !== 0) {
+        return priorityDelta;
+      }
+      return String(right.updated_at || '').localeCompare(String(left.updated_at || ''));
+    })
+    .slice(0, 4);
+}
+
+function buildTelegramWorkflowMainlineSummary(workflowState, counts) {
+  const status = asTrimmedString(workflowState.status);
+  if (status === 'planning') {
+    return '刚接到这条主线，正在拆下一步。';
+  }
+  if (status === 'waiting_for_user') {
+    return asTrimmedString(workflowState.plan_summary_zh) || '已经推进到需要你确认的一步。';
+  }
+  if (status === 'completed') {
+    return counts.completed > 0
+      ? `主线已经收口，共完成 ${counts.completed} 项。`
+      : '主线已经收口。';
+  }
+  if (status === 'failed') {
+    return counts.failed > 0
+      ? `主线卡住了，当前有 ${counts.failed} 项没顺利收口。`
+      : '主线卡住了，还没顺利收口。';
+  }
+  if (status === 'partial') {
+    return `主线先推进了一段，已完成 ${counts.completed} 项，但还有收口项。`;
+  }
+  if (status === 'cancelled') {
+    return '这条主线先停下了。';
+  }
+  if (counts.rerouted > 0) {
+    return `主线还在推进，已有 ${counts.rerouted} 项转到宿主继续跑。`;
+  }
+  if (counts.running > 0) {
+    return `主线还在推进，当前有 ${counts.running} 项在跑。`;
+  }
+  if (counts.queued > 0) {
+    return `主线已经拆开，后面还有 ${counts.queued} 项排着。`;
+  }
+  return asTrimmedString(workflowState.plan_summary_zh) || '主线还在继续推进。';
+}
+
+function resolveTelegramWorkflowMainlineNextStep(workflowState) {
+  if (asTrimmedString(workflowState.pending_question_zh)) {
+    return asTrimmedString(workflowState.pending_question_zh);
+  }
+
+  for (const task of workflowState.tasks || []) {
+    const firstNextStep = asStringList(task?.next_steps)[0];
+    if (firstNextStep) {
+      return firstNextStep;
+    }
+  }
+
+  const runningTask = (workflowState.tasks || []).find((task) => getTaskDisplayStatus(task) === 'running' || getTaskDisplayStatus(task) === 'rerouted');
+  if (runningTask) {
+    return `先把「${asTrimmedString(runningTask.title) || asTrimmedString(runningTask.id) || '当前任务'}」收口。`;
+  }
+
+  const queuedTask = (workflowState.tasks || []).find((task) => asTrimmedString(task?.status) === 'queued');
+  if (queuedTask) {
+    return `接下来准备做「${asTrimmedString(queuedTask.title) || asTrimmedString(queuedTask.id) || '下一项任务'}」。`;
+  }
+
+  return '';
+}
+
+function buildTelegramWorkflowShortTaskSummary(task) {
+  const displayStatus = getTaskDisplayStatus(task);
+  if (displayStatus === 'rerouted') {
+    return '已转到宿主继续跑。';
+  }
+  if (displayStatus === 'running') {
+    return normalizeTelegramCtoFinalTaskResultText(task?.result, {
+      status: task?.status,
+      changedFiles: asStringList(task?.changed_files)
+    }) || '正在处理。';
+  }
+  if (displayStatus === 'queued') {
+    return Array.isArray(task?.depends_on) && task.depends_on.length > 0
+      ? `等 ${task.depends_on.join(', ')} 完成后接着做。`
+      : '已经排上，准备开做。';
+  }
+  if (displayStatus === 'completed') {
+    return normalizeTelegramCtoFinalTaskResultText(task?.result, {
+      status: task?.status,
+      changedFiles: asStringList(task?.changed_files)
+    }) || '已经做完了。';
+  }
+  if (displayStatus === 'partial') {
+    return normalizeTelegramCtoFinalNextStepText(asStringList(task?.next_steps)[0] || '')
+      || normalizeTelegramCtoFinalTaskResultText(task?.result, {
+        status: task?.status,
+        changedFiles: asStringList(task?.changed_files)
+      })
+      || '还差最后一步确认。';
+  }
+  if (displayStatus === 'failed') {
+    return normalizeTelegramCtoFinalTaskResultText(task?.result, {
+      status: task?.status,
+      changedFiles: asStringList(task?.changed_files)
+    })
+      || normalizeTelegramCtoFinalNextStepText(asStringList(task?.next_steps)[0] || '')
+      || '这一步还没顺利做完。';
+  }
+  if (displayStatus === 'cancelled') {
+    return '这一步先停了。';
+  }
+  return '';
+}
+
+function buildTelegramCtoStatusOpening(workflowState) {
+  const status = asTrimmedString(workflowState.status);
+  if (status === 'waiting_for_user') {
+    return '这条主线我还在跟，现在有个问题需要你确认。';
+  }
+  if (status === 'completed') {
+    return '这条主线已经收口了。';
+  }
+  if (status === 'failed') {
+    return '这条主线卡住了，我先把卡点给你讲清楚。';
+  }
+  if (status === 'partial') {
+    return '这条主线我还在跟，不过还没完全收口。';
+  }
+  if (status === 'cancelled') {
+    return '这条主线先停在这里了。';
+  }
+  return '这条主线我还在跟。';
+}
+
+function formatTelegramShortTaskStatus(status) {
+  switch (status) {
+    case 'running':
+      return '进行中';
+    case 'rerouted':
+      return '宿主执行';
+    case 'queued':
+      return '排队中';
+    case 'completed':
+      return '已完成';
+    case 'partial':
+      return '待跟进';
+    case 'failed':
+      return '失败';
+    case 'cancelled':
+      return '已取消';
+    default:
+      return status || '任务';
+  }
+}
+
+function getTelegramShortTaskPriority(status) {
+  switch (status) {
+    case 'running':
+    case 'rerouted':
+      return 0;
+    case 'partial':
+    case 'failed':
+      return 1;
+    case 'queued':
+      return 2;
+    case 'completed':
+      return 3;
+    case 'cancelled':
+      return 4;
+    default:
+      return 5;
+  }
 }
 
 function mapWorkflowStatus(status) {

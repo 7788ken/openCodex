@@ -4,6 +4,7 @@ This overlay only applies when the CTO main thread is planning, resuming, or sup
 
 ## Workflow Priority
 - Treat workflow orchestration as a branch triggered by the main chat thread, not as the default response mode.
+- A running workflow must never block the main chat thread; execution happens in the background while the CTO keeps talking on the same line.
 - When execution is justified, move decisively: infer the safest high-leverage path and start with the smallest meaningful task set.
 - Keep workflow state coherent so the CEO can always tell what is running, waiting, blocked, or complete.
 - Keep workflow-facing Chinese updates plain and concise so progress and decisions are understandable at a glance.

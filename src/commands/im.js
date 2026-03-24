@@ -6,6 +6,7 @@ import { parseOptions } from '../lib/args.js';
 import { getCodexBin, runCommandToFile } from '../lib/codex.js';
 import { buildRunArgs, buildSummaryFromMessage } from './run.js';
 import { readJson, readTextIfExists, writeJson, toIsoString } from '../lib/fs.js';
+import { resolveCodexProfile } from '../lib/profile.js';
 import {
   inspectActiveBridgeSession,
   queueBridgeSessionMessage,
@@ -18,6 +19,7 @@ import {
   buildTelegramCtoDirectReplyPrompt,
   buildTelegramCtoFinalText,
   buildTelegramCtoPlannerPrompt,
+  buildTelegramCtoWorkflowReplyPrompt,
   buildTelegramCtoWorkerExecutionPrompt,
   buildTelegramCtoQuestionText,
   buildTelegramCtoSessionSummary,
@@ -71,6 +73,9 @@ const DEFAULT_TELEGRAM_SERVICE_SESSION_RETENTION_MINUTES = readNonNegativeIntege
 );
 const TELEGRAM_WORKFLOW_RESUME_LEASE_TTL_MS = 90 * 1000;
 const TELEGRAM_WORKFLOW_RESUME_LEASE_HEARTBEAT_MS = 30 * 1000;
+const TELEGRAM_MAINLINE_STATE_SCHEMA = 'opencodex/telegram-mainline-state/v1';
+const TELEGRAM_MAINLINE_STATE_FILE = 'telegram-mainline.json';
+const TELEGRAM_MAINLINE_FALLBACK_RELATIVE_PATH = path.join('.opencodex', 'im', TELEGRAM_MAINLINE_STATE_FILE);
 const TELEGRAM_FINAL_REPLY_RECOVERY_WINDOW_MINUTES = readNonNegativeIntegerEnv(
   'OPENCODEX_TELEGRAM_FINAL_REPLY_RECOVERY_WINDOW_MINUTES',
   30
@@ -220,6 +225,9 @@ async function runTelegramListen(args) {
   let finalized = false;
   const workflowRuntimes = new Map();
   const chatStates = new Map();
+  const telegramMainlineStatePath = delegateMode === 'cto'
+    ? resolveTelegramMainlineStatePath({ cwd })
+    : '';
   const hostExecutor = delegateMode === 'cto'
     ? await ensureHostExecutorState(resolveHostExecutorRoot({ cwd }))
     : null;
@@ -227,7 +235,10 @@ async function runTelegramListen(args) {
     cwd,
     onTelegramOutbound: async () => {}
   });
-  await rehydratePendingTelegramCtoWorkflows(cwd, workflowRuntimes);
+  if (delegateMode === 'cto') {
+    await hydrateTelegramChatStatesFromMainline(cwd, chatStates);
+  }
+  await rehydratePendingTelegramCtoWorkflows(cwd, workflowRuntimes, chatStates);
 
   const writeListenerState = async () => {
     await writeJson(statePath, createTelegramListenerStatePayload({
@@ -239,6 +250,9 @@ async function runTelegramListen(args) {
       workflows: workflowRuntimes.values(),
       chatStates: chatStates.values()
     }));
+    if (delegateMode === 'cto') {
+      await saveTelegramMainlineState(telegramMainlineStatePath, chatStates);
+    }
   };
 
   const persistListenerSession = async () => {
@@ -449,6 +463,9 @@ async function runTelegramListen(args) {
             cwd,
             message: normalizedMessage,
             workflowRuntimes,
+            chatState,
+            runsPath,
+            logPath,
             persistWorkflowRuntime: async (runtime) => {
               await persistTelegramWorkflowRuntime(cwd, runtime);
               await persistListenerSession();
@@ -469,7 +486,9 @@ async function runTelegramListen(args) {
             noteTelegramChatAssistantReply(chatState, {
               text: controlReply.text,
               mode: 'control',
-              workflowSessionId: workflowControlReply.workflowId || ''
+              workflowSessionId: workflowControlReply.workflowId || '',
+              mainlineGoalText: workflowControlReply.workflowState?.goal_text || '',
+              mainlineStatus: workflowControlReply.workflowState?.status || ''
             });
             await appendFile(logPath, `[${toIsoString()}] workflow control reply ${workflowControlReply.workflowId || 'none'} for update ${normalizedMessage.update_id}\n`, 'utf8');
             process.stdout.write(`Handled CTO workflow control for update ${normalizedMessage.update_id}\n`);
@@ -486,7 +505,10 @@ async function runTelegramListen(args) {
           ? await resolveTelegramCtoStatusReply({
             cwd,
             message: normalizedMessage,
-            workflowRuntimes
+            workflowRuntimes,
+            chatState,
+            runsPath,
+            logPath
           })
           : null;
 
@@ -503,7 +525,9 @@ async function runTelegramListen(args) {
             noteTelegramChatAssistantReply(chatState, {
               text: statusReply.text,
               mode: 'status',
-              workflowSessionId: workflowStatusReply.workflowId || ''
+              workflowSessionId: workflowStatusReply.workflowId || '',
+              mainlineGoalText: workflowStatusReply.workflowState?.goal_text || '',
+              mainlineStatus: workflowStatusReply.workflowState?.status || ''
             });
             await appendFile(logPath, `[${toIsoString()}] workflow status reply ${workflowStatusReply.workflowId || 'none'} for update ${normalizedMessage.update_id}\n`, 'utf8');
             process.stdout.write(`Reported CTO workflow status for update ${normalizedMessage.update_id}\n`);
@@ -519,6 +543,13 @@ async function runTelegramListen(args) {
         const waitingWorkflow = delegateMode === 'cto'
           ? findPendingWorkflowForChat(workflowRuntimes.values(), normalizedMessage.chat_id)
           : null;
+        const activeWorkflow = delegateMode === 'cto'
+          ? findLatestActiveWorkflowForChat(
+            workflowRuntimes,
+            normalizedMessage.chat_id,
+            chatState?.mainline_session_id || ''
+          )
+          : null;
         const pendingWorkflow = delegateMode === 'cto' && waitingWorkflow
           ? (shouldResumeTelegramPendingWorkflow({
             workflowState: waitingWorkflow.state,
@@ -532,6 +563,7 @@ async function runTelegramListen(args) {
             parentSession: session,
             message: normalizedMessage,
             pendingWorkflow: waitingWorkflow,
+            activeWorkflow,
             workflowRuntimes,
             chatState,
             runsPath,
@@ -625,6 +657,9 @@ async function runTelegramListen(args) {
         }
 
         if (delegateMode === 'cto') {
+          if (!pendingWorkflow && chatState) {
+            noteTelegramChatWorkflowStart(chatState, '', normalizedMessage);
+          }
           const workflowPromise = handleTelegramCtoMessage({
             cwd,
             profile: delegateProfile,
@@ -709,10 +744,12 @@ async function runTelegramSupervise(args) {
   const runsPath = path.join(sessionDir, 'artifacts', 'telegram-runs.jsonl');
   const workflowRuntimes = new Map();
   const chatStates = new Map();
+  const telegramMainlineStatePath = resolveTelegramMainlineStatePath({ cwd });
   const hostExecutor = await ensureHostExecutorState(resolveHostExecutorRoot({ cwd }));
   let finalized = false;
 
-  await rehydratePendingTelegramCtoWorkflows(cwd, workflowRuntimes);
+  await hydrateTelegramChatStatesFromMainline(cwd, chatStates);
+  await rehydratePendingTelegramCtoWorkflows(cwd, workflowRuntimes, chatStates);
 
   const writeSupervisorState = async () => {
     await writeJson(statePath, createTelegramListenerStatePayload({
@@ -724,6 +761,7 @@ async function runTelegramSupervise(args) {
       workflows: workflowRuntimes.values(),
       chatStates: chatStates.values()
     }));
+    await saveTelegramMainlineState(telegramMainlineStatePath, chatStates);
   };
 
   const persistSupervisorSession = async () => {
@@ -1045,7 +1083,9 @@ async function sendTelegramCtoPresenceReply({
   noteTelegramChatAssistantReply(message.chat_state, {
     text: reply.text,
     mode: 'workflow',
-    workflowSessionId
+    workflowSessionId,
+    mainlineGoalText: message.text,
+    mainlineStatus: 'planning'
   });
   await appendFile(logPath, `[${toIsoString()}] workflow ${workflowSessionId} presence reply for update ${message.update_id}\n`, 'utf8');
   return reply;
@@ -1117,6 +1157,7 @@ async function handleTelegramCtoMessage({
 
   if (message.chat_state && typeof message.chat_state === 'object') {
     noteTelegramChatWorkflowStart(message.chat_state, runtime.session.session_id, message);
+    await persistListenerSession();
   }
 
   const workflowStartLog = `CTO workflow ${runtime.session.session_id}; started workflow ${runtime.session.session_id} for update ${message.update_id}`;
@@ -1337,8 +1378,11 @@ async function processTelegramCtoWorkflow({
     noteTelegramChatAssistantReply(triggerMessage.chat_state, {
       text: failureReply.text,
       mode: 'workflow',
-      workflowSessionId: runtime.session.session_id
+      workflowSessionId: runtime.session.session_id,
+      mainlineGoalText: runtime.state.goal_text || '',
+      mainlineStatus: runtime.state.status || 'failed'
     });
+    await persistListenerSession();
     await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} failed: ${errorMessage}\n`, 'utf8');
     process.stdout.write(`CTO workflow ${runtime.session.session_id} failed: ${errorMessage}\n`);
   }
@@ -1473,11 +1517,21 @@ async function continueTelegramCtoWorkflowFromPlan({
       return;
     }
 
+    const questionText = await renderTelegramCtoWorkflowReplyText({
+      cwd,
+      parentSession: runtime.session,
+      message: triggerMessage,
+      workflowState: runtime.state,
+      replyKind: 'question',
+      fallbackText: buildTelegramCtoQuestionText(runtime.state),
+      runsPath,
+      logPath
+    });
     const questionReply = await sendTelegramTextMessage({
       apiBaseUrl,
       botToken,
       chatId: triggerMessage.chat_id,
-      text: buildTelegramCtoQuestionText(runtime.state),
+      text: questionText,
       replyToMessageId: triggerMessage.message_id
     });
     await appendTelegramReply(repliesPath, questionReply);
@@ -1485,8 +1539,11 @@ async function continueTelegramCtoWorkflowFromPlan({
       text: questionReply.text,
       mode: 'workflow',
       workflowSessionId: runtime.session.session_id,
-      pendingQuestion: runtime.state.pending_question_zh || ''
+      pendingQuestion: runtime.state.pending_question_zh || '',
+      mainlineGoalText: runtime.state.goal_text || '',
+      mainlineStatus: runtime.state.status || ''
     });
+    await persistListenerSession();
     await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} waiting for user confirmation\n`, 'utf8');
     process.stdout.write(`CTO workflow ${runtime.session.session_id} is waiting for confirmation\n`);
     return;
@@ -1523,54 +1580,80 @@ async function continueTelegramCtoWorkflowFromPlan({
       replyToMessageId: triggerMessage.message_id
     });
     await appendTelegramReply(repliesPath, rerouteReply);
-    await persistListenerSession();
     noteTelegramChatAssistantReply(triggerMessage.chat_state, {
       text: rerouteReply.text,
       mode: 'workflow',
-      workflowSessionId: runtime.session.session_id
+      workflowSessionId: runtime.session.session_id,
+      mainlineGoalText: runtime.state.goal_text || '',
+      mainlineStatus: runtime.state.status || ''
     });
+    await persistListenerSession();
     await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} rerouted work to the host executor\n`, 'utf8');
     process.stdout.write(`CTO workflow ${runtime.session.session_id} rerouted work to the host executor\n`);
     return;
   }
 
   if (runtime.state.status === 'waiting_for_user') {
+    const questionText = await renderTelegramCtoWorkflowReplyText({
+      cwd,
+      parentSession: runtime.session,
+      message: triggerMessage,
+      workflowState: runtime.state,
+      replyKind: 'question',
+      fallbackText: buildTelegramCtoQuestionText(runtime.state),
+      runsPath,
+      logPath
+    });
     const questionReply = await sendTelegramTextMessage({
       apiBaseUrl,
       botToken,
       chatId: triggerMessage.chat_id,
-      text: buildTelegramCtoQuestionText(runtime.state),
+      text: questionText,
       replyToMessageId: triggerMessage.message_id
     });
     await appendTelegramReply(repliesPath, questionReply);
-    await persistListenerSession();
     noteTelegramChatAssistantReply(triggerMessage.chat_state, {
       text: questionReply.text,
       mode: 'workflow',
       workflowSessionId: runtime.session.session_id,
-      pendingQuestion: runtime.state.pending_question_zh || ''
+      pendingQuestion: runtime.state.pending_question_zh || '',
+      mainlineGoalText: runtime.state.goal_text || '',
+      mainlineStatus: runtime.state.status || ''
     });
+    await persistListenerSession();
     await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} paused for confirmation after task execution\n`, 'utf8');
     process.stdout.write(`CTO workflow ${runtime.session.session_id} paused for confirmation\n`);
     return;
   }
 
+  const finalText = await renderTelegramCtoWorkflowReplyText({
+    cwd,
+    parentSession: runtime.session,
+    message: triggerMessage,
+    workflowState: runtime.state,
+    replyKind: 'final',
+    fallbackText: buildTelegramCtoFinalText(runtime.state),
+    runsPath,
+    logPath
+  });
   const finalReply = await sendTelegramWorkflowFinalReplyOnce({
     runtime,
     apiBaseUrl,
     botToken,
     chatId: triggerMessage.chat_id,
-    text: buildTelegramCtoFinalText(runtime.state),
+    text: finalText,
     replyToMessageId: triggerMessage.message_id,
     repliesPath
   });
   if (finalReply.sent) {
-    await persistListenerSession();
     noteTelegramChatAssistantReply(triggerMessage.chat_state, {
       text: finalReply.reply.text,
       mode: 'workflow',
-      workflowSessionId: runtime.session.session_id
+      workflowSessionId: runtime.session.session_id,
+      mainlineGoalText: runtime.state.goal_text || '',
+      mainlineStatus: runtime.state.status || ''
     });
+    await persistListenerSession();
     await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} finished with status ${runtime.state.status}\n`, 'utf8');
     process.stdout.write(`CTO workflow ${runtime.session.session_id} finished with status ${runtime.state.status}\n`);
   } else {
@@ -1749,37 +1832,30 @@ async function executeClaimedHostExecutorJob({
   }
   process.stdout.write(`Host executor claimed ${job.job_id} for workflow ${job.workflow_session_id} task ${job.task_id}\n`);
 
-  const result = await spawnCliCapture([
-    'run',
-    '--cwd',
-    jobCwd,
-    '--profile',
-    jobProfile,
-    '--output',
+  const sessionContract = buildSessionContract({
+    layer: 'child',
+    thread_kind: 'child_session',
+    role: 'worker',
+    scope: 'telegram_cto',
+    supervisor_session_id: runtime.session.session_id
+  });
+  const result = await runDelegatedWorkerCapture({
+    cwd: jobCwd,
+    profile: jobProfile,
+    prompt: job.prompt,
     outputPath,
-    job.prompt
-  ], jobCwd, buildHostExecutorEnv({
-    OPENCODEX_PARENT_SESSION_ID: job.parent_session_id || runtime.session.session_id,
-    OPENCODEX_IM_SOURCE: 'telegram',
-    OPENCODEX_IM_UPDATE_ID: String(updateId),
-    OPENCODEX_CTO_STAGE: 'host-executor',
-    OPENCODEX_CTO_TASK_ID: job.task_id || task.id || '',
-    OPENCODEX_CODEX_VERSION: codexCliVersion,
-    OPENCODEX_HOST_EXECUTOR_JOB_ID: job.job_id,
-    OPENCODEX_EMIT_EARLY_SESSION_ID: '1',
-    ...buildSessionContractEnv({
-      layer: 'child',
-      thread_kind: 'child_session',
-      role: 'worker',
-      scope: 'telegram_cto',
-      supervisor_session_id: runtime.session.session_id
-    })
-  }), {
-    onStdout: async ({ text }) => {
-      const sessionId = extractSessionId(text);
-      if (!sessionId) {
-        return;
-      }
+    parentSessionId: job.parent_session_id || runtime.session.session_id,
+    sessionContract,
+    extraEnv: buildHostExecutorEnv({
+      OPENCODEX_PARENT_SESSION_ID: job.parent_session_id || runtime.session.session_id,
+      OPENCODEX_IM_SOURCE: 'telegram',
+      OPENCODEX_IM_UPDATE_ID: String(updateId),
+      OPENCODEX_CTO_STAGE: 'host-executor',
+      OPENCODEX_CTO_TASK_ID: job.task_id || task.id || '',
+      OPENCODEX_CODEX_VERSION: codexCliVersion,
+      OPENCODEX_HOST_EXECUTOR_JOB_ID: job.job_id
+    }),
+    onSessionStart: async ({ sessionId }) => {
       await captureTelegramChildSession({
         cwd: jobCwd,
         runtime,
@@ -1950,33 +2026,56 @@ async function processTelegramHostExecutorQueue({
     await persistListenerSession();
 
     if (runtime.state.status === 'waiting_for_user') {
+      const questionText = await renderTelegramCtoWorkflowReplyText({
+        cwd: job.cwd || cwd,
+        parentSession: runtime.session,
+        message: runtime.rootMessage,
+        workflowState: runtime.state,
+        replyKind: 'question',
+        fallbackText: buildTelegramCtoQuestionText(runtime.state),
+        runsPath,
+        logPath
+      });
       const questionReply = await sendTelegramTextMessage({
         apiBaseUrl,
         botToken,
         chatId: runtime.rootMessage.chat_id,
-        text: buildTelegramCtoQuestionText(runtime.state),
+        text: questionText,
         replyToMessageId: runtime.rootMessage.message_id
       });
-      await appendTelegramReply(repliesPath, questionReply);
-      noteTelegramChatAssistantReply(runtime.rootMessage.chat_state, {
-        text: questionReply.text,
-        mode: 'workflow',
-        workflowSessionId: runtime.session.session_id,
-        pendingQuestion: runtime.state.pending_question_zh || ''
-      });
-      await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} paused for confirmation after host executor processing\n`, 'utf8');
+    await appendTelegramReply(repliesPath, questionReply);
+    noteTelegramChatAssistantReply(runtime.rootMessage.chat_state, {
+      text: questionReply.text,
+      mode: 'workflow',
+      workflowSessionId: runtime.session.session_id,
+      pendingQuestion: runtime.state.pending_question_zh || '',
+      mainlineGoalText: runtime.state.goal_text || '',
+      mainlineStatus: runtime.state.status || ''
+    });
+    await persistListenerSession();
+    await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} paused for confirmation after host executor processing\n`, 'utf8');
       process.stdout.write(`CTO workflow ${runtime.session.session_id} paused for confirmation after host executor processing\n`);
       workflowRuntimes.delete(runtime.session.session_id);
       continue;
     }
 
     if (runtime.state.status !== 'running') {
+      const finalText = await renderTelegramCtoWorkflowReplyText({
+        cwd: job.cwd || cwd,
+        parentSession: runtime.session,
+        message: runtime.rootMessage,
+        workflowState: runtime.state,
+        replyKind: 'final',
+        fallbackText: buildTelegramCtoFinalText(runtime.state),
+        runsPath,
+        logPath
+      });
       const finalReply = await sendTelegramWorkflowFinalReplyOnce({
         runtime,
         apiBaseUrl,
         botToken,
         chatId: runtime.rootMessage.chat_id,
-        text: buildTelegramCtoFinalText(runtime.state),
+        text: finalText,
         replyToMessageId: runtime.rootMessage.message_id,
         repliesPath
       });
@@ -1984,8 +2083,11 @@ async function processTelegramHostExecutorQueue({
         noteTelegramChatAssistantReply(runtime.rootMessage.chat_state, {
           text: finalReply.reply.text,
           mode: 'workflow',
-          workflowSessionId: runtime.session.session_id
+          workflowSessionId: runtime.session.session_id,
+          mainlineGoalText: runtime.state.goal_text || '',
+          mainlineStatus: runtime.state.status || ''
         });
+        await persistListenerSession();
         await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} finished with status ${runtime.state.status} after host executor processing\n`, 'utf8');
         process.stdout.write(`CTO workflow ${runtime.session.session_id} finished with status ${runtime.state.status} after host executor processing\n`);
       } else {
@@ -2367,6 +2469,151 @@ async function runDelegatedPlannerCapture({ cwd, prompt, parentSessionId, sessio
   };
 }
 
+async function runDelegatedWorkerCapture({
+  cwd,
+  profile,
+  prompt,
+  outputPath,
+  parentSessionId,
+  sessionContract,
+  extraEnv = {},
+  onSessionStart = null
+}) {
+  const codexCliVersion = getDelegatedCodexCliVersion();
+  const resolvedProfile = resolveCodexProfile(profile, 'run', cwd);
+  const session = createSession({
+    command: 'run',
+    cwd,
+    codexCliVersion,
+    input: {
+      prompt,
+      arguments: {
+        cwd,
+        profile: resolvedProfile.name,
+        schema: RUN_SUMMARY_SCHEMA_PATH,
+        output: outputPath,
+        approval_mode: resolvedProfile.approvalMode,
+        requested_sandbox_mode: resolvedProfile.sandboxMode,
+        host_sandbox_mode: '',
+        effective_sandbox_mode: ''
+      }
+    }
+  });
+  session.parent_session_id = parentSessionId;
+  applySessionContract(session, sessionContract);
+  session.status = 'running';
+  session.summary = {
+    title: 'Run running',
+    result: 'Codex CLI execution has started.',
+    status: 'running',
+    highlights: [
+      resolvedProfile.name === 'safe' ? 'Profile: safe (read-only).' : `Profile: ${resolvedProfile.name}.`,
+      `Requested sandbox: ${resolvedProfile.sandboxMode}.`
+    ],
+    next_steps: ['Use `opencodex session show <id>` to inspect live artifact paths.'],
+    risks: [],
+    validation: [],
+    changed_files: [],
+    findings: []
+  };
+
+  const sessionDir = await saveSession(cwd, session);
+  const eventsPath = path.join(sessionDir, 'events.jsonl');
+  const lastMessagePath = path.join(sessionDir, 'last-message.txt');
+  const stderrPath = path.join(sessionDir, 'artifacts', 'codex-stderr.log');
+  session.artifacts = [
+    {
+      type: 'jsonl_events',
+      path: eventsPath,
+      description: 'Raw Codex CLI JSONL event stream.'
+    },
+    {
+      type: 'last_message',
+      path: lastMessagePath,
+      description: 'Final Codex CLI assistant message.'
+    },
+    {
+      type: 'output_schema',
+      path: RUN_SUMMARY_SCHEMA_PATH,
+      description: 'JSON Schema used for the structured run output.'
+    }
+  ];
+  await saveSession(cwd, session);
+
+  if (typeof onSessionStart === 'function') {
+    await onSessionStart({ sessionId: session.session_id });
+  }
+
+  const env = {
+    ...process.env,
+    ...extraEnv,
+    ...buildSessionContractEnv(sessionContract)
+  };
+  const codexArgs = buildRunArgs(prompt, {
+    cwd,
+    profile: resolvedProfile.name,
+    schema: RUN_SUMMARY_SCHEMA_PATH
+  }, {
+    lastMessagePath,
+    schemaPath: RUN_SUMMARY_SCHEMA_PATH
+  });
+  const result = await runCommandToFile(getCodexBin(), codexArgs, { cwd, env, stdoutPath: eventsPath });
+
+  if (result.stderr.trim()) {
+    await writeFile(stderrPath, result.stderr, 'utf8');
+  }
+
+  const rawLastMessage = (await readTextIfExists(lastMessagePath))?.trim() || '';
+  const fallbackStatus = result.code === 0 ? 'completed' : 'failed';
+  const summary = buildSummaryFromMessage(rawLastMessage, fallbackStatus, codexCliVersion);
+
+  session.status = summary.status || fallbackStatus;
+  session.updated_at = toIsoString();
+  session.summary = summary;
+  session.artifacts = [
+    {
+      type: 'jsonl_events',
+      path: eventsPath,
+      description: 'Raw Codex CLI JSONL event stream.'
+    },
+    {
+      type: 'last_message',
+      path: lastMessagePath,
+      description: 'Final Codex CLI assistant message.'
+    },
+    {
+      type: 'output_schema',
+      path: RUN_SUMMARY_SCHEMA_PATH,
+      description: 'JSON Schema used for the structured run output.'
+    }
+  ];
+  if (result.stderr.trim()) {
+    session.artifacts.push({
+      type: 'log',
+      path: stderrPath,
+      description: 'Codex CLI stderr output.'
+    });
+  }
+
+  await writeJson(outputPath, {
+    session_id: session.session_id,
+    summary
+  });
+  session.artifacts.push({
+    type: 'run_summary',
+    path: outputPath,
+    description: 'Exported normalized run summary.'
+  });
+  await saveSession(cwd, session);
+
+  return {
+    ...result,
+    sessionId: session.session_id,
+    summary,
+    stdout: `Session: ${session.session_id}\n${result.stdout || ''}`
+  };
+}
+
 function getDelegatedCodexCliVersion() {
   const explicitVersion = typeof process.env.OPENCODEX_CODEX_VERSION === 'string'
     ? process.env.OPENCODEX_CODEX_VERSION.trim()
@@ -2583,6 +2830,10 @@ function createTelegramListenerStatePayload({ me, lastOffset, allowedChatId, del
       last_intent: state.last_intent || '',
       last_pending_question: state.last_pending_question || '',
       last_workflow_session_id: state.last_workflow_session_id || '',
+      mainline_session_id: state.mainline_session_id || '',
+      mainline_goal_text: state.mainline_goal_text || '',
+      mainline_status: state.mainline_status || '',
+      mainline_updated_at: state.mainline_updated_at || '',
       last_updated_at: state.last_updated_at || ''
     }))
     .sort((left, right) => String(right.last_updated_at || '').localeCompare(String(left.last_updated_at || '')));
@@ -2615,6 +2866,10 @@ function getOrCreateTelegramChatState(chatStates, chatId) {
       last_assistant_reply: '',
       last_pending_question: '',
       last_workflow_session_id: '',
+      mainline_session_id: '',
+      mainline_goal_text: '',
+      mainline_status: '',
+      mainline_updated_at: '',
       last_updated_at: ''
     });
   }
@@ -2644,7 +2899,9 @@ function noteTelegramChatAssistantReply(chatState, {
   text = '',
   mode = '',
   workflowSessionId = '',
-  pendingQuestion = ''
+  pendingQuestion = '',
+  mainlineGoalText = '',
+  mainlineStatus = ''
 } = {}) {
   if (!chatState) {
     return;
@@ -2656,6 +2913,13 @@ function noteTelegramChatAssistantReply(chatState, {
   }
   if (workflowSessionId) {
     chatState.last_workflow_session_id = workflowSessionId;
+  }
+  if (workflowSessionId || mainlineGoalText || mainlineStatus) {
+    syncTelegramChatMainline(chatState, {
+      workflowSessionId,
+      goalText: mainlineGoalText,
+      status: mainlineStatus
+    });
   }
 
   const derivedPendingQuestion = String(pendingQuestion || extractTelegramPendingQuestionFromReply(normalizedText) || '').trim();
@@ -2678,6 +2942,48 @@ function noteTelegramChatWorkflowStart(chatState, workflowSessionId, message) {
   chatState.last_workflow_session_id = workflowSessionId || '';
   chatState.last_user_message = message.text;
   chatState.last_updated_at = message.created_at || toIsoString();
+  syncTelegramChatMainline(chatState, {
+    workflowSessionId,
+    goalText: message.text,
+    status: 'planning',
+    updatedAt: message.created_at || ''
+  });
+}
+
+function syncTelegramChatMainline(chatState, {
+  workflowSessionId = '',
+  goalText = '',
+  status = '',
+  updatedAt = ''
+} = {}) {
+  if (!chatState) {
+    return;
+  }
+
+  const normalizedSessionId = String(workflowSessionId || '').trim();
+  const normalizedGoalText = String(goalText || '').trim();
+  const normalizedStatus = String(status || '').trim();
+  const normalizedUpdatedAt = String(updatedAt || '').trim() || toIsoString();
+
+  if (normalizedSessionId) {
+    chatState.mainline_session_id = normalizedSessionId;
+    chatState.last_workflow_session_id = normalizedSessionId;
+  }
+  if (normalizedGoalText) {
+    chatState.mainline_goal_text = normalizedGoalText;
+  }
+  if (normalizedStatus) {
+    chatState.mainline_status = normalizedStatus;
+  }
+  if (normalizedSessionId || normalizedGoalText || normalizedStatus) {
+    chatState.mainline_updated_at = normalizedUpdatedAt;
+  }
+}
+
+function hasTelegramChatActiveMainline(chatState) {
+  const sessionId = String(chatState?.mainline_session_id || '').trim();
+  const status = String(chatState?.mainline_status || '').trim();
+  return Boolean(sessionId) && ['planning', 'running'].includes(status);
 }
 
 function extractTelegramPendingQuestionFromReply(text) {
@@ -2706,7 +3012,7 @@ function extractTelegramPendingQuestionFromReply(text) {
   return '';
 }
 
-async function resolveTelegramCtoControlReply({ cwd, message, workflowRuntimes, persistWorkflowRuntime }) {
+async function resolveTelegramCtoControlReply({ cwd, message, workflowRuntimes, chatState, runsPath, logPath, persistWorkflowRuntime }) {
   const intent = parseTelegramCtoControlIntent(message.text);
   if (!intent.isCancelQuery) {
     return null;
@@ -2716,7 +3022,8 @@ async function resolveTelegramCtoControlReply({ cwd, message, workflowRuntimes, 
     cwd,
     chatId: message.chat_id,
     workflowId: intent.workflowId,
-    workflowRuntimes
+    workflowRuntimes,
+    preferredWorkflowId: chatState?.mainline_session_id || ''
   });
 
   if (!runtime) {
@@ -2743,10 +3050,21 @@ async function resolveTelegramCtoControlReply({ cwd, message, workflowRuntimes, 
   cancelTelegramWorkflowState(runtime.state);
   await persistWorkflowRuntime(runtime);
   workflowRuntimes.delete(runtime.session.session_id);
+  const renderedText = await renderTelegramCtoWorkflowReplyText({
+    cwd,
+    parentSession: runtime.session,
+    message,
+    workflowState: runtime.state,
+    replyKind: 'final',
+    fallbackText: buildTelegramCtoFinalText(runtime.state),
+    runsPath,
+    logPath
+  });
 
   return {
     workflowId: runtime.session.session_id,
-    text: buildTelegramCtoFinalText(runtime.state)
+    workflowState: runtime.state,
+    text: renderedText
   };
 }
 
@@ -2766,7 +3084,7 @@ function parseTelegramCtoControlIntent(text) {
   };
 }
 
-async function findTelegramWorkflowForCancel({ cwd, chatId, workflowId, workflowRuntimes }) {
+async function findTelegramWorkflowForCancel({ cwd, chatId, workflowId, workflowRuntimes, preferredWorkflowId = '' }) {
   if (workflowId) {
     const activeRuntime = workflowRuntimes.get(workflowId);
     if (activeRuntime?.state?.chat_id === chatId) {
@@ -2776,9 +3094,10 @@ async function findTelegramWorkflowForCancel({ cwd, chatId, workflowId, workflow
     return isTelegramWorkflowCancellable(runtime?.state) ? runtime : runtime || null;
   }
 
-  const activeRuntime = Array.from(workflowRuntimes.values())
-    .filter((runtime) => runtime?.state?.chat_id === chatId && isTelegramWorkflowCancellable(runtime.state))
-    .sort((left, right) => String(right.state.updated_at || '').localeCompare(String(left.state.updated_at || '')))[0] || null;
+  const activeRuntime = findLatestActiveWorkflowForChat(workflowRuntimes, chatId, preferredWorkflowId, {
+    includeWaiting: true,
+    onlyCancellable: true
+  });
   if (activeRuntime) {
     return activeRuntime;
   }
@@ -2819,7 +3138,7 @@ function buildTelegramNonCancellableWorkflowText({ workflowId, chatId, status })
   return `workflow ${workflowId} 已经结束了，当前状态是 ${status || 'unknown'}，所以 chat ${chatId} 这边不需要再取消。`;
 }
 
-async function resolveTelegramCtoStatusReply({ cwd, message, workflowRuntimes }) {
+async function resolveTelegramCtoStatusReply({ cwd, message, workflowRuntimes, chatState, runsPath, logPath }) {
   const intent = parseTelegramCtoStatusIntent(message.text);
   if (!intent.isStatusQuery) {
     return null;
@@ -2844,7 +3163,8 @@ async function resolveTelegramCtoStatusReply({ cwd, message, workflowRuntimes })
     cwd,
     chatId: message.chat_id,
     workflowId: intent.workflowId,
-    workflowRuntimes
+    workflowRuntimes,
+    preferredWorkflowId: chatState?.mainline_session_id || ''
   });
 
   if (!runtime) {
@@ -2865,7 +3185,17 @@ async function resolveTelegramCtoStatusReply({ cwd, message, workflowRuntimes })
 
   return {
     workflowId: runtime.session.session_id,
-    text: buildTelegramCtoStatusText(runtime.state)
+    workflowState: runtime.state,
+    text: await renderTelegramCtoWorkflowReplyText({
+      cwd,
+      parentSession: runtime.session,
+      message,
+      workflowState: runtime.state,
+      replyKind: 'status',
+      fallbackText: buildTelegramCtoStatusText(runtime.state),
+      runsPath,
+      logPath
+    })
   };
 }
 
@@ -2879,6 +3209,120 @@ async function resolveTelegramActiveBridgeStatusReply() {
     workflowId: '',
     text: buildTelegramBridgeStatusText(activeBridgeSession)
   };
+}
+
+async function renderTelegramCtoWorkflowReplyText({
+  cwd,
+  parentSession,
+  message,
+  workflowState,
+  replyKind = 'status',
+  fallbackText = '',
+  runsPath = '',
+  logPath = ''
+}) {
+  if (!parentSession?.session_id || !workflowState) {
+    return fallbackText;
+  }
+
+  const ctoSoul = await loadCtoSoulBundle(cwd);
+  const replySoul = await loadCtoSubagentSoulDocument(cwd, { path: ctoSoul.base.path, kind: 'reply' });
+  const replyProfile = resolveTelegramCtoSubagentProfile({ kind: 'reply', replyMode: 'conversation' });
+  const codexCliVersion = getDelegatedCodexCliVersion();
+  const result = await spawnCliCapture([
+    'run',
+    '--cwd',
+    cwd,
+    '--profile',
+    'safe',
+    '--schema',
+    RUN_SUMMARY_SCHEMA_PATH,
+    buildTelegramCtoWorkflowReplyPrompt({
+      workflowState,
+      replyKind,
+      messageText: message?.text || '',
+      soulText: ctoSoul.base.text,
+      soulPath: ctoSoul.base.display_path,
+      modeSoulText: ctoSoul.workflow.text,
+      modeSoulPath: ctoSoul.workflow.display_path,
+      agentSoulText: replySoul.text,
+      agentSoulPath: replySoul.display_path
+    })
+  ], cwd, {
+    OPENCODEX_PARENT_SESSION_ID: parentSession.session_id,
+    OPENCODEX_IM_SOURCE: 'telegram',
+    OPENCODEX_IM_UPDATE_ID: String(message?.update_id || 0),
+    OPENCODEX_CTO_STAGE: `workflow-reply-${replyKind}`,
+    OPENCODEX_CODEX_VERSION: codexCliVersion,
+    OPENCODEX_EMIT_EARLY_SESSION_ID: '1',
+    ...buildSessionContractEnv({
+      layer: 'child',
+      thread_kind: 'child_session',
+      role: 'reply',
+      scope: 'telegram_cto',
+      supervisor_session_id: parentSession.session_id
+    })
+  }, {
+    onStdout: async ({ text }) => {
+      const sessionId = extractSessionId(text);
+      if (!sessionId) {
+        return;
+      }
+      await recordTelegramChildSession(parentSession, cwd, {
+        sessionId,
+        updateId: message?.update_id || 0,
+        label: `Workflow reply ${replyKind} ${message?.update_id || 0} · ${replyProfile.name_zh}`,
+        agentNameZh: replyProfile.name_zh,
+        agentRoleZh: replyProfile.role_zh
+      });
+    }
+  });
+
+  const sessionId = extractSessionId(result.stdout);
+  let childSession = null;
+  if (sessionId) {
+    await recordTelegramChildSession(parentSession, cwd, {
+      sessionId,
+      updateId: message?.update_id || 0,
+      label: `Workflow reply ${replyKind} ${message?.update_id || 0} · ${replyProfile.name_zh}`,
+      agentNameZh: replyProfile.name_zh,
+      agentRoleZh: replyProfile.role_zh
+    });
+    try {
+      childSession = await loadSession(cwd, sessionId);
+    } catch {
+      childSession = null;
+    }
+  }
+
+  const runResult = {
+    code: result.code,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    sessionId,
+    childStatus: childSession?.status || '',
+    summary: childSession?.summary || null
+  };
+  const runMessage = message && typeof message === 'object'
+    ? message
+    : {
+      update_id: 0,
+      message_id: 0,
+      chat_id: workflowState?.chat_id || ''
+    };
+  if (runsPath) {
+    await appendFile(runsPath, `${JSON.stringify(buildTelegramRunRecord(runMessage, runResult, {
+      workflowSessionId: workflowState.workflow_session_id || parentSession.session_id,
+      stage: `workflow-reply-${replyKind}`
+    }))}\n`, 'utf8');
+  }
+  if (logPath) {
+    await appendFile(logPath, `[${toIsoString()}] workflow reply ${replyKind} via ${sessionId || 'no-session'} for ${workflowState.workflow_session_id || parentSession.session_id}\n`, 'utf8');
+  }
+
+  return normalizeTelegramCtoWorkflowRenderedText(
+    runResult.summary?.status === 'completed' ? runResult.summary?.result : ''
+  ) || fallbackText;
 }
 
 async function resolveTelegramCtoBridgeReply({ message, waitingWorkflow }) {
@@ -3016,10 +3460,12 @@ async function resolveTelegramCtoDirectReply({
   parentSession,
   message,
   pendingWorkflow,
+  activeWorkflow,
   chatState,
   runsPath,
   logPath
 }) {
+  const activeWorkflowHint = activeWorkflow || buildTelegramChatActiveWorkflowHint(chatState);
   const replyMode = determineTelegramCtoReplyMode({
     text: message.text,
     pendingWorkflow,
@@ -3044,6 +3490,7 @@ async function resolveTelegramCtoDirectReply({
     buildTelegramCtoDirectReplyPrompt({
       message,
       pendingWorkflowState: pendingWorkflow?.state || null,
+      activeWorkflowState: activeWorkflowHint?.state || null,
       soulText: ctoSoul.base.text,
       soulPath: ctoSoul.base.display_path,
       modeSoulText: ctoSoul.chat.text,
@@ -3115,17 +3562,19 @@ async function resolveTelegramCtoDirectReply({
   await appendFile(logPath, `[${toIsoString()}] direct reply ${replyMode} via ${sessionId || 'no-session'} for update ${message.update_id}\n`, 'utf8');
 
   return {
-    workflowId: pendingWorkflow?.session?.session_id || '',
+    workflowId: pendingWorkflow?.session?.session_id || activeWorkflowHint?.session?.session_id || '',
     replyMode,
     text: pickTelegramCtoDirectReplyText(
       runResult.summary?.status === 'completed' ? runResult.summary?.result : '',
       pendingWorkflow,
+      activeWorkflowHint,
       replyMode
     )
   };
 }
 
 function determineTelegramCtoReplyMode({ text, pendingWorkflow, chatState }) {
+  const hasActiveWorkflow = hasTelegramChatActiveMainline(chatState);
   const intent = classifyTelegramCtoMessageIntent(text);
   if (intent.kind === 'exploration') {
     return 'exploration';
@@ -3136,7 +3585,8 @@ function determineTelegramCtoReplyMode({ text, pendingWorkflow, chatState }) {
   if (shouldKeepTelegramCtoInConversationMode({
     text,
     chatState,
-    hasPendingWorkflow: Boolean(pendingWorkflow)
+    hasPendingWorkflow: Boolean(pendingWorkflow),
+    hasActiveWorkflow
   })) {
     return 'conversation';
   }
@@ -3146,9 +3596,9 @@ function determineTelegramCtoReplyMode({ text, pendingWorkflow, chatState }) {
   return '';
 }
 
-function pickTelegramCtoDirectReplyText(resultText, pendingWorkflow, replyMode = 'casual') {
+function pickTelegramCtoDirectReplyText(resultText, pendingWorkflow, activeWorkflow, replyMode = 'casual') {
   const value = normalizeTelegramCtoNaturalReplyText(resultText, replyMode);
-  return value || buildTelegramCtoDirectReplyFallbackText(pendingWorkflow, replyMode);
+  return value || buildTelegramCtoDirectReplyFallbackText(pendingWorkflow, activeWorkflow, replyMode);
 }
 
 function normalizeTelegramCtoNaturalReplyText(resultText, replyMode = 'casual') {
@@ -3176,12 +3626,44 @@ function normalizeTelegramCtoNaturalReplyText(resultText, replyMode = 'casual') 
   return filteredLines.slice(0, 3).join(' ');
 }
 
-function buildTelegramCtoDirectReplyFallbackText(pendingWorkflow, replyMode = 'casual') {
+function normalizeTelegramCtoWorkflowRenderedText(resultText) {
+  const rawText = String(resultText || '').trim();
+  if (!rawText) {
+    return '';
+  }
+
+  const filteredLines = rawText
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[-*•]\s*/, '').trim())
+    .filter((line) => !/^(?:title|status|result|highlights?|next[_ ]steps?|risks?|validation|changed[_ ]files?|findings)[：:]/i.test(line));
+
+  if (!filteredLines.length) {
+    return '';
+  }
+
+  return truncateTelegramText(filteredLines.slice(0, 8).join('\n'));
+}
+
+function buildTelegramCtoDirectReplyFallbackText(pendingWorkflow, activeWorkflow, replyMode = 'casual') {
   const workflowId = pendingWorkflow?.session?.session_id || '';
   const pendingQuestion = truncateInline(pendingWorkflow?.state?.pending_question_zh || '请直接回复当前待确认问题。', 120);
+  const activeWorkflowId = activeWorkflow?.session?.session_id || '';
+  const activeGoal = truncateInline(activeWorkflow?.state?.goal_text || '当前主线', 120);
 
   if (workflowId) {
     return `可以，我在。当前 workflow 还保持等待中，待确认的是“${pendingQuestion}”。如果要继续，直接回复这个问题就行。`;
+  }
+
+  if (activeWorkflowId) {
+    if (replyMode === 'exploration') {
+      return `可以，先沿这条主线聊。后台那轮「${activeGoal}」我还在继续跟，不会因为现在聊天停下来。你把现象、想法或取舍点直接说，我边跟边和你一起收敛。`;
+    }
+    if (replyMode === 'conversation') {
+      return `我在。这条主线「${activeGoal}」我还在后台推进，不会挡住咱们现在聊天。你继续说，我这边边跑边跟。`;
+    }
+    return `我在。这条主线「${activeGoal}」我还在后台跟着，不会因为你现在插一句就断掉。你继续说，我这边不阻塞。`;
   }
 
   if (replyMode === 'conversation') {
@@ -3193,6 +3675,55 @@ function buildTelegramCtoDirectReplyFallbackText(pendingWorkflow, replyMode = 'c
   }
 
   return '可以，我在。这条 Telegram CTO 通道也支持简短交流；如果要我执行，直接发明确目标就行，要查进度也可以直接问我 workflow 状态。';
+}
+
+function findLatestActiveWorkflowForChat(workflowRuntimes, chatId, preferredWorkflowId = '', options = {}) {
+  const includeWaiting = options.includeWaiting === true;
+  const onlyCancellable = options.onlyCancellable === true;
+  const candidates = Array.from(workflowRuntimes.values())
+    .filter((runtime) => runtime?.state?.chat_id === chatId)
+    .filter((runtime) => {
+      const status = String(runtime?.state?.status || '').trim();
+      if (onlyCancellable) {
+        return isTelegramWorkflowCancellable(runtime.state);
+      }
+      if (includeWaiting) {
+        return !['completed', 'failed', 'cancelled'].includes(status);
+      }
+      return ['planning', 'running'].includes(status);
+    });
+
+  const preferred = String(preferredWorkflowId || '').trim()
+    ? candidates.find((runtime) => runtime?.session?.session_id === String(preferredWorkflowId || '').trim())
+    : null;
+  if (preferred) {
+    return preferred;
+  }
+
+  return candidates
+    .sort((left, right) => String(right.state.updated_at || '').localeCompare(String(left.state.updated_at || '')))[0] || null;
+}
+
+function buildTelegramChatActiveWorkflowHint(chatState) {
+  if (!chatState || !hasTelegramChatActiveMainline(chatState)) {
+    return null;
+  }
+
+  const lastGoal = String(chatState.mainline_goal_text || '').trim();
+  if (!lastGoal) {
+    return null;
+  }
+
+  return {
+    session: {
+      session_id: String(chatState.mainline_session_id || '').trim()
+    },
+    state: {
+      workflow_session_id: String(chatState.mainline_session_id || '').trim(),
+      status: String(chatState.mainline_status || '').trim() || 'running',
+      goal_text: lastGoal
+    }
+  };
 }
 
 function parseTelegramCtoStatusIntent(text) {
@@ -3211,6 +3742,8 @@ function parseTelegramCtoStatusIntent(text) {
     /安排了什么任务/i,
     /有哪些任务/i,
     /什么任务/i,
+    /(主线|长任务|短任务).{0,6}(状态|进度|列表|到哪|怎么样)/i,
+    /(现在|当前|最近).{0,6}(主线|长任务|短任务)/i,
     /(当前|现在|最新|最近).{0,8}(状态|进度|任务)/i,
     /(汇报|同步|查看|看看|告诉我).{0,8}(状态|进度|任务|安排)/i,
     /任务(状态|进度|列表|安排)/i,
@@ -3318,7 +3851,7 @@ function buildTelegramMissingTaskHistoryText({ chatId }) {
   ].join('\n');
 }
 
-async function findTelegramWorkflowForStatus({ cwd, chatId, workflowId, workflowRuntimes }) {
+async function findTelegramWorkflowForStatus({ cwd, chatId, workflowId, workflowRuntimes, preferredWorkflowId = '' }) {
   if (workflowId) {
     const activeRuntime = workflowRuntimes.get(workflowId);
     if (activeRuntime?.state?.chat_id === chatId) {
@@ -3327,9 +3860,9 @@ async function findTelegramWorkflowForStatus({ cwd, chatId, workflowId, workflow
     return loadTelegramWorkflowRuntime(cwd, workflowId, chatId);
   }
 
-  const activeRuntime = Array.from(workflowRuntimes.values())
-    .filter((runtime) => runtime?.state?.chat_id === chatId)
-    .sort((left, right) => String(right.state.updated_at || '').localeCompare(String(left.state.updated_at || '')))[0] || null;
+  const activeRuntime = findLatestActiveWorkflowForChat(workflowRuntimes, chatId, preferredWorkflowId, {
+    includeWaiting: true
+  });
   if (activeRuntime) {
     return activeRuntime;
   }
@@ -3508,7 +4041,7 @@ async function pruneTelegramServiceSessionHistory({ cwd, sessionId, logPath }) {
   }
 }
 
-async function rehydratePendingTelegramCtoWorkflows(cwd, workflowRuntimes) {
+async function rehydratePendingTelegramCtoWorkflows(cwd, workflowRuntimes, chatStates = null) {
   const sessions = await listSessions(cwd);
 
   for (const session of sessions) {
@@ -3534,8 +4067,20 @@ async function rehydratePendingTelegramCtoWorkflows(cwd, workflowRuntimes) {
       continue;
     }
 
+    const rootMessage = buildRehydratedTelegramRootMessage(session, workflowState);
+    if (chatStates && workflowState?.chat_id) {
+      const chatState = getOrCreateTelegramChatState(chatStates, workflowState.chat_id);
+      syncTelegramChatMainline(chatState, {
+        workflowSessionId: workflowState.workflow_session_id || session.session_id,
+        goalText: workflowState.goal_text || session.input?.prompt || '',
+        status: workflowState.status || session.status || '',
+        updatedAt: workflowState.updated_at || session.updated_at || ''
+      });
+      rootMessage.chat_state = chatState;
+    }
+
     workflowRuntimes.set(session.session_id, {
-      rootMessage: buildRehydratedTelegramRootMessage(session, workflowState),
+      rootMessage,
       session,
       sessionDir,
       state: workflowState,
@@ -3544,6 +4089,61 @@ async function rehydratePendingTelegramCtoWorkflows(cwd, workflowRuntimes) {
       mutationQueue: Promise.resolve()
     });
   }
+}
+
+function resolveTelegramMainlineStatePath({ cwd, env = process.env }) {
+  const serviceStateDir = String(env.OPENCODEX_SERVICE_STATE_DIR || '').trim();
+  if (serviceStateDir) {
+    return path.join(path.resolve(serviceStateDir), TELEGRAM_MAINLINE_STATE_FILE);
+  }
+  return path.resolve(cwd, TELEGRAM_MAINLINE_FALLBACK_RELATIVE_PATH);
+}
+
+async function hydrateTelegramChatStatesFromMainline(cwd, chatStates, env = process.env) {
+  const statePath = resolveTelegramMainlineStatePath({ cwd, env });
+  const raw = await readTextIfExists(statePath);
+  if (!raw) {
+    return;
+  }
+
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return;
+  }
+
+  for (const item of Array.isArray(parsed?.mainlines) ? parsed.mainlines : []) {
+    const chatId = String(item?.chat_id || '').trim();
+    if (!chatId) {
+      continue;
+    }
+    const chatState = getOrCreateTelegramChatState(chatStates, chatId);
+    syncTelegramChatMainline(chatState, {
+      workflowSessionId: item?.mainline_session_id || '',
+      goalText: item?.mainline_goal_text || '',
+      status: item?.mainline_status || '',
+      updatedAt: item?.updated_at || ''
+    });
+  }
+}
+
+async function saveTelegramMainlineState(statePath, chatStates) {
+  const mainlines = Array.from(chatStates.values())
+    .map((state) => ({
+      chat_id: String(state?.chat_id || '').trim(),
+      mainline_session_id: String(state?.mainline_session_id || '').trim(),
+      mainline_goal_text: String(state?.mainline_goal_text || '').trim(),
+      mainline_status: String(state?.mainline_status || '').trim(),
+      updated_at: String(state?.mainline_updated_at || state?.last_updated_at || '').trim()
+    }))
+    .filter((item) => item.chat_id && item.mainline_session_id)
+    .sort((left, right) => String(right.updated_at || '').localeCompare(String(left.updated_at || '')));
+  await writeJson(statePath, {
+    schema: TELEGRAM_MAINLINE_STATE_SCHEMA,
+    updated_at: toIsoString(),
+    mainlines
+  });
 }
 
 function shouldRehydrateTelegramWorkflow(session, workflowState) {
@@ -3733,6 +4333,7 @@ function resumeRehydratedTelegramCtoWorkflows({
       });
     } else if (isTelegramWorkflowTerminalStatus(workflowStatus)) {
       resumeFactory = () => resumeTelegramTerminalWorkflowNotification({
+        cwd,
         runtime,
         repliesPath,
         runsPath,
@@ -3940,6 +4541,7 @@ async function refreshRehydratedTelegramWorkflowBeforeResume(cwd, runtime) {
 }
 
 async function resumeTelegramTerminalWorkflowNotification({
+  cwd,
   runtime,
   repliesPath,
   runsPath,
@@ -3949,17 +4551,36 @@ async function resumeTelegramTerminalWorkflowNotification({
   workflowRuntimes,
   persistListenerSession
 }) {
+  const finalText = await renderTelegramCtoWorkflowReplyText({
+    cwd,
+    parentSession: runtime.session,
+    message: runtime.rootMessage,
+    workflowState: runtime.state,
+    replyKind: 'final',
+    fallbackText: buildTelegramCtoFinalText(runtime.state),
+    runsPath,
+    logPath
+  });
   const finalReply = await sendTelegramWorkflowFinalReplyOnce({
     runtime,
     apiBaseUrl,
     botToken,
     chatId: runtime.rootMessage.chat_id,
-    text: buildTelegramCtoFinalText(runtime.state),
+    text: finalText,
     replyToMessageId: runtime.rootMessage.message_id,
     repliesPath
   });
 
   if (finalReply.sent) {
+    if (runtime.rootMessage.chat_state) {
+      noteTelegramChatAssistantReply(runtime.rootMessage.chat_state, {
+        text: finalReply.reply.text,
+        mode: 'workflow',
+        workflowSessionId: runtime.session.session_id,
+        mainlineGoalText: runtime.state.goal_text || '',
+        mainlineStatus: runtime.state.status || ''
+      });
+    }
     await appendFile(logPath, `[${toIsoString()}] recovered missing final reply for workflow ${runtime.session.session_id} with status ${runtime.state.status}\n`, 'utf8');
     process.stdout.write(`Recovered missing final reply for CTO workflow ${runtime.session.session_id}\n`);
   } else {
@@ -4163,30 +4784,71 @@ async function resumeTelegramRunningWorkflow({
   }
 
   if (runtime.state.status === 'waiting_for_user') {
+    const questionText = await renderTelegramCtoWorkflowReplyText({
+      cwd,
+      parentSession: runtime.session,
+      message: runtime.rootMessage,
+      workflowState: runtime.state,
+      replyKind: 'question',
+      fallbackText: buildTelegramCtoQuestionText(runtime.state),
+      runsPath,
+      logPath
+    });
     const questionReply = await sendTelegramTextMessage({
       apiBaseUrl,
       botToken,
       chatId: runtime.rootMessage.chat_id,
-      text: buildTelegramCtoQuestionText(runtime.state),
+      text: questionText,
       replyToMessageId: runtime.rootMessage.message_id
     });
     await appendTelegramReply(repliesPath, questionReply);
+    if (runtime.rootMessage.chat_state) {
+      noteTelegramChatAssistantReply(runtime.rootMessage.chat_state, {
+        text: questionReply.text,
+        mode: 'workflow',
+        workflowSessionId: runtime.session.session_id,
+        pendingQuestion: runtime.state.pending_question_zh || '',
+        mainlineGoalText: runtime.state.goal_text || '',
+        mainlineStatus: runtime.state.status || ''
+      });
+      await persistListenerSession();
+    }
     await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} resumed into waiting state after listener restart\n`, 'utf8');
     process.stdout.write(`CTO workflow ${runtime.session.session_id} resumed into waiting state after listener restart\n`);
     return;
   }
 
   if (runtime.state.status !== 'running') {
+    const finalText = await renderTelegramCtoWorkflowReplyText({
+      cwd,
+      parentSession: runtime.session,
+      message: runtime.rootMessage,
+      workflowState: runtime.state,
+      replyKind: 'final',
+      fallbackText: buildTelegramCtoFinalText(runtime.state),
+      runsPath,
+      logPath
+    });
     const finalReply = await sendTelegramWorkflowFinalReplyOnce({
       runtime,
       apiBaseUrl,
       botToken,
       chatId: runtime.rootMessage.chat_id,
-      text: buildTelegramCtoFinalText(runtime.state),
+      text: finalText,
       replyToMessageId: runtime.rootMessage.message_id,
       repliesPath
     });
     if (finalReply.sent) {
+      if (runtime.rootMessage.chat_state) {
+        noteTelegramChatAssistantReply(runtime.rootMessage.chat_state, {
+          text: finalReply.reply.text,
+          mode: 'workflow',
+          workflowSessionId: runtime.session.session_id,
+          mainlineGoalText: runtime.state.goal_text || '',
+          mainlineStatus: runtime.state.status || ''
+        });
+        await persistListenerSession();
+      }
       await appendFile(logPath, `[${toIsoString()}] workflow ${runtime.session.session_id} finished after listener restart with status ${runtime.state.status}\n`, 'utf8');
       process.stdout.write(`CTO workflow ${runtime.session.session_id} finished after listener restart with status ${runtime.state.status}\n`);
     } else {
