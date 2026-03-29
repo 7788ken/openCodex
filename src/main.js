@@ -10,6 +10,7 @@ import { runInstallCommand } from './commands/install.js';
 import { runBridgeCommand } from './commands/bridge.js';
 import { runMemoryCommand } from './commands/memory.js';
 import { runSupportCommand } from './commands/support.js';
+import { runIslandCommand } from './commands/island.js';
 
 const HELP_TEXT = `openCodex
 
@@ -27,8 +28,9 @@ Commands:
   service   Install and control local background services
   install   Create or inspect a detached local openCodex runtime
   bridge    Inspect or register installed Codex bridge state
-  memory    Sync append-only memory notes into a current summary
+  memory    Sync or compact append-only memory notes
   support   Run the configurable support module workflow
+  island    Global Codex notch overlay and status
 
 Global options:
   --help    Show help
@@ -99,6 +101,11 @@ export async function main(argv) {
 
   if (command === 'support') {
     await runSupportCommand(rest);
+    return;
+  }
+
+  if (command === 'island') {
+    await runIslandCommand(rest);
     return;
   }
 

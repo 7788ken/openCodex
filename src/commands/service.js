@@ -1318,6 +1318,7 @@ async function inspectService(service) {
   const ctoPlannerAgentSoul = await loadCtoSubagentSoulDocument(service.cwd, { path: service.ctoSoulPath, kind: 'planner' });
   const ctoWorkerAgentSoul = await loadCtoSubagentSoulDocument(service.cwd, { path: service.ctoSoulPath, kind: 'worker' });
   const workflowStats = await collectWorkflowStats(service);
+  const islandSnapshot = buildIslandSnapshot({ state: 'missing', ...workflowStats });
   if (!installed) {
     return {
       ok: true,
@@ -1366,12 +1367,14 @@ async function inspectService(service) {
       cto_worker_agent_soul_path: ctoWorkerAgentSoul.path,
       cto_worker_agent_soul_source: ctoWorkerAgentSoul.builtin ? 'builtin' : 'file',
       ...flattenServiceSettings(service.settings),
-      ...workflowStats
+      ...workflowStats,
+      ...islandSnapshot
     };
   }
 
   const listenerState = await inspectLaunchdUnit(service.cwd, service.label);
   const supervisorState = await inspectLaunchdUnit(service.cwd, service.supervisorLabel);
+  const activeIslandSnapshot = buildIslandSnapshot({ state: listenerState.state, ...workflowStats });
 
   return {
     ok: true,
@@ -1422,7 +1425,8 @@ async function inspectService(service) {
     ...flattenServiceSettings(service.settings),
     launchctl_output: listenerState.output,
     supervisor_launchctl_output: supervisorState.output,
-    ...workflowStats
+    ...workflowStats,
+    ...activeIslandSnapshot
   };
 }
 
@@ -1526,6 +1530,7 @@ async function collectWorkflowStats(service) {
   });
   const dispatchHistory = collectRecentDispatchRecords(service.cwd, workflowInfos);
   const recentDispatches = dispatchHistory.slice(0, 5);
+  const focusWorkflow = resolveFocusWorkflowInfo(workflowHistory, latestWorkflowInfo);
 
   return {
     running_workflow_count: runningWorkflowInfos.length,
@@ -1558,7 +1563,98 @@ async function collectWorkflowStats(service) {
     latest_workflow_state_path: latestWorkflowInfo?.state_path || '',
     latest_workflow_session_path: latestWorkflowInfo?.session_path || '',
     latest_workflow_pending_question: latestWorkflowInfo?.pending_question || '',
-    latest_workflow_child_thread_count: latestWorkflowInfo?.child_thread_count || 0
+    latest_workflow_child_thread_count: latestWorkflowInfo?.child_thread_count || 0,
+    focus_workflow_source: focusWorkflow?.source || '',
+    focus_workflow_session_id: focusWorkflow?.session_id || '',
+    focus_workflow_status: focusWorkflow?.status || '',
+    focus_workflow_goal: focusWorkflow?.goal || '',
+    focus_workflow_result: focusWorkflow?.result || '',
+    focus_workflow_pending_question: focusWorkflow?.pending_question || '',
+    focus_workflow_updated_at: focusWorkflow?.updated_at || '',
+    focus_workflow_path: focusWorkflow?.path || ''
+  };
+}
+
+function resolveFocusWorkflowInfo(workflowHistory, latestWorkflowInfo) {
+  const waitingWorkflow = Array.isArray(workflowHistory)
+    ? workflowHistory.find((item) => item?.status === 'waiting')
+    : null;
+  if (waitingWorkflow) {
+    return {
+      source: 'waiting',
+      session_id: waitingWorkflow.workflow_session_id || '',
+      status: waitingWorkflow.status || '',
+      goal: waitingWorkflow.goal || '',
+      result: '',
+      pending_question: waitingWorkflow.pending_question || '',
+      updated_at: waitingWorkflow.updated_at || '',
+      path: waitingWorkflow.path || ''
+    };
+  }
+
+  if (!latestWorkflowInfo) {
+    return null;
+  }
+
+  return {
+    source: 'latest',
+    session_id: latestWorkflowInfo.session_id || '',
+    status: latestWorkflowInfo.status || '',
+    goal: latestWorkflowInfo.goal || '',
+    result: latestWorkflowInfo.result || '',
+    pending_question: latestWorkflowInfo.pending_question || '',
+    updated_at: latestWorkflowInfo.updated_at || '',
+    path: latestWorkflowInfo.path || ''
+  };
+}
+
+function buildIslandSnapshot(payload) {
+  const serviceState = String(payload?.state || '');
+  const activeTaskCount = Number(payload?.running_task_count || 0) + Number(payload?.rerouted_task_count || 0);
+  const runningWorkflowCount = Number(payload?.running_workflow_count || 0);
+  const hasAttention = payload?.focus_workflow_source === 'waiting' && Number(payload?.waiting_workflow_count || 0) > 0;
+  const latestWorkflowStatus = normalizeWorkflowHistoryStatus(payload?.latest_workflow_status || '');
+  const focusStatus = normalizeWorkflowHistoryStatus(payload?.focus_workflow_status || '');
+  const focusGoal = String(payload?.focus_workflow_goal || '').trim();
+  const focusPending = String(payload?.focus_workflow_pending_question || '').trim();
+  const focusResult = String(payload?.focus_workflow_result || '').trim();
+
+  if (serviceState === 'missing') {
+    return {
+      island_state: 'missing',
+      island_title: 'OC [OFF]',
+      island_detail: 'Service is not running.'
+    };
+  }
+
+  if (hasAttention) {
+    return {
+      island_state: 'attention',
+      island_title: 'OC [WAIT]',
+      island_detail: focusPending || focusGoal || 'openCodex needs your decision.'
+    };
+  }
+
+  if (latestWorkflowStatus === 'completed' && payload?.latest_workflow_session_id) {
+    return {
+      island_state: 'done',
+      island_title: 'OC [DONE]',
+      island_detail: focusResult || focusGoal || 'The latest workflow completed.'
+    };
+  }
+
+  if (runningWorkflowCount > 0 || activeTaskCount > 0 || focusStatus === 'running') {
+    return {
+      island_state: 'active',
+      island_title: activeTaskCount > 0 ? `OC [${activeTaskCount}]` : 'OC [RUN]',
+      island_detail: focusGoal || `Running ${runningWorkflowCount} workflow(s).`
+    };
+  }
+
+  return {
+    island_state: serviceState === 'running' ? 'idle' : 'stopped',
+    island_title: serviceState === 'running' ? 'OC' : 'OC [OFF]',
+    island_detail: focusGoal || (serviceState === 'running' ? 'Ready for the next task.' : 'Service is not running.')
   };
 }
 
@@ -2099,6 +2195,15 @@ function renderServiceOutput(payload, json, title) {
   lines.push(`Tracked Main Threads: ${payload.main_thread_count ?? 0}`);
   lines.push(`Active Child Threads: ${payload.active_child_thread_count ?? payload.running_task_count ?? 0}`);
   lines.push(`Child Sessions: ${payload.child_session_count ?? payload.child_thread_count ?? 0}`);
+  if (payload.island_state) {
+    lines.push(`Island State: ${payload.island_state}`);
+  }
+  if (payload.island_title) {
+    lines.push(`Island Title: ${payload.island_title}`);
+  }
+  if (payload.island_detail) {
+    lines.push(`Island Detail: ${truncateInline(payload.island_detail, 160)}`);
+  }
   if (showWorkflowIds && payload.latest_workflow_session_id) {
     lines.push(`Latest Workflow: ${payload.latest_workflow_session_id}`);
   }
@@ -2114,8 +2219,32 @@ function renderServiceOutput(payload, json, title) {
   if (payload.latest_workflow_updated_at) {
     lines.push(`Latest Workflow Updated: ${payload.latest_workflow_updated_at}`);
   }
+  if (showWorkflowIds && payload.focus_workflow_session_id) {
+    lines.push(`Focus Workflow: ${payload.focus_workflow_session_id}`);
+  }
+  if (payload.focus_workflow_source) {
+    lines.push(`Focus Workflow Source: ${payload.focus_workflow_source}`);
+  }
+  if (payload.focus_workflow_status) {
+    lines.push(`Focus Workflow Status: ${payload.focus_workflow_status}`);
+  }
+  if (payload.focus_workflow_goal) {
+    lines.push(`Focus Workflow Goal: ${truncateInline(payload.focus_workflow_goal, 160)}`);
+  }
+  if (payload.focus_workflow_pending_question) {
+    lines.push(`Focus Workflow Pending: ${truncateInline(payload.focus_workflow_pending_question, 160)}`);
+  }
+  if (payload.focus_workflow_result) {
+    lines.push(`Focus Workflow Result: ${truncateInline(payload.focus_workflow_result, 160)}`);
+  }
+  if (payload.focus_workflow_updated_at) {
+    lines.push(`Focus Workflow Updated: ${payload.focus_workflow_updated_at}`);
+  }
   if (showPaths && payload.latest_workflow_path) {
     lines.push(`Latest Workflow Path: ${payload.latest_workflow_path}`);
+  }
+  if (showPaths && payload.focus_workflow_path) {
+    lines.push(`Focus Workflow Path: ${payload.focus_workflow_path}`);
   }
   if (showWorkflowIds && payload.latest_listener_session_id) {
     lines.push(`Latest Listener Session: ${payload.latest_listener_session_id}`);
@@ -3069,6 +3198,9 @@ property ctoPlannerAgentSoulPath : ${appleScriptString(service.ctoPlannerAgentSo
 property ctoWorkerAgentSoulPath : ${appleScriptString(service.ctoWorkerAgentSoulPath)}
 property stdoutPath : ${appleScriptString(service.stdoutPath)}
 property appTitle : "openCodex CTO"
+property notificationsPrimed : false
+property lastAttentionSignature : ""
+property lastDoneSignature : ""
 
 on run
 	my setupMenuBar()
@@ -3093,6 +3225,10 @@ end setupMenuBar
 
 on rebuildMenu(statusText)
 	statusMenu's removeAllItems()
+	set islandTitle to my lineValue(statusText, "Island Title: ", "OC")
+	set islandDetail to my lineValue(statusText, "Island Detail: ", "")
+	my addInfoItem(my localizedText(statusText, "Island", "灵动岛") & ": " & islandTitle)
+	if islandDetail is not "" then my addInfoItem(my truncateText(islandDetail, 84))
 	my addInfoItem(my localizedText(statusText, "Service", "服务") & ": " & my lineValue(statusText, "State: ", "unknown") & " • " & my detectMode(statusText))
 	my addInfoItem(my localizedText(statusText, "Supervisor", "监督器") & ": " & my lineValue(statusText, "Supervisor State: ", "unknown") & " • " & my lineValue(statusText, "Supervisor Interval: ", "60s"))
 	my addInfoItem(my localizedText(statusText, "Workflows", "工作流") & ": running " & my lineValue(statusText, "Running Workflows: ", "0") & " • waiting " & my lineValue(statusText, "Waiting Workflows: ", "0"))
@@ -3250,37 +3386,55 @@ on refreshStatus()
 	set totalChildCount to my lineValue(statusText, "Child Sessions: ", "0")
 	set badgeMode to my lineValue(statusText, "Badge Mode: ", "tasks")
 	set refreshIntervalValue to my lineValue(statusText, "Refresh Interval: ", "15")
-	set activeTaskCount to my integerValue(runningTaskCount) + my integerValue(reroutedTaskCount)
-	if serviceState is "running" then
-		set titlePrefix to "OC●"
-		if modeLabel is "full-access" then
-			set titlePrefix to "OC⚡"
-		else if modeLabel is "safe" then
-			set titlePrefix to "OC△"
-		end if
-		if badgeMode is "workflows" then
-			if runningCount is not "0" then
-				button's setTitle_(titlePrefix & runningCount)
-			else
-				button's setTitle_(titlePrefix)
-			end if
-		else if badgeMode is "none" then
-			button's setTitle_(titlePrefix)
-		else if activeTaskCount is not 0 then
-			button's setTitle_(titlePrefix & (activeTaskCount as string))
-		else
-			button's setTitle_(titlePrefix)
-		end if
+	set islandTitle to my lineValue(statusText, "Island Title: ", "")
+	if islandTitle is not "" then
+		button's setTitle_(islandTitle)
+	else if serviceState is "running" then
+		button's setTitle_("OC")
 	else
-		button's setTitle_("OC○")
+		button's setTitle_("OC [OFF]")
 	end if
 	button's setToolTip_("openCodex CTO • " & serviceState & " • wf " & runningCount & "/" & waitingCount & " • task " & runningTaskCount & "/" & reroutedTaskCount & "/" & queuedTaskCount & " • main active " & mainCount & " • child active " & childCount & " • child total " & totalChildCount & " • " & modeLabel)
+	my maybeNotifyIsland(statusText)
 	try
 		return refreshIntervalValue as integer
 	on error
 		return 15
 	end try
 end refreshStatus
+
+on maybeNotifyIsland(statusText)
+	set islandState to my lineValue(statusText, "Island State: ", "idle")
+	set focusStatus to my lineValue(statusText, "Focus Workflow Status: ", "")
+	set focusGoal to my lineValue(statusText, "Focus Workflow Goal: ", "")
+	set focusPending to my lineValue(statusText, "Focus Workflow Pending: ", "")
+	set focusResult to my lineValue(statusText, "Focus Workflow Result: ", "")
+	set focusUpdated to my lineValue(statusText, "Focus Workflow Updated: ", "")
+	set attentionSignature to islandState & "|" & focusStatus & "|" & focusGoal & "|" & focusPending & "|" & focusUpdated
+	set doneSignature to islandState & "|" & focusStatus & "|" & focusGoal & "|" & focusResult & "|" & focusUpdated
+
+	if notificationsPrimed is false then
+		set lastAttentionSignature to attentionSignature
+		set lastDoneSignature to doneSignature
+		set notificationsPrimed to true
+		return
+	end if
+
+	if islandState is "attention" and attentionSignature is not lastAttentionSignature then
+		set detailText to focusPending
+		if detailText is "" then set detailText to focusGoal
+		if detailText is "" then set detailText to my localizedText(statusText, "openCodex needs your input.", "openCodex 需要你确认下一步。")
+		display notification (my truncateText(detailText, 120)) with title appTitle subtitle (my localizedText(statusText, "Needs Your Choice", "需要你选择"))
+	else if islandState is "done" and doneSignature is not lastDoneSignature then
+		set detailText to focusResult
+		if detailText is "" then set detailText to focusGoal
+		if detailText is "" then set detailText to my localizedText(statusText, "The latest workflow finished.", "最近工作流已完成。")
+		display notification (my truncateText(detailText, 120)) with title appTitle subtitle (my localizedText(statusText, "Task Completed", "任务已完成"))
+	end if
+
+	set lastAttentionSignature to attentionSignature
+	set lastDoneSignature to doneSignature
+end maybeNotifyIsland
 
 on runStatusCommand(asJson)
 	set commandText to quoted form of nodePath & space & quoted form of cliPath & " service telegram status --state-dir " & quoted form of stateDir
@@ -3316,6 +3470,10 @@ end showStatus_
 on statusOverviewText(statusText)
 	set summaryLines to {}
 	set end of summaryLines to "openCodex CTO"
+	set islandState to my lineValue(statusText, "Island State: ", "idle")
+	set islandDetail to my lineValue(statusText, "Island Detail: ", "")
+	set end of summaryLines to my localizedText(statusText, "Island", "灵动岛") & ": " & islandState
+	if islandDetail is not "" then set end of summaryLines to my truncateText(islandDetail, 96)
 	set end of summaryLines to my localizedText(statusText, "Service", "服务") & ": " & my lineValue(statusText, "State: ", "unknown") & " • " & my detectMode(statusText)
 	set end of summaryLines to my localizedText(statusText, "Supervisor", "监督器") & ": " & my lineValue(statusText, "Supervisor State: ", "unknown") & " • " & my lineValue(statusText, "Supervisor Interval: ", "60s")
 	set end of summaryLines to my localizedText(statusText, "Workflows", "工作流") & ": running " & my lineValue(statusText, "Running Workflows: ", "0") & " • waiting " & my lineValue(statusText, "Waiting Workflows: ", "0")

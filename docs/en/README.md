@@ -91,10 +91,11 @@ The bootstrap script is meant for detached installs, not `--link-source` develop
 - `doctor-command.md` — local readiness checks, output shape, and exit behavior.
 - `review-command.md` — review workflow inputs, artifacts, and summary strategy.
 - `auto-command.md` — unattended local workflow chaining on top of existing wrapper commands.
-- `memory-command.md` — sync append-only memory notes into a latest-view summary and state file.
+- `memory-command.md` — sync or compact append-only memory notes into active/archive/summary-state artifacts.
 - `remote-command.md` — token-protected mobile message bridge over local HTTP.
 - `mobile-control-plane.md` — product boundary, host-owned control, and support limits for the mobile/web control plane.
 - `service-command.md` — macOS launchd service and menu bar app management for Telegram CTO mode.
+- `island-command.md` — notch-style macOS overlay for cross-workspace Codex task status and pending replies.
 - `install-command.md` — detached runtime installation and local CLI shim management.
 - `im-command.md` — Telegram-first instant-messaging connector for phone-to-openCodex reachability.
 - `cto-main-thread-sequence.md` — chat-first sequence diagram for the CTO main thread, workflow, and task flow.

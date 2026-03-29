@@ -2,6 +2,7 @@ import { mkdir, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { readJson, toIsoString, writeJson } from './fs.js';
 import { applySessionContract, readSessionContractFromEnv } from './session-contract.js';
+import { registerWorkspace } from './workspace-registry.js';
 
 const TERMINAL_SESSION_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
@@ -50,6 +51,14 @@ export async function saveSession(cwd, session) {
   const sessionDir = getSessionDir(cwd, session.session_id);
   await mkdir(path.join(sessionDir, 'artifacts'), { recursive: true });
   await writeJson(path.join(sessionDir, 'session.json'), session);
+  try {
+    await registerWorkspace(cwd, {
+      latest_session_id: session.session_id,
+      latest_command: session.command,
+      latest_updated_at: session.updated_at || toIsoString()
+    });
+  } catch {
+  }
   return sessionDir;
 }
 

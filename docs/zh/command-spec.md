@@ -100,22 +100,26 @@ openCodex 是架在 Codex CLI 之上的轻量 CLI 层。
 
 **Purpose**
 
-把追加型 memory 记录重建成最新 summary 和 machine-readable state 文件。
+把追加型 memory 记录收敛成“active + archive + summary/state”三层产物。
 
 **Initial scope**
 
 - 解析带时间标题的追加型 session 记录
 - 同一 `主题键` 下只保留最新记录作为当前视图
 - 当旧记录没有 `主题键` 且标题只映射到一个显式 `主题键` 时，并入该主题
-- 重建 summary 与 state 产物，但不改写原始记录
-- 把本次同步过程也落成标准 openCodex 本地 session
+- `sync` 重建按项目分组的 summary 与 state
+- `compact` 保留每个主题最新 active 记录，并把旧且已被覆盖的历史按项目/月归档
+- 把本次处理过程也落成标准 openCodex 本地 session
 
 **Minimal flags**
 
 - `sync`
+- `compact`
 - `--source <path>`
 - `--summary <path>`
 - `--state <path>`
+- `--archive-dir <path>`
+- `--retention-days <days>`
 - `--cwd <dir>`
 - `--json`
 - `--now <timestamp>`
@@ -124,7 +128,7 @@ openCodex 是架在 Codex CLI 之上的轻量 CLI 层。
 
 - 把追加型记录改造成可编辑数据库
 - 在命令内部内建 scheduler
-- 回写或去重原始 memory 文件
+- 靠单一大文件长期承载所有热数据和冷历史
 
 ### `opencodex remote`
 
@@ -290,6 +294,41 @@ openCodex 是架在 Codex CLI 之上的轻量 CLI 层。
 - 替换 `im telegram listen` 作为真正的 Telegram 执行引擎
 - 在 v1 自建托管 relay 服务
 - 第一版就交付一套完全自定义的原生桌面客户端
+
+### `opencodex island`
+
+**Purpose**
+
+安装并驱动一个刘海屏风格的 macOS 浮层，用来汇总所有已知 workspace 的 Codex 任务状态，并在需要回复时直接暴露待处理消息，而不是依赖菜单栏图标。
+
+**Initial scope**
+
+- 聚合当前工作区、已注册工作区、默认 detached workspace 根目录，以及 Telegram service 配置里声明的工作区任务
+- 提供只读的 `status` 全局状态快照
+- 安装一个轻量原生 macOS overlay app，周期性轮询 `opencodex island status`
+- 按需打开已安装的 overlay app
+- 默认把浮层锚定在主显示器的菜单栏 / 刘海区域
+- 收敛态显示状态与进行中的任务数，展开态显示待回复消息预览
+
+**Minimal flags**
+
+- `status`
+- `install`
+- `open`
+- `--cwd <dir>`
+- `--home-dir <dir>`
+- `--applications-dir <dir>`
+- `--app-path <path>`
+- `--cli-path <path>`
+- `--node-path <path>`
+- `--open`（`install`）
+- `--json`
+
+**Non-goals**
+
+- 替代主 `OpenCodex.app` 宿主壳
+- 演化成通用桌面通知系统
+- 第一版就做成完整沙盒化 / notarized 的原生桌面应用
 
 ### `opencodex doctor`
 

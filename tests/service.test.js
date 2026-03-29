@@ -241,6 +241,14 @@ test('service telegram status includes workflow counts and latest workflow detai
   assert.equal(payload.latest_workflow_status, 'waiting');
   assert.equal(payload.latest_workflow_goal, 'Deploy change after confirmation');
   assert.equal(payload.latest_workflow_pending_question, '请确认是否继续发布');
+  assert.equal(payload.focus_workflow_source, 'waiting');
+  assert.equal(payload.focus_workflow_session_id, 'cto-20260309-100500-waiting');
+  assert.equal(payload.focus_workflow_status, 'waiting');
+  assert.equal(payload.focus_workflow_goal, 'Deploy change after confirmation');
+  assert.equal(payload.focus_workflow_pending_question, '请确认是否继续发布');
+  assert.equal(payload.island_state, 'attention');
+  assert.equal(payload.island_title, 'OC [WAIT]');
+  assert.equal(payload.island_detail, '请确认是否继续发布');
   assert.match(payload.latest_workflow_path, /cto-workflow\.json$/);
   assert.equal(payload.latest_listener_session_id, 'im-20260309-100100-listener');
 
@@ -256,8 +264,14 @@ test('service telegram status includes workflow counts and latest workflow detai
   assert.match(humanStatus.stdout, /Show Workflow IDs: off/);
   assert.match(humanStatus.stdout, /Show Paths: off/);
   assert.match(humanStatus.stdout, /Supervisor Loaded: no/);
+  assert.match(humanStatus.stdout, /Island State: attention/);
+  assert.match(humanStatus.stdout, /Island Title: OC \[WAIT\]/);
+  assert.match(humanStatus.stdout, /Island Detail: 请确认是否继续发布/);
   assert.match(humanStatus.stdout, /Latest Workflow Status: waiting/);
+  assert.match(humanStatus.stdout, /Focus Workflow Status: waiting/);
+  assert.match(humanStatus.stdout, /Focus Workflow Pending: 请确认是否继续发布/);
   assert.doesNotMatch(humanStatus.stdout, /Latest Workflow: cto-/);
+  assert.doesNotMatch(humanStatus.stdout, /Focus Workflow: cto-/);
   assert.doesNotMatch(humanStatus.stdout, /Latest Listener Session:/);
   assert.doesNotMatch(humanStatus.stdout, /Latest Workflow Path:/);
   assert.doesNotMatch(humanStatus.stdout, /CLI Path:/);
@@ -1847,6 +1861,10 @@ test('service telegram supervise runs a one-shot host supervisor tick from the i
   assert.equal(payload.running_workflow_count, 0);
   assert.equal(payload.waiting_workflow_count, 0);
   assert.equal(payload.latest_workflow_status, 'completed');
+  assert.equal(payload.focus_workflow_source, 'latest');
+  assert.equal(payload.focus_workflow_status, 'completed');
+  assert.equal(payload.island_state, 'done');
+  assert.equal(payload.island_title, 'OC [DONE]');
   assert.ok(telegram.state.sentMessages.some((message) => message.reply_to_message_id === 911 && /已经处理完了。/.test(message.text)));
 
   await telegram.close();
@@ -1947,6 +1965,14 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /Settings…/);
   assert.match(scriptSource, /openSettings_/);
   assert.match(scriptSource, /statusOverviewText/);
+  assert.match(scriptSource, /Island Title:/);
+  assert.match(scriptSource, /Island Detail:/);
+  assert.match(scriptSource, /Focus Workflow Status:/);
+  assert.match(scriptSource, /Focus Workflow Pending:/);
+  assert.match(scriptSource, /maybeNotifyIsland/);
+  assert.match(scriptSource, /Needs Your Choice/);
+  assert.match(scriptSource, /Task Completed/);
+  assert.match(scriptSource, /notificationsPrimed/);
   assert.match(scriptSource, /browseStatusSections/);
   assert.match(scriptSource, /statusSectionNames/);
   assert.match(scriptSource, /Select a status section/);
@@ -1996,7 +2022,7 @@ test('service telegram install can compile the menu bar app and expose workflow 
   assert.match(scriptSource, /totalChildCount/);
   assert.match(scriptSource, /service telegram send-status/);
   assert.match(scriptSource, /my runServiceCommand\("supervise"\)/);
-  assert.match(scriptSource, /OC⚡/);
+  assert.match(scriptSource, /OC \[OFF\]/);
 });
 
 async function writeDetachedCliFixture(rootDir) {

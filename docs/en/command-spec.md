@@ -100,22 +100,26 @@ Run a first unattended local workflow by chaining stable openCodex wrapper comma
 
 **Purpose**
 
-Rebuild a latest-view summary and a machine-readable state file from append-only memory notes.
+Consolidate append-only memory notes into an active/archive/summary-state model.
 
 **Initial scope**
 
 - parse append-only session notes with dated headings
 - keep the newest record for the same topic key as the active view
 - merge legacy title-only notes into a keyed topic when the title maps to exactly one explicit topic key
-- write regenerated summary and state artifacts without mutating the source notes
-- store the sync itself as a standard local openCodex session
+- `sync` regenerates project-grouped summary and state artifacts
+- `compact` preserves the newest active record per topic, then archives stale superseded history by project/month
+- store the processing run itself as a standard local openCodex session
 
 **Minimal flags**
 
 - `sync`
+- `compact`
 - `--source <path>`
 - `--summary <path>`
 - `--state <path>`
+- `--archive-dir <path>`
+- `--retention-days <days>`
 - `--cwd <dir>`
 - `--json`
 - `--now <timestamp>`
@@ -124,7 +128,7 @@ Rebuild a latest-view summary and a machine-readable state file from append-only
 
 - turning append-only notes into an editable database
 - embedding a scheduler into the command itself
-- rewriting or deduplicating the source note file
+- relying on one forever-growing flat file to hold both hot notes and cold history
 
 ### `opencodex remote`
 
@@ -290,6 +294,41 @@ Install and control a macOS background service for the Telegram CTO bridge, with
 - replacing `im telegram listen` as the actual Telegram engine
 - building a hosted relay service
 - shipping a fully custom native desktop client in v1
+
+### `opencodex island`
+
+**Purpose**
+
+Install and drive a notch-style macOS overlay that summarizes Codex task state across all known workspaces and surfaces pending replies without relying on a menu bar icon.
+
+**Initial scope**
+
+- aggregate task sessions from the current workspace, registered workspaces, detached workspace roots, and Telegram service workspace config
+- expose a read-only `status` payload for the current global island state
+- install a lightweight native macOS overlay app that polls `opencodex island status`
+- open the installed overlay app on demand
+- keep the overlay anchored near the main display menu bar / notch region
+- show collapsed state and active-task count when idle, and expand into pending-message previews when attention is required
+
+**Minimal flags**
+
+- `status`
+- `install`
+- `open`
+- `--cwd <dir>`
+- `--home-dir <dir>`
+- `--applications-dir <dir>`
+- `--app-path <path>`
+- `--cli-path <path>`
+- `--node-path <path>`
+- `--open` (`install`)
+- `--json`
+
+**Non-goals**
+
+- replacing the main `OpenCodex.app` host shell
+- implementing a general desktop notification framework
+- shipping a fully sandboxed or notarized native app in the first pass
 
 ### `opencodex doctor`
 

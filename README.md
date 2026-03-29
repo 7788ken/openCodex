@@ -41,6 +41,7 @@ The goal of this repository is to explore a practical, repo-aware coding workflo
 - `opencodex im` — connect openCodex to IM platforms like Telegram without depending on local IP reachability, and route messages into a host-resident CTO supervisor workflow whose task execution is dispatched through the host Codex CLI path.
 - `opencodex service` — install a macOS launchd service and optional menu bar app for the Telegram CTO bridge, with a configurable permission mode and host-supervisor control loop.
 - `opencodex install` — create or inspect a detached local runtime, plus a thin `OpenCodex.app` shell and CLI shim that stay off the development checkout.
+- `opencodex island` — install and drive a notch-style macOS overlay that summarizes Codex tasks across known workspaces.
 
 ## Installed Product Boundary
 
@@ -136,6 +137,7 @@ node ./bin/opencodex.js memory sync --source "$HOME/.codex/memories/global_sessi
 node ./bin/opencodex.js remote serve --host 0.0.0.0
 node ./bin/opencodex.js im telegram listen --bot-token "$OPENCODEX_TELEGRAM_BOT_TOKEN"
 node ./bin/opencodex.js im telegram listen --chat-id "$OPENCODEX_TELEGRAM_CHAT_ID" --cto --bot-token "$OPENCODEX_TELEGRAM_BOT_TOKEN"
+node ./bin/opencodex.js island status --json
 # Long-lived services should normally be installed from an installed openCodex CLI.
 # Use --allow-project-cli only when you intentionally want this source checkout to stay coupled to the service.
 node ./bin/opencodex.js service telegram install --cwd "$PWD" --chat-id "$OPENCODEX_TELEGRAM_CHAT_ID" --profile full-access --install-menubar --open-menubar --allow-project-cli
