@@ -92,6 +92,8 @@ The bootstrap script is meant for detached installs, not `--link-source` develop
 - `review-command.md` — review workflow inputs, artifacts, and summary strategy.
 - `auto-command.md` — unattended local workflow chaining on top of existing wrapper commands.
 - `memory-command.md` — sync or compact append-only memory notes into active/archive/summary-state artifacts.
+- `bridge-command.md` — installed Codex session bridge, live-session attach model, and remote continuation path.
+- `session-bridge-operations.md` — operator guide for inspecting, selecting, and continuing the same bridge-owned Codex session.
 - `remote-command.md` — token-protected mobile message bridge over local HTTP.
 - `mobile-control-plane.md` — product boundary, host-owned control, and support limits for the mobile/web control plane.
 - `service-command.md` — macOS launchd service and menu bar app management for Telegram CTO mode.
@@ -102,6 +104,7 @@ The bootstrap script is meant for detached installs, not `--link-source` develop
 - `profile-policy.md` — current wrapper profiles and Codex CLI policy mapping.
 - `cto-soul.md` — editable initialization prompt for the CTO main thread.
 - `install-layout.md` — detached install layout for the app surface, CLI shim, and long-lived services.
+- `native-host-runtime-spine.md` — native-vs-JS ownership boundary for bridge/runtime host surfaces.
 - `support-domain-contract.md` — implementation-ready dual-channel support module contract (Telegram group + Xianyu personal) with strict config schema.
 - `support-module-rollout.md` — concise rollout guide for module purpose, config, TG/Xianyu boundaries, and local verification steps.
 

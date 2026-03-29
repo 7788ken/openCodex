@@ -35,3 +35,14 @@
 - Define a detached installed runtime root.
 - Let the app surface and CLI surface coexist on the same runtime.
 - Keep long-lived services attached to the installed launcher instead of a source checkout.
+
+## Phase 6 — Codex Session Bridge
+
+- Put a transparent `codex` bridge shim in front of the real Codex launcher.
+- Make bridge-owned live sessions the supported attach target for remote/mobile continuation.
+- Keep session history, recent output, and remote continuation on one mainline session model.
+
+## Phase 7 — Native Host Runtime Spine
+
+- Move bridge/runtime host ownership into a native Swift spine where OS integration is the real requirement.
+- Keep JS as the orchestration and product-logic layer instead of the low-level runtime owner.

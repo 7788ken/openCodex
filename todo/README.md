@@ -30,3 +30,4 @@ The product focus is orchestration, workflow design, session handling, and multi
 - `T019-telegram-host-export-to-downloads.md` — reroute sandbox-blocked partial export tasks into the host executor automatically.
 - `T020-mobile-control-plane-boundary.md` — define the next-stage mobile/web control plane boundary without derailing the runtime/supervisor route.
 - `T021-installed-oc-codex-control-bridge.md` — make installed openCodex a path-independent control bridge over Codex CLI without changing the `codex` habit.
+- `T023-native-host-runtime-spine.md` — move bridge/runtime OS-facing host surfaces out of JS and into a native Swift host/runtime spine.

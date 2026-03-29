@@ -1,5 +1,24 @@
 # Status Log
 
+## 2026-03-29
+
+- Tightened the `T021` operator contract in docs-first form before the next implementation slice:
+  - documented that live continuation currently trusts only the single bridge session referenced by the global active pointer
+  - documented that attachability is gated by `command === bridge`, `status === running`, readable session record, and valid working directory
+  - documented that historical `completed` / `failed` / `cancelled` bridge sessions are read-only today and do not support explicit reopen/resume
+  - synced those rules into the bridge/session operations wiki so remote/mobile/Telegram behavior is explainable from one operator-facing contract
+- Added the current `T021` repair/recovery contract to the docs-first bridge wiki:
+  - documented that install-layer breakage should be repaired through `register-codex`, `install-shim`, `repair-shim`, and PATH correction before treating attach failures as session problems
+  - documented that dangling active pointers and orphaned/crashed runtime states are currently detected and surfaced as non-attachable, not automatically revived
+  - documented that the supported recovery path today is read-only inspection plus starting a new bridge-owned `codex ...`, because there is no dedicated active-pointer repair or historical reopen command yet
+- Reset the current direction back to the real product goal:
+  - discarded the unsubmitted `T022` Dynamic Island planning lane as the active mainline
+  - reaffirmed that the real objective is bridging into Codex sessions so remote/mobile surfaces can inspect history and continue the same mainline work
+  - moved focus back to `T021-installed-oc-codex-control-bridge.md`
+- Opened `T023-native-host-runtime-spine.md` to support that goal:
+  - JS should remain only where it is the right orchestration/tooling layer
+  - bridge/runtime surfaces that need tighter OS integration or stronger install/runtime ownership should move into a native Swift spine
+
 ## 2026-03-21
 
 - Tightened `T021` Phase 4 attach delivery semantics on the bridge-owned mainline:

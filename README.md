@@ -25,6 +25,7 @@ The goal of this repository is to explore a practical, repo-aware coding workflo
 
 - `opencodex run` is the primary local work surface.
 - `opencodex session` is the local coordination and trace surface.
+- `opencodex bridge` is the mainline control surface for continuing real Codex sessions from remote/mobile entry points.
 - `opencodex doctor` is a supporting readiness command, not the core product.
 - `opencodex review` is the second-wave local review surface.
 - `safe` / `balanced` profiles are available for `run` and `review`, with project defaults from `opencodex.config.json`.
@@ -37,6 +38,7 @@ The goal of this repository is to explore a practical, repo-aware coding workflo
 - `opencodex review` — run a repository review and store a normalized review session with structured findings when the report format allows.
 - `opencodex auto` — run an unattended local workflow with a parent session, chained child sessions, optional retries, and optional review.
 - `opencodex memory` — sync append-only memory notes into a current summary and state file so recurring automations can reuse one openCodex-owned capability.
+- `opencodex bridge` — register the real Codex launcher, install a transparent `codex` bridge shim, inspect the active bridge-owned session, read recent output, and inject continuation input into the same session.
 - `opencodex remote` — open a token-protected HTTP bridge so your phone can send messages into the current workspace.
 - `opencodex im` — connect openCodex to IM platforms like Telegram without depending on local IP reachability, and route messages into a host-resident CTO supervisor workflow whose task execution is dispatched through the host Codex CLI path.
 - `opencodex service` — install a macOS launchd service and optional menu bar app for the Telegram CTO bridge, with a configurable permission mode and host-supervisor control loop.

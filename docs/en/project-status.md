@@ -1,4 +1,4 @@
-# Project Status Snapshot (2026-03-19)
+# Project Status Snapshot (2026-03-29)
 
 ## Positioning
 
@@ -18,6 +18,8 @@ The product focus is workflow orchestration, normalized sessions, policy mapping
 - Keep phone/web entry as a narrow control plane, not a remote IDE.
 - Keep local-first and private-network-first as the default exposure model.
 - Keep App, CLI, and long-lived services on one detached runtime boundary.
+- Make the Codex session bridge the mainline product path for remote continuation and history inspection.
+- Move bridge/runtime host ownership into a native spine when OS integration, PTY control, or service ownership makes JS the wrong layer.
 
 ## Current Progress
 
@@ -29,12 +31,14 @@ The product focus is workflow orchestration, normalized sessions, policy mapping
   - `doctor`
   - `review`
   - `auto`
+  - `bridge`
   - `remote`
   - `im`
   - `service`
   - `install`
-- Test status (2026-03-19):
-  - `npm test` is green, `179/179` passed.
+- Test status (2026-03-29):
+  - targeted bridge/remote/im/install coverage is in active use
+  - full-suite health should be re-baselined again after the next bridge-mainline implementation slice
 
 ### Board Status Summary
 
@@ -48,14 +52,21 @@ The product focus is workflow orchestration, normalized sessions, policy mapping
   - `T015` Supervisor/session UI separation (remaining gap: historical backfill consistency)
   - `T016` Conversation/research mode (remaining gap: product-wide persisted visibility)
 - Partially implemented:
-  - `T017` Detached install layout (core boundary complete; packaging/lifecycle polish remains)
+  - `T021` Installed Codex control bridge (installed bridge state, shim install/repair, live-session records, remote/Telegram attach, recent output, and external message relay are in place; the operator-facing selector / attachability / no-reopen contract is now documented explicitly; remaining gaps are orphaned/dangling recovery semantics, post-crash consistency rules, and the installed-product plus native-runtime follow-through)
+- Newly opened:
+  - `T023` Native host runtime spine (documented as the supporting refactor path for bridge/runtime OS ownership)
 - Partially implemented:
+  - `T017` Detached install layout (core boundary complete; packaging/lifecycle polish remains)
   - `T020` Mobile/Web control-plane boundary follow-through (boundary docs are in place and `remote status` already covers deployment checks/troubleshooting; broader control-plane follow-through remains)
 - Parked:
   - `T008` Gateway spike
 
 ### Recent Iteration Focus
 
+- Re-centered the product mainline on `T021`: bridge into real Codex sessions, inspect the same session remotely, and continue the same mainline work instead of opening parallel lanes.
+- Added docs-first planning for `T023` so bridge/runtime host ownership can move into a native Swift spine incrementally instead of remaining in JS by convenience.
+- Wrote down the current `T021` operator contract explicitly in the bridge wiki: live selection trusts only the global active pointer, attachability requires a running bridge-owned session, and historical bridge sessions are read-only with no reopen/resume path today.
+- Wrote down the current `T021` repair/recovery contract too: installed-surface repair and live-session recovery are now described separately, and current recovery is limited to diagnosis plus a fresh bridge-owned relaunch rather than reviving the old live lane.
 - Strengthened host-supervisor recovery paths, concurrency leases, and periodic supervisor ticks in service mode.
 - Extended session-contract metadata across `im/auto/run/review/session/service` flows.
 - Service workflow/dispatch aggregation now hydrates child-session contract snapshots from child `session.json` artifacts when parent linkage metadata is stale.
@@ -69,3 +80,5 @@ The product focus is workflow orchestration, normalized sessions, policy mapping
 - Historical sessions and legacy producers still require some contract inference/backfill paths.
 - Phone/web control plane is at "boundary converged, implementation pending" stage.
 - Detached install is usable, but broader packaging/product polish remains.
+- Bridge-owned session recovery semantics after orphaned controllers, dangling active pointers, or bridge-runtime crashes still need tighter convergence.
+- The bridge/runtime layer still leans on JS more than the desired host-ownership boundary.

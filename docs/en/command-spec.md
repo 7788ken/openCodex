@@ -163,6 +163,43 @@ Receive remote messages from a phone through a token-protected HTTP bridge tied 
 - background push notifications
 - direct live control of a Codex turn from the phone
 
+### `opencodex bridge`
+
+**Purpose**
+
+Operate the installed Codex session bridge so remote/mobile/IM surfaces can inspect and continue the same bridge-owned Codex session.
+
+**Initial scope**
+
+- persist the real Codex launcher path
+- install or repair a transparent `codex` bridge shim
+- expose the active bridge-owned session state
+- expose recent output and external-message audit trails
+- inject continuation input into the active or selected bridge-owned session
+
+**Minimal flags**
+
+- `status`
+- `tail`
+- `inbox`
+- `send`
+- `register-codex`
+- `install-shim`
+- `repair-shim`
+- `--cwd <dir>`
+- `--bin-dir <dir>`
+- `--limit <n>`
+- `--session-id <id|active|latest>`
+- `--path <path>`
+- `--force`
+- `--json`
+
+**Non-goals**
+
+- takeover of arbitrary foreign Codex processes
+- a second execution engine beside Codex CLI
+- silent fallback to a parallel workflow when the user intent is "continue current Codex work"
+
 ### `opencodex im`
 
 **Purpose**

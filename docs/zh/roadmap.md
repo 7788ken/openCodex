@@ -29,3 +29,14 @@
 - 定义 detached install 的运行时根目录。
 - 让 App 形态和 CLI 形态基于同一套 runtime 并存。
 - 让长期服务绑定安装产物，而不是源码 checkout。
+
+## Phase 5 — Codex Session Bridge
+
+- 在真实 Codex launcher 前面放一层透明 `codex` bridge shim。
+- 让 bridge-owned live session 成为 remote/mobile 续接的受支持 attach 目标。
+- 让会话历史、最近输出和远程续接统一落在同一条主线 session 模型上。
+
+## Phase 6 — Native Host Runtime Spine
+
+- 把 bridge/runtime 的宿主 ownership 收口到 Swift native spine，前提是真正存在 OS 集成需求。
+- 让 JS 继续做编排层和产品逻辑层，而不是底层 runtime owner。

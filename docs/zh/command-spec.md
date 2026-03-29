@@ -163,6 +163,43 @@ openCodex 是架在 Codex CLI 之上的轻量 CLI 层。
 - 后台 push 通知
 - 从手机直接实时接管一个 Codex turn
 
+### `opencodex bridge`
+
+**Purpose**
+
+管理 installed Codex session bridge，让 remote / mobile / IM 入口可以查看并继续同一条 bridge-owned Codex 会话。
+
+**Initial scope**
+
+- 保存真实 Codex launcher 路径
+- 安装或修复透明的 `codex` bridge shim
+- 暴露当前 active bridge-owned session 状态
+- 暴露最近输出和外部消息审计轨迹
+- 向 active 或指定 bridge-owned session 注入 continuation input
+
+**Minimal flags**
+
+- `status`
+- `tail`
+- `inbox`
+- `send`
+- `register-codex`
+- `install-shim`
+- `repair-shim`
+- `--cwd <dir>`
+- `--bin-dir <dir>`
+- `--limit <n>`
+- `--session-id <id|active|latest>`
+- `--path <path>`
+- `--force`
+- `--json`
+
+**Non-goals**
+
+- 接管 bridge 之外随意启动的 foreign Codex 进程
+- 在 Codex CLI 旁边再造一套执行引擎
+- 当用户意图是“继续当前 Codex 主线”时，静默回退成平行 workflow
+
 ### `opencodex im`
 
 **Purpose**

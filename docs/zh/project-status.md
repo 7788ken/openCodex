@@ -1,4 +1,4 @@
-# 项目状态快照（2026-03-19）
+# 项目状态快照（2026-03-29）
 
 ## 定位
 
@@ -18,6 +18,8 @@ openCodex 是构建在 Codex CLI 之上的本地编排层，不重写本地 codi
 - 手机/Web 入口保持窄 control plane，不演化为远程 IDE。
 - 默认 local-first / private-network-first，不把公网 relay 作为第一阶段前提。
 - 安装形态保持 App、CLI、长期 service 共用同一 detached runtime。
+- 让 Codex session bridge 成为远程续接与历史查看的产品主线。
+- 当 bridge/runtime 真正需要 OS 集成、PTY 控制和 service ownership 时，把宿主 ownership 收口到 native spine。
 
 ## 当前进度
 
@@ -29,12 +31,14 @@ openCodex 是构建在 Codex CLI 之上的本地编排层，不重写本地 codi
   - `doctor`
   - `review`
   - `auto`
+  - `bridge`
   - `remote`
   - `im`
   - `service`
   - `install`
-- 测试状态（2026-03-19）：
-  - `npm test` 通过，`179/179` 通过。
+- 测试状态（2026-03-29）：
+  - 当前主要依赖 bridge / remote / im / install 相关的聚焦回归
+  - 下一轮 bridge 主线实现后，需要重新做一次完整测试基线收口
 
 ### 看板状态摘要
 
@@ -48,14 +52,21 @@ openCodex 是构建在 Codex CLI 之上的本地编排层，不重写本地 codi
   - `T015` Supervisor 与子会话可视分离（剩余旧记录回填）
   - `T016` Conversation / research mode（剩余全控制面持久可见性）
 - 部分实现（partial）：
-  - `T017` Detached install 形态（核心边界已完成，剩余 packaging/lifecycle 打磨）
+  - `T021` Installed Codex control bridge（installed bridge state、shim install/repair、live-session records、remote/Telegram attach、最近输出和外部消息中继已落地；operator-facing 的 selector / attachability / no-reopen 契约也已写清；剩余缺口是 orphaned/dangling 修复语义、crash 后一致性策略，以及 installed-product 与 native-runtime 的后续落地）
+- 新开任务：
+  - `T023` Native host runtime spine（作为 bridge/runtime 宿主 ownership 收口的支撑性重构路径，已先完成文档定义）
 - 部分实现（partial）：
+  - `T017` Detached install 形态（核心边界已完成，剩余 packaging/lifecycle 打磨）
   - `T020` Mobile/Web control-plane 边界（边界文档与 `remote status` 诊断能力已落地，剩余更完整 control-plane 产品化收敛）
 - 暂停（parked）：
   - `T008` Gateway spike
 
 ### 最近迭代重点
 
+- 把产品主线重新收回到 `T021`：桥接到真实 Codex 会话、远程查看同一条会话、继续同一条主线工作，而不是再开平行 lane。
+- 在“文档先行，wiki 先行”的前提下，为 `T023` 补了宿主 ownership 的 native spine 设计文档，明确 bridge/runtime 不应只因实现便利继续留在 JS。
+- 把 `T021` 当前已经成立的 operator 规则写实到 bridge wiki：live selector 只认全局 active pointer，attach 只认 running bridge session，历史 bridge session 目前只读、不支持 reopen / resume。
+- 把 `T021` 当前 repair/recovery contract 也写实到 bridge wiki：安装层 repair 与 live-session recovery 已拆开说明，当前 recovery 只支持诊断后重新启动新的 bridge-owned 主线，不假装能复活旧 live lane。
 - 增加并强化 host-supervisor 恢复路径、并发 lease 防重机制与 service 周期性 supervisor tick。
 - 将 session-contract 元数据扩展到 `im/auto/run/review/session/service` 相关链路。
 - service 在 workflow/dispatch 聚合时，父会话 child metadata 过期时会从子会话 `session.json` 回填 contract 快照。
@@ -69,3 +80,5 @@ openCodex 是构建在 Codex CLI 之上的本地编排层，不重写本地 codi
 - 历史 session 与旧生产路径仍存在部分 contract 推断/回填逻辑。
 - 手机/Web 控制面仍处于“边界已收敛、实现待落地”的阶段。
 - detached 安装链路可用，但产品化 packaging 细节仍需持续打磨。
+- bridge-owned 会话在 orphaned controller、dangling active pointer、runtime crash 后的一致性修复策略仍待继续收敛。
+- bridge/runtime 这一层在宿主 ownership 上仍然偏 JS，需要按 `T023` 逐步下沉到 native spine。

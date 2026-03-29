@@ -97,6 +97,8 @@ node ./bin/opencodex.js install detached --link-source
 - `review-command.md` — review 工作流输入、artifacts 与 summary 策略。
 - `auto-command.md` — 基于现有 wrapper 命令串联的无人值守本地工作流。
 - `memory-command.md` — 把追加型 memory 记录收敛成 active/archive/summary-state 三层产物。
+- `bridge-command.md` — installed Codex 会话桥、live-session attach 模型与远程续接路径。
+- `session-bridge-operations.md` — 查看、选择并继续同一条 bridge-owned Codex 会话的 operator guide。
 - `remote-command.md` — 基于本地 HTTP 的带 token 手机消息桥。
 - `mobile-control-plane.md` — 手机 / Web control plane 的产品边界、宿主控制权与支持范围。
 - `service-command.md` — Telegram CTO 模式的 macOS launchd 服务与菜单栏 app 管理。
@@ -107,6 +109,7 @@ node ./bin/opencodex.js install detached --link-source
 - `profile-policy.md` — 当前 wrapper profiles 与 Codex CLI 策略映射。
 - `cto-soul.md` — CTO 主线程可编辑的初始化提示文档。
 - `install-layout.md` — App 形态、CLI shim 与长期服务共享 detached runtime 的安装布局。
+- `native-host-runtime-spine.md` — bridge/runtime 宿主表面的 native-vs-JS ownership 边界。
 - `support-domain-contract.md` — 双渠道客服模块（Telegram 群 + 咸鱼个人）的可实现契约与严格配置模型。
 - `support-module-rollout.md` — 客服模块的精简上线说明，覆盖目的、配置、TG/咸鱼边界与本地验证步骤。
 

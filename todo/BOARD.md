@@ -38,6 +38,7 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 - `T019-telegram-host-export-to-downloads.md`
 - `T017-detached-install-layout.md`
 - `T021-installed-oc-codex-control-bridge.md`
+- `T023-native-host-runtime-spine.md`
 
 ### P2
 
@@ -50,6 +51,10 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 ## Recommended Execution Order
 
 `T001 -> (T002 + T005) -> T003 -> T007 -> T004 -> T006 -> T009 -> T011 -> T012 -> (T013 + T014) -> T015 -> T016 -> (T018 + T019) -> T017 -> T020 -> T021 -> T010 -> T008`
+
+Current active follow-up:
+
+`T021` is the real product mainline: bridge into the user's Codex session so remote/mobile surfaces can continue the same work, inspect session history, and attach to the active mainline session. `T023` is the supporting native-runtime refactor track for the same goal.
 
 ## Dependency Notes
 
@@ -111,4 +116,5 @@ It reflects the current CTO decision to build on top of Codex CLI instead of rei
 - `T019` — implemented
 - `T017` — detached install boundary plus bundle/install/status/prune flow implemented (status now includes prune-preview lifecycle signals and `--keep` preview override); broader packaging polish still pending
 - `T020` — partially implemented: boundary docs are in place and `remote status` now provides deployment checks plus troubleshooting hints; broader control-plane follow-through remains
-- `T021` — partially implemented: installed bridge state, transparent `codex` shim install/repair/status flow, bridge-owned live-session records, external send/inbox control, recent-output snapshots, and the first Telegram plus remote/mobile attach/status relay for active bridge sessions are in place, including phone-side `/api/status` plus the token-authenticated remote page for attach-state and recent-output visibility; the remaining gap is richer bidirectional attach semantics and installed-product packaging/docs polish on the same live-session lane
+- `T021` — partially implemented: installed bridge state, transparent `codex` shim install/repair/status flow, bridge-owned live-session records, external send/inbox control, recent-output snapshots, and the first Telegram plus remote/mobile attach/status relay for active bridge sessions are in place, including phone-side `/api/status` plus the token-authenticated remote page for attach-state and recent-output visibility; the current operator contract is now explicit too: live selection trusts the global active pointer, attachability requires a running bridge-owned session, and historical bridge sessions stay read-only; the remaining gap is recovery semantics for orphaned/crashed runtime state plus deeper installed-product/native-runtime follow-through on the same live-session lane
+- `T023` — newly opened: the bridge/runtime mainline should stop depending on JS where native OS integration, service ownership, and privileged runtime behavior are the real requirements

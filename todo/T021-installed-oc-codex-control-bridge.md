@@ -257,6 +257,14 @@ The control-plane entry must be fixed at the installed bridge/runtime layer firs
   - `opencodex remote serve` now relays inbound mobile messages into the active bridge-owned live session instead of acting as a detached message sink
   - remote HTTP requests now fail closed with explicit bridge-attach errors when there is no active attachable bridge-owned session
   - `opencodex remote status` now reports current bridge attachability together with the latest mobile-message relay status
+  - operator docs now explicitly define the current live-session contract:
+    - live continuation trusts only the global active pointer
+    - attachability requires a readable `running` bridge session with a valid workspace
+    - historical `completed` / `failed` / `cancelled` bridge sessions remain read-only and do not support reopen / resume
+  - operator docs now also explicitly define the current repair/recovery contract:
+    - install-layer failures are repaired through `register-codex`, `install-shim`, `repair-shim`, and PATH fixes
+    - dangling active pointers and orphaned/crashed runtime states are surfaced as non-attachable, not silently revived
+    - the supported recovery path today is read-only inspection plus starting a new bridge-owned `codex ...`, because there is no dedicated active-pointer repair or historical reopen command yet
 - Product direction is now clear:
   - Codex stays the execution engine.
   - Installed openCodex becomes the control bridge.
